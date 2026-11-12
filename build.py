@@ -525,7 +525,7 @@ def cmd_doctor(args) -> int:
         for tool in ("cc", "gcc", "c++", "g++", "gfortran", "mpicc", "mpifort", "mpirun",
                      "make", "gmake", "cmake", "ninja", "pkg-config", "pkgconf", "perl",
                      "ar", "ranlib", "ld", "nm", "objcopy", "strip", "git", "curl", "tar"):
-            tools[tool] = which(tool)
+            tools[tool] = _host_tool(tool)
         root = Path(args.root)
         print(json.dumps({
             "platform": {
@@ -557,7 +557,7 @@ def cmd_doctor(args) -> int:
              "ar", "ranlib", "ld", "nm", "objcopy", "strip", "git", "curl", "tar"]
     missing = []
     for tool in tools:
-        path = which(tool)
+        path = _host_tool(tool)
         print("  %-12s %s" % (tool, path or "-- missing --"))
         if not path and tool in ("cc", "c++", "make", "ar", "ranlib"):
             missing.append(tool)
