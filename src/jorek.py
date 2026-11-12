@@ -290,6 +290,19 @@ class VariantSpec:
             tokens.append("%s=%d" % (key, 1 if self.toggles[key] else 0))
         return tokens
 
+    def build_key(self) -> str:
+        import hashlib
+        payload = "\n".join([
+            "model=" + self.model,
+            "solver=" + self.features.solver,
+            "features=" + ",".join("%s=%d" % (k, 1 if v else 0) for k, v in sorted(self.features.values.items())),
+            "debug=%d" % (1 if self.features.debug else 0),
+            "params=" + ",".join("%s=%s" % (k, self.params[k]) for k in sorted(self.params)),
+            "toggles=" + ",".join("%s=%d" % (k, 1 if self.toggles[k] else 0) for k in sorted(self.toggles)),
+            "programs=" + ",".join(self.programs),
+        ])
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def safe_name(self) -> str:
         base = "model" + self.model
         extras = []
@@ -417,7 +430,7 @@ def patch_settings(source: Path, spec: VariantSpec) -> None:
 def stage_source(jorek_root: Path, destination: Path, spec: VariantSpec) -> Path:
     destination = ensure_dir(destination)
     marker = destination / ".jorek-variant"
-    if marker.exists() and marker.read_text(encoding="utf-8", errors="replace").strip() == spec.name:
+    if marker.exists() and marker.read_text(encoding="utf-8", errors="replace").strip() == spec.build_key():
         return destination
     if any(destination.iterdir()):
         shutil.rmtree(destination)
@@ -433,7 +446,7 @@ def stage_source(jorek_root: Path, destination: Path, spec: VariantSpec) -> Path
         shutil.copy2(source, target)
     patch_settings(destination, spec)
     marker = destination / ".jorek-variant"
-    marker.write_text(spec.name + "\n", encoding="utf-8")
+    marker.write_text(spec.build_key() + "\n", encoding="utf-8")
     return destination
 
 
@@ -628,13 +641,13 @@ class MakeBuilder:
         lines.append("CXXFLAGS += -O2 -fPIC")
         lines.append("LIBS += -lm")
         lines.append("")
-        lines.append("USE_HIPS = 0")
         solver = feature.solver
+        lines.append("USE_HIPS = %d" % (1 if solver == "hips" else 0))
         lines.append("USE_PASTIX = %d" % (1 if solver in ("pastix5", "all") else 0))
         lines.append("USE_PASTIX_MURGE = %d" % (1 if solver in ("pastix5", "all") and feature.enabled("murge") else 0))
         lines.append("USE_PASTIX6 = %d" % (1 if solver in ("pastix6", "all") else 0))
         lines.append("USE_MUMPS = %d" % (1 if solver in ("mumps", "all") else 0))
-        lines.append("USE_WSMP = %d" % (1 if solver in ("wsmp", "all") else 0))
+        lines.append("USE_WSMP = %d" % (1 if solver == "wsmp" else 0))
         lines.append("USE_STRUMPACK = %d" % (1 if solver in ("strumpack", "all") else 0))
         lines.append("USE_HDF5 = %d" % (1 if feature.enabled("hdf5") else 0))
         lines.append("USE_FFTW = %d" % (1 if feature.enabled("fftw") else 0))
@@ -717,8 +730,19 @@ class MakeBuilder:
             lines.extend(self._pastix5_block())
         if solver in ("strumpack", "all"):
             lines.extend(self._strumpack_block())
-        if solver in ("wsmp", "hips", "none"):
-            lines.append("# Solver %s has no automatically linked archives; supply them in a dependency prefix." % solver)
+        if solver == "wsmp":
+            try:
+                lines.append("LIB_WSMP = %s" % layout.lib("libpwsmp64.a"))
+            except BuildError:
+                lines.append("# WSMP is proprietary; supply libpwsmp64.a in a --dep-prefix")
+        if solver == "hips":
+            try:
+                lines.append("LIBHIPS = %s" % layout.lib("libhips.a"))
+                lines.append("INCHIPS = -I%s" % (layout.include("hips.h").parent if layout.include("hips.h") else ""))
+            except BuildError:
+                lines.append("# HIPS is legacy; supply libhips.a in a --dep-prefix")
+        if solver == "none":
+            lines.append("# No direct solver backend selected; JOREK needs one at run time.")
         if feature.enabled("boost"):
             try:
                 lines.append("LIB_BOOST = %s" % layout.lib("libboost_math_tr1.a"))
@@ -803,10 +827,21 @@ class MakeBuilder:
 
     def _pastix5_block(self) -> List[str]:
         layout = self.layout
+        home = layout.prefixes[0] if layout.prefixes else Path(".")
+        conf = Path(home) / "bin" / "pastix-conf"
         lines = [
             "USE_PASTIX = 1",
-            "PASTIX_HOME = %s" % (layout.prefixes[0] if layout.prefixes else ""),
+            "PASTIX_HOME = %s" % home,
         ]
+        if conf.exists():
+            lines.extend([
+                "LIB_PASTIX = `$(PASTIX_HOME)/bin/pastix-conf --libs`",
+                "LIB_PASTIX_MURGE = `$(PASTIX_HOME)/bin/pastix-conf --libs_murge`",
+                "LIB_PASTIX_BLAS = `$(PASTIX_HOME)/bin/pastix-conf --blas`",
+                "INC_PASTIX = `$(PASTIX_HOME)/bin/pastix-conf --incs`",
+            ])
+        else:
+            lines.append("# PaStiX 5 needs a pastix-conf script in the dependency prefix")
         return lines
 
     def _strumpack_block(self) -> List[str]:

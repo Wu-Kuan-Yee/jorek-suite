@@ -437,7 +437,10 @@ class BuildContext:
             if isinstance(data, dict) and data.get("name"):
                 self.stamps[data["name"]] = data
         # Prefer tools installed in our own prefix.
-        self.path = [str(self.prefix / "bin")] + [str(p) for p in self.extra_path] + os.environ.get("PATH", "").split(os.pathsep)
+        standard = [p for p in ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", "/bin")
+                    if os.path.isdir(p)]
+        self.path = ([str(self.prefix / "bin")] + [str(p) for p in self.extra_path] + standard
+                     + os.environ.get("PATH", "").split(os.pathsep))
 
     def refresh_tools(self) -> None:
         def find(name: str, fallback: str) -> str:
@@ -1051,6 +1054,12 @@ class DepManager:
 
     def _build_one(self, item: Dependency) -> None:
         ctx = self.ctx
+        if item.name in ("cmake", "pkgconf", "perl", "m4", "gmake") and not ctx.force:
+            found = [which(tool, ctx.path) for tool in item.tools]
+            if item.tools and all(found):
+                print("  %-18s using host tool" % item.name)
+                ctx.mark_built(item)
+                return
         if ctx.has_stamp(item):
             print("  %-18s already built" % item.name)
             return
