@@ -510,6 +510,9 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
         builder.build_macho_section(output, [cc], objects)
     else:
         builder.build(output)
+    ok, offenders = jorek.verify_static(output, platform)
+    if not ok and not getattr(args, "allow_shared", False):
+        raise BuildError("suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
     print("")
     print("Single-file JOREK suite: %s (%s)" % (output, human_bytes(output.stat().st_size)))
     return output
