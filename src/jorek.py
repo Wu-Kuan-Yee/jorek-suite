@@ -629,12 +629,13 @@ class MakeBuilder:
         lines.append("LIBS += -lm")
         lines.append("")
         lines.append("USE_HIPS = 0")
-        lines.append("USE_PASTIX = %d" % (1 if feature.solver in ("pastix5",) else 0))
-        lines.append("USE_PASTIX_MURGE = %d" % (1 if feature.solver in ("pastix5",) and feature.enabled("murge") else 0))
-        lines.append("USE_PASTIX6 = %d" % (1 if feature.solver in ("pastix6",) else 0))
-        lines.append("USE_MUMPS = %d" % (1 if feature.solver in ("mumps",) else 0))
-        lines.append("USE_WSMP = 0")
-        lines.append("USE_STRUMPACK = %d" % (1 if feature.solver in ("strumpack",) else 0))
+        solver = feature.solver
+        lines.append("USE_PASTIX = %d" % (1 if solver in ("pastix5", "all") else 0))
+        lines.append("USE_PASTIX_MURGE = %d" % (1 if solver in ("pastix5", "all") and feature.enabled("murge") else 0))
+        lines.append("USE_PASTIX6 = %d" % (1 if solver in ("pastix6", "all") else 0))
+        lines.append("USE_MUMPS = %d" % (1 if solver in ("mumps", "all") else 0))
+        lines.append("USE_WSMP = %d" % (1 if solver in ("wsmp", "all") else 0))
+        lines.append("USE_STRUMPACK = %d" % (1 if solver in ("strumpack", "all") else 0))
         lines.append("USE_HDF5 = %d" % (1 if feature.enabled("hdf5") else 0))
         lines.append("USE_FFTW = %d" % (1 if feature.enabled("fftw") else 0))
         lines.append("USE_DOMM = %d" % (1 if feature.enabled("domm") else 0))
@@ -708,16 +709,16 @@ class MakeBuilder:
         lines.append("LIBLAPACK = %s" % blas)
         lines.append("LIBBLAS =")
         # Solver-specific block
-        if feature.solver == "mumps":
+        if solver in ("mumps", "all"):
             lines.extend(self._mumps_block())
-        elif feature.solver == "pastix6":
+        if solver in ("pastix6", "all"):
             lines.extend(self._pastix6_block())
-        elif feature.solver == "pastix5":
+        if solver in ("pastix5", "all"):
             lines.extend(self._pastix5_block())
-        elif feature.solver == "strumpack":
+        if solver in ("strumpack", "all"):
             lines.extend(self._strumpack_block())
-        else:
-            lines.append("# No direct solver backend selected; JOREK needs one at run time.")
+        if solver in ("wsmp", "hips", "none"):
+            lines.append("# Solver %s has no automatically linked archives; supply them in a dependency prefix." % solver)
         if feature.enabled("boost"):
             try:
                 lines.append("LIB_BOOST = %s" % layout.lib("libboost_math_tr1.a"))

@@ -954,6 +954,15 @@ static char *js_cache_root(void) {
     if (e && *e) return js_path_join(e, "jorek-suite-cache");
     return js_strdup("jorek-suite-cache");
 #else
+#  ifdef __APPLE__
+    e = getenv("HOME");
+    if (e && *e) {
+        char *base = js_path_join(e, "Library/Caches");
+        char *p = js_path_join(base, "jorek-suite");
+        free(base);
+        return p;
+    }
+#  endif
     e = getenv("XDG_CACHE_HOME");
     if (e && *e) return js_path_join(e, "jorek-suite");
     e = getenv("HOME");

@@ -69,6 +69,19 @@ def banner(args) -> None:
     print("  python   : %s" % sys.version.split()[0])
 
 
+def _search_dirs() -> List[str]:
+    dirs = []
+    for candidate in ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", "/bin"):
+        if os.path.isdir(candidate):
+            dirs.append(candidate)
+    dirs.extend(os.environ.get("PATH", "").split(os.pathsep))
+    return dirs
+
+
+def _host_tool(name: str) -> Optional[str]:
+    return which(name, _search_dirs())
+
+
 def _platform() -> PlatformInfo:
     return PlatformInfo.detect()
 
@@ -273,7 +286,7 @@ def _mpi_fortran_wrapper(args, fc: str, layout: jorek.DepLayout) -> str:
         return fc
     if "mpifort" not in os.path.basename(fc) and "mpif90" not in os.path.basename(fc):
         return fc
-    real = which("gfortran") or fc
+    real = _host_tool("gfortran") or fc
     directory = Path(args.work) / "toolchain"
     directory.mkdir(parents=True, exist_ok=True)
     wrapper = directory / ("mpifort-static" + (".bat" if os.name == "nt" else ""))
@@ -450,7 +463,7 @@ def _collect_variants(args, platform: PlatformInfo, toolchain) -> List[BuiltVari
 # Suite creation
 # ---------------------------------------------------------------------------
 def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, List[Path]]:
-    cc = os.environ.get("CC") or which("cc") or which("clang") or which("gcc")
+    cc = os.environ.get("CC") or _host_tool("cc") or _host_tool("clang") or _host_tool("gcc")
     if not cc:
         raise BuildError("a C compiler is required to build the suite launcher")
     objdir = ensure_dir(work / "launcher")
@@ -507,6 +520,29 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
 # ---------------------------------------------------------------------------
 def cmd_doctor(args) -> int:
     platform = _platform()
+    if getattr(args, "json", False):
+        tools = {}
+        for tool in ("cc", "gcc", "c++", "g++", "gfortran", "mpicc", "mpifort", "mpirun",
+                     "make", "gmake", "cmake", "ninja", "pkg-config", "pkgconf", "perl",
+                     "ar", "ranlib", "ld", "nm", "objcopy", "strip", "git", "curl", "tar"):
+            tools[tool] = which(tool)
+        root = Path(args.root)
+        print(json.dumps({
+            "platform": {
+                "system": platform.system, "machine": platform.machine,
+                "libc": platform.libc, "python": platform.python,
+                "python_version": sys.version.split()[0],
+            },
+            "tools": tools,
+            "jorek": {
+                "root": str(root.resolve()),
+                "makefile": (root / "Makefile").exists(),
+                "models": len(list((root / "models").glob("model*"))),
+                "git": common.git_describe(root),
+            },
+            "work": str(Path(args.work).resolve()),
+        }, indent=2, sort_keys=True))
+        return 0
     print("Platform")
     print("  system        : %s" % platform.system)
     print("  machine       : %s" % platform.machine)
@@ -552,10 +588,10 @@ def cmd_deps(args) -> int:
         platform=platform,
         downloader=Downloader(Path(args.work) / "downloads", offline=args.offline, verify=not args.no_checksum),
         jobs=args.jobs,
-        cc=args.cc or which("gcc") or "cc",
-        cxx=args.cxx or which("g++") or "c++",
-        fc=args.fc or which("gfortran") or "gfortran",
-        make=which("gmake") or which("make") or "make",
+        cc=args.cc or _host_tool("gcc") or _host_tool("cc") or "cc",
+        cxx=args.cxx or _host_tool("g++") or _host_tool("c++") or "c++",
+        fc=args.fc or _host_tool("gfortran") or "gfortran",
+        make=_host_tool("gmake") or _host_tool("make") or "make",
         cmake=which("cmake") or ("/opt/homebrew/bin/cmake" if os.path.exists("/opt/homebrew/bin/cmake") else None),
         force=args.force,
     )
@@ -611,11 +647,12 @@ def cmd_bootstrap(args) -> int:
     work = Path(args.work)
     prefix = Path(args.toolchain_prefix) if args.toolchain_prefix else work / "deps"
     ensure_dir(prefix)
-    host_cc = which("gcc") or which("cc")
-    host_cxx = which("g++") or which("c++")
+    search = _search_dirs()
+    host_cc = which("gcc", search) or which("cc", search)
+    host_cxx = which("g++", search) or which("c++", search)
     if not host_cc or not host_cxx:
         raise BuildError("bootstrap needs a host C and C++ compiler (the user-provided baseline)")
-    host_fc = which("gfortran") or which("gfortran-14") or which("gfortran-13")
+    host_fc = which("gfortran", search) or which("gfortran-14", search) or which("gfortran-13", search)
     ctx = deps.BuildContext(
         prefix=prefix,
         work=work,
@@ -625,11 +662,11 @@ def cmd_bootstrap(args) -> int:
         cc=host_cc,
         cxx=host_cxx,
         fc=host_fc or host_cc,
-        make=which("gmake") or which("make") or "make",
+        make=_host_tool("gmake") or _host_tool("make") or "make",
         force=args.force,
     )
     manager = deps.DepManager(ctx)
-    if not which("make"):
+    if not _host_tool("make"):
         print("warning: no make found; GNU make itself cannot be bootstrapped without a make")
     if not host_fc:
         print("No Fortran compiler found; building GCC (C, C++, Fortran) from source.")
@@ -715,10 +752,10 @@ def _ensure_source_deps(args) -> None:
         platform=platform,
         downloader=Downloader(Path(args.work) / "downloads", offline=args.offline, verify=not args.no_checksum),
         jobs=args.jobs,
-        cc=args.cc or which("gcc") or "cc",
-        cxx=args.cxx or which("g++") or "c++",
-        fc=args.fc or which("gfortran") or "gfortran",
-        make=which("gmake") or which("make") or "make",
+        cc=args.cc or _host_tool("gcc") or _host_tool("cc") or "cc",
+        cxx=args.cxx or _host_tool("g++") or _host_tool("c++") or "c++",
+        fc=args.fc or _host_tool("gfortran") or "gfortran",
+        make=_host_tool("gmake") or _host_tool("make") or "make",
         force=args.force,
     )
     names = deps.core_dependencies(args.profile, args.solver,
@@ -880,6 +917,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--jobs", "-j", type=int, default=common.cpu_count(), help="parallel build jobs (default: CPU count)")
     parser.add_argument("--verbose", "-v", action="store_true", help="show every command")
     parser.add_argument("--quiet", "-q", action="store_true", help="suppress informational output")
+    parser.add_argument("--version", action="version", version="JOREK build.py %s" % VERSION)
     parser.add_argument("--dry-run", action="store_true", help="print commands and planned variants without executing")
     parser.add_argument("--offline", action="store_true", help="never access the network; use cached sources only")
     parser.add_argument("--force", action="store_true", help="rebuild dependencies even when stamps exist")
