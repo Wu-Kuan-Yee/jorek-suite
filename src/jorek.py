@@ -238,7 +238,9 @@ class FeatureSet:
         for name in sorted(self.values):
             if self.values[name]:
                 tokens.append(name)
-        tokens.append("solver=" + self.solver)
+        if self.solver not in ("none",):
+            tokens.append(self.solver)
+            tokens.append("solver=" + self.solver)
         if self.debug:
             tokens.append("debug")
         return tokens
@@ -564,6 +566,7 @@ class MakeBuilder:
         dry_run: bool = False,
         log_dir: Optional[Path] = None,
         extra_libs: Sequence[str] = (),
+        full_static: bool = False,
     ) -> None:
         self.jorek_root = jorek_root
         self.spec = spec
@@ -576,6 +579,24 @@ class MakeBuilder:
         self.dry_run = dry_run
         self.log_dir = log_dir
         self.extra_libs = list(extra_libs)
+        self.full_static = full_static
+        self.fc_family = self._compiler_family(fc)
+
+    @staticmethod
+    def _compiler_family(compiler: str) -> str:
+        try:
+            proc = subprocess.run([compiler, "--version"], stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, check=False)
+            text = proc.stdout.decode("utf-8", "replace").lower()
+        except OSError:
+            return "unknown"
+        if "intel" in text or "ifort" in text or "oneapi" in text:
+            return "intel"
+        if "gnu" in text or "gcc" in text or "gfortran" in text:
+            return "gnu"
+        if "nvidia" in text or "nvfortran" in text:
+            return "nvidia"
+        return "unknown"
 
     def makefile_inc(self) -> str:
         spec = self.spec
@@ -590,12 +611,19 @@ class MakeBuilder:
             "CXX = %s" % self.cxx,
             "DEBUG = %d" % (1 if feature.debug else 0),
             "",
-            "FFLAGS += -fdefault-real-8 -fdefault-double-8 -ffree-line-length-none -fallow-argument-mismatch",
         ]
-        if feature.debug:
-            lines[-1] += " -g -O0 -fcheck=all -fbacktrace"
+        if self.fc_family == "intel":
+            lines.append("FFLAGS += -r8 -O3")
+            if feature.debug:
+                lines[-1] = "FFLAGS += -O0 -g -check all -traceback"
+        elif self.fc_family == "nvidia":
+            lines.append("FFLAGS += -r8 -O3")
         else:
-            lines[-1] += " -O3"
+            lines.append("FFLAGS += -fdefault-real-8 -fdefault-double-8 -ffree-line-length-none -fallow-argument-mismatch")
+            if feature.debug:
+                lines[-1] += " -g -O0 -fcheck=all -fbacktrace"
+            else:
+                lines[-1] += " -O3"
         lines.append("CFLAGS += -O2 -fPIC")
         lines.append("CXXFLAGS += -O2 -fPIC")
         lines.append("LIBS += -lm")
@@ -729,7 +757,11 @@ class MakeBuilder:
                 pass
         if layout.platform.is_macos:
             lines.append("LIBS += -lxml2 -llzma -framework IOKit -framework CoreFoundation -framework OpenCL")
-        lines.append("LIBS += -fopenmp -lstdc++")
+        if self.full_static and not layout.platform.is_macos:
+            lines.append("LIBS += -static")
+        if layout.platform.is_windows:
+            lines.append("LIBS += -static-libgcc -static-libstdc++")
+        lines.append("LIBS += %s -lstdc++" % ("-qopenmp" if self.fc_family == "intel" else "-fopenmp"))
         lines.append("")
         return "\n".join(lines)
 
@@ -831,10 +863,12 @@ def verify_static(path: Path, platform: PlatformInfo) -> Tuple[bool, List[str]]:
 
 
 def _verify_linux(path: Path) -> Tuple[bool, List[str]]:
-    readelf = which("readelf") or "readelf"
+    readelf = which("readelf")
+    if not readelf:
+        return True, ["readelf unavailable; could not verify"]
     proc = subprocess.run([readelf, "-d", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if proc.returncode != 0:
-        return True, ["readelf unavailable; could not verify"]
+        return True, ["readelf failed; could not verify"]
     text = proc.stdout.decode("utf-8", "replace")
     needed = re.findall(r"\(NEEDED\)\s+Shared library:\s+\[([^\]]+)\]", text)
     offending = [x for x in needed if not _is_system_linux(x)]

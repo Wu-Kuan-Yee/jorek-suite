@@ -431,6 +431,11 @@ class BuildContext:
         ensure_dir(self.work / "logs")
         self.stamp_dir = self.work / "stamps"
         ensure_dir(self.stamp_dir)
+        from common import read_json as _read_json
+        for stamp in self.stamp_dir.glob("*.json"):
+            data = _read_json(stamp, None)
+            if isinstance(data, dict) and data.get("name"):
+                self.stamps[data["name"]] = data
         # Prefer tools installed in our own prefix.
         self.path = [str(self.prefix / "bin")] + [str(p) for p in self.extra_path] + os.environ.get("PATH", "").split(os.pathsep)
 

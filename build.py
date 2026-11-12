@@ -254,6 +254,7 @@ def _prepare_builder(args, spec: jorek.VariantSpec, platform: PlatformInfo, cc, 
         dry_run=args.dry_run,
         log_dir=Path(args.work) / "logs",
         extra_libs=extra_libs,
+        full_static=(not getattr(args, "no_full_static", False)),
     )
     return builder, layout
 
@@ -294,6 +295,13 @@ def _static_runtime_libs(fc: str) -> List[str]:
     way to select the static variants without breaking initialisation.
     """
     if not fc:
+        return []
+    try:
+        proc = subprocess.run([fc, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        text = proc.stdout.decode("utf-8", "replace").lower()
+    except OSError:
+        return []
+    if "gnu" not in text and "gcc" not in text:
         return []
     return ["-static-libgfortran", "-static-libgcc", "-static-libstdc++", "-static-libquadmath"]
 
@@ -347,6 +355,13 @@ def build_one(args, spec: jorek.VariantSpec, platform: PlatformInfo, toolchain, 
     main_path = source / ("jorek_model%s" % spec.model)
     if main_path.exists():
         programs.setdefault("jorek2_main", main_path)
+    if args.programs in ("most", "all"):
+        dirs = jorek.parse_makefile_dirs(Path(args.root), spec.model)
+        discovered = jorek.discover_programs(source, dirs)
+        for name in discovered:
+            candidate = source / name
+            if candidate.exists() and candidate.is_file():
+                programs.setdefault(name, candidate)
     if not programs and proc.returncode != 0:
         raise BuildError("no JOREK executables were produced; see %s" % log)
     if platform.is_macos:
@@ -359,7 +374,10 @@ def build_one(args, spec: jorek.VariantSpec, platform: PlatformInfo, toolchain, 
             result.offenders[name_] = offenders
             result.verified = result.verified or ok
             if not ok:
-                print("  warning: %s has non-system dynamic dependencies: %s" % (name_, ", ".join(offenders)))
+                message = "%s has non-system dynamic dependencies: %s" % (name_, ", ".join(offenders))
+                if not getattr(args, "allow_shared", False):
+                    raise BuildError(message + "\n  re-run with --allow-shared only for local experiments")
+                print("  warning: " + message)
     return result
 
 
@@ -781,7 +799,9 @@ def cmd_clean(args) -> int:
     work = Path(args.work).resolve()
     targets = []
     if args.all:
-        targets.append(work)
+        if work.exists():
+            for child in list(work.iterdir()):
+                targets.append(child)
     else:
         if args.builds:
             targets.append(work / "build")
@@ -865,6 +885,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", action="store_true", help="rebuild dependencies even when stamps exist")
     parser.add_argument("--no-checksum", action="store_true", help="do not verify downloaded source digests")
     parser.add_argument("--no-verify", action="store_true", help="skip static dependency verification")
+    parser.add_argument("--allow-shared", action="store_true", help="allow third-party shared libraries (not recommended)")
+    parser.add_argument("--no-full-static", action="store_true", help="do not pass -static on Linux/BSD/Windows")
     parser.add_argument("--keep-going", action="store_true", help="continue after a JOREK target fails")
     parser.add_argument("--keep-source", action="store_true", help="keep staged source trees")
     parser.add_argument("--toolchain-prefix", default=os.environ.get("JOREK_TOOLCHAIN_PREFIX"), help="prefix containing bootstrap compilers")
@@ -975,6 +997,8 @@ def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
         ("--force", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--no-checksum", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--no-verify", dict(action="store_true", default=argparse.SUPPRESS)),
+        ("--allow-shared", dict(action="store_true", default=argparse.SUPPRESS)),
+        ("--no-full-static", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--keep-going", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--keep-source", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--toolchain-prefix", dict(default=argparse.SUPPRESS)),

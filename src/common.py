@@ -439,7 +439,17 @@ def extract_archive(archive: Path, destination: Path, strip_components: int = 0)
         mode = "r:*"
         try:
             with tarfile.open(archive, mode) as tf:
-                members = tf.getmembers()
+                members = []
+                for member in tf.getmembers():
+                    name = member.name.replace("\\", "/")
+                    parts = Path(name).parts
+                    if name.startswith("/") or ".." in parts:
+                        raise BuildError("unsafe path in archive %s: %s" % (archive, member.name))
+                    if member.issym() or member.islnk():
+                        target = member.linkname.replace("\\", "/")
+                        if target.startswith("/") or ".." in Path(target).parts:
+                            raise BuildError("unsafe link in archive %s: %s" % (archive, member.name))
+                    members.append(member)
                 if strip_components:
                     members = [_strip_member(m, strip_components) for m in members]
                     members = [m for m in members if m is not None]

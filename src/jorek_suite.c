@@ -37,7 +37,8 @@
 #  include <direct.h>
 #  include <process.h>
 #  include <fcntl.h>
-#  define JS_SEP '\\'\n#  define strtok_r strtok_s
+#  define JS_SEP '\\'
+#  define strtok_r strtok_s
 #  define js_getpid _getpid
 #  define js_stat _stat64
 #  define js_fseek _fseeki64
@@ -990,6 +991,9 @@ static int js_file_has_sha(const char *path, const uint8_t want[32]) {
 
 static int js_write_atomic(const char *path, const void *data, size_t len, unsigned mode) {
     char *tmp;
+#ifdef _WIN32
+    (void)mode;
+#endif
     FILE *f;
     int ok = 0;
     size_t n = strlen(path) + 64;
@@ -1242,7 +1246,7 @@ static int js_run_windows(const char *path, char **args, const void *stdin_data,
     char *cmd;
     size_t cap = 65536, used = 0;
     int i;
-    STARTUPINFOA si;
+    STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     char *tmpname = NULL;
     HANDLE hstdin = NULL;
@@ -1603,6 +1607,7 @@ int main(int argc, char **argv) {
     if (opt_params && *opt_params) js_setenv("JOREK_SUITE_PARAMS", opt_params, 1);
 
 #ifdef _WIN32
+    (void)opt_wait;
     {
         int rc = js_run_windows(exe, child_args, stdin_data, stdin_len, 1);
         if (is_temp) remove(exe);

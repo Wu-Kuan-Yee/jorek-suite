@@ -109,9 +109,10 @@ class Program:
 @dataclass
 class Group:
     ident: int
-    data: bytes
     compressed: bytes
     programs: List[Program]
+    sha: bytes = b""
+    usize: int = 0
 
 
 class SuiteBuilder:
@@ -174,10 +175,9 @@ class SuiteBuilder:
         path = Path(path)
         if not path.is_file():
             raise SuiteError("program payload does not exist: %s" % path)
-        data = path.read_bytes()
-        if not data:
+        if path.stat().st_size == 0:
             raise SuiteError("program payload is empty: %s" % path)
-        program = Program(variant=variant.name, name=name, path=path, mode=mode, data=data)
+        program = Program(variant=variant.name, name=name, path=path, mode=mode)
         variant.programs.append(program)
         return program
 
@@ -205,11 +205,13 @@ class SuiteBuilder:
                 program.sha = digest
                 program.group = index
             raw = b"".join(chunks)
+            group_sha = _sha256(raw)
             compressor = zlib.compressobj(
                 self.compression_level, zlib.DEFLATED, -15, 9, zlib.Z_DEFAULT_STRATEGY
             )
             compressed = compressor.compress(raw) + compressor.flush()
-            groups.append(Group(index, raw, compressed, list(variant.programs)))
+            del raw
+            groups.append(Group(index, compressed, list(variant.programs), group_sha, offset))
         return groups
 
     def _manifest_text(self, groups: Sequence[Group]) -> bytes:
@@ -242,8 +244,8 @@ class SuiteBuilder:
                     group.ident,
                     self._group_offsets[group.ident][0],
                     len(group.compressed),
-                    len(group.data),
-                    _hex(_sha256(group.data)),
+                    group.usize,
+                    _hex(group.sha),
                 )
             )
         for variant in self.variants:
@@ -279,7 +281,7 @@ class SuiteBuilder:
         self._group_offsets = {}
         cursor = 0
         for group in groups:
-            self._group_offsets[group.ident] = (cursor, len(group.compressed), len(group.data))
+            self._group_offsets[group.ident] = (cursor, len(group.compressed), group.usize)
             cursor += len(group.compressed)
         archive = b"".join(group.compressed for group in groups)
         manifest = self._manifest_text(groups)
