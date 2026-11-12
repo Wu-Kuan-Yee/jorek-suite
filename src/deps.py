@@ -892,6 +892,9 @@ def build_boost(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     env = ctx.build_env(dep)
     run(["./bootstrap.sh", "--prefix=%s" % ctx.prefix, "--with-libraries=math",
          "--with-toolset=gcc"], cwd=src, env=env, log=ctx.log_path(dep.name))
+    b2 = src / "b2"
+    if b2.exists():
+        os.chmod(b2, 0o755)
     run(["./b2", "-j%d" % max(1, ctx.jobs), "link=static", "runtime-link=static",
          "threading=multi", "variant=release", "install"], cwd=src, env=env,
         log=ctx.log_path(dep.name))
