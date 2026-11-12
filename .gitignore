@@ -1,0 +1,46 @@
+# Build products
+/build/
+/dist/
+*.o
+*.mod
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lib
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.dSYM/
+jorek-suite
+jorek_model*
+*.tmp
+*.log
+
+# Dependency and download caches
+/downloads/
+/deps/
+/toolchain/
+/.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local configuration
+.env
+local/

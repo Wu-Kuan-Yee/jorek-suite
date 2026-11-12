@@ -1,0 +1,15 @@
+Third-party components incorporated into this repository
+========================================================
+
+src/puff.c, src/puff.h
+  DEFLATE decompressor.
+  Copyright (C) 2002-2013 Mark Adler.
+  zlib licence (permissive); see the header of src/puff.c.
+
+src/sha256 (in src/jorek_suite.c)
+  SHA-256 implementation derived from the public-domain reference
+  implementation by Brad Conte.
+
+All other third-party libraries are fetched and built from source by
+build.py; their licences are listed in docs/DEPENDENCIES.md.  No third-party
+source tarball is stored in this repository.

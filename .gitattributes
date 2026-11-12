@@ -1,0 +1,20 @@
+# Normalise text files so the repository behaves identically on all systems.
+* text=auto eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.f90 text eol=lf
+*.f text eol=lf
+*.inc text eol=lf
+Makefile text eol=lf
+*.bin binary
+*.gz binary
+*.xz binary
+*.bz2 binary
+*.zip binary
+*.a binary
+*.o binary
