@@ -744,8 +744,16 @@ def cmd_build(args) -> int:
 def _ensure_source_deps(args) -> None:
     platform = _platform()
     prefix = Path(args.work) / "deps"
-    if (prefix / ".complete").exists() and not args.force:
-        return
+    names = deps.core_dependencies(args.profile, args.solver,
+                                   include_dierckx=(getattr(args, "programs", "main") == "all"))
+    marker = prefix / ".complete"
+    wanted = "\n".join(sorted(names)) + "\n"
+    if marker.exists() and not args.force:
+        try:
+            if marker.read_text(encoding="utf-8") == wanted:
+                return
+        except OSError:
+            pass
     ctx = deps.BuildContext(
         prefix=prefix,
         work=Path(args.work),
@@ -758,11 +766,9 @@ def _ensure_source_deps(args) -> None:
         make=_host_tool("gmake") or _host_tool("make") or "make",
         force=args.force,
     )
-    names = deps.core_dependencies(args.profile, args.solver,
-                                   include_dierckx=(getattr(args, "programs", "main") == "all"))
     print("Ensuring source dependencies: %s" % ", ".join(names))
     deps.DepManager(ctx).build(names)
-    (prefix / ".complete").write_text("ok\n")
+    marker.write_text(wanted, encoding="utf-8")
 
 
 def cmd_dist(args) -> int:
