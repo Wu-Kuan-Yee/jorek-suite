@@ -318,9 +318,14 @@ register(
         configure_args=("--enable-shared=no", "--enable-static=yes", "--enable-fortran",
                         "--enable-hl", "--enable-parallel", "--disable-tools", "--disable-tests",
                         "--disable-doxygen", "--disable-deprecated-symbols")),
+    dep("gklib", "master", "https://github.com/KarypisLab/GKlib/archive/refs/heads/master.tar.gz",
+        license="Apache-2.0", homepage="https://github.com/KarypisLab/GKlib",
+        static_libs=("libGKlib.a",), includes=("GKlib.h",), builder="cmake",
+        cmake_args=("-DSHARED=0",)),
     dep("metis", "5.2.1", "https://github.com/KarypisLab/METIS/archive/refs/tags/v5.2.1.tar.gz",
         license="Apache-2.0", homepage="https://github.com/KarypisLab/METIS",
-        static_libs=("libmetis.a",), includes=("metis.h",), builder="metis"),
+        deps=("gklib",), static_libs=("libmetis.a", "libGKlib.a"), includes=("metis.h",),
+        builder="metis"),
     dep("parmetis", "4.0.3", "https://github.com/KarypisLab/ParMETIS/archive/refs/tags/v4.0.3.tar.gz",
         license="ParMETIS-license (non-commercial)", homepage="https://github.com/KarypisLab/ParMETIS",
         deps=("metis", "mpich"), static_libs=("libparmetis.a",), includes=("parmetis.h",),
@@ -792,6 +797,8 @@ def build_mumps(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     if _find_in_prefix(ctx.prefix, "libmetis.a"):
         ordering += " -Dmetis"
         ordering_libs += " -L%s -lmetis" % (ctx.prefix / "lib")
+        if _find_in_prefix(ctx.prefix, "libGKlib.a"):
+            ordering_libs += " -L%s -lGKlib" % (ctx.prefix / "lib")
         ordering_incs += " -I%s" % (ctx.prefix / "include")
     if _find_in_prefix(ctx.prefix, "libscotch.a"):
         ordering += " -Dscotch"
@@ -855,11 +862,25 @@ LPORD = -L$(LPORDDIR) -lpord$(PLAT)
 
 
 def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
-    env = ctx.build_env(dep)
-    run([ctx.make, "config", "shared=0", "prefix=%s" % ctx.prefix], cwd=src, env=env,
-        log=ctx.log_path(dep.name))
-    run([ctx.make, "-j%d" % max(1, ctx.jobs)], cwd=src, env=env, log=ctx.log_path(dep.name))
-    run([ctx.make, "install"], cwd=src, env=env, log=ctx.log_path(dep.name))
+    cmake = ctx.cmake or which("cmake", ctx.path)
+    if not cmake:
+        raise BuildError("cmake is required to build METIS")
+    build_dir = ensure_dir(ctx.work / "build" / ("%s-%s" % (dep.name, dep.version)))
+    xinclude = ensure_dir(src / "build" / "xinclude")
+    write_text(xinclude / "metis.h",
+               "#define IDXTYPEWIDTH 32\n#define REALTYPEWIDTH 32\n" +
+               read_text(src / "include" / "metis.h"))
+    shutil.copy2(src / "include" / "CMakeLists.txt", xinclude / "CMakeLists.txt")
+    run([cmake, "-S", str(src), "-B", str(build_dir),
+         "-DCMAKE_INSTALL_PREFIX=%s" % ctx.prefix,
+         "-DCMAKE_BUILD_TYPE=Release",
+         "-DGKLIB_PATH=%s" % ctx.prefix,
+         "-DSHARED=0",
+         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"],
+        cwd=src, env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    run([cmake, "--build", str(build_dir), "--parallel", str(max(1, ctx.jobs))],
+        env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    run([cmake, "--install", str(build_dir)], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
 
 
 def build_parmetis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
