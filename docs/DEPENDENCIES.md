@@ -38,11 +38,12 @@ pre-populated cache.
 | FFTW | 3.3.10 | GPL-2.0-or-later | toroidal FFTs |
 | HDF5 | 1.14.6 | BSD-3-Clause | parallel restart/output |
 | METIS | 5.2.1 | Apache-2.0 | fill-reducing ordering |
+| GKlib | master | Apache-2.0 | METIS support library |
 | ParMETIS | 4.0.3 | ParMETIS terms | distributed ordering |
 | SCOTCH | 6.1.2 | CeCILL-C | ordering/partitioning |
 | MUMPS | 5.7.3 | CeCILL-C | sparse direct solver |
 | PaStiX | 6.3.2 | CeCILL-C | sparse direct solver |
-| STRUMPACK | 7.2.0 | BSD-3-Clause | sparse direct solver |
+| STRUMPACK | 7.1.0 | BSD-3-Clause | sparse direct solver |
 | Boost | 1.87.0 | BSL-1.0 | Boost.Math Bessel K |
 | Fitpack/Dierckx | SciPy 1.14.1 sources | BSD-3-Clause | `eqdsk2jorek` regridding |
 
