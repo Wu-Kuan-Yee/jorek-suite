@@ -199,8 +199,8 @@ stamp files under `build/stamps/` make repeated runs incremental.
 ## Reference result
 
 A locally verified macOS arm64 build is recorded in
-[BUILD_RESULTS.md](docs/BUILD_RESULTS.md): 21 model variants, 430 packed
-programs, a 2.19 GiB single file with a valid code signature, static system-only
+[BUILD_RESULTS.md](docs/BUILD_RESULTS.md): 21 model variants, 488 packed
+programs, a 2.49 GiB single file with a valid code signature, static system-only
 dependencies, and a working embedded two-rank Hydra launch.
 
 ## Tests
