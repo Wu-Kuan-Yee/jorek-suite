@@ -16,6 +16,8 @@ The launcher exposes a solver selector:
 
 ```sh
 jorek-suite --list
+jorek-suite --solver all --model 303 < input
+# or build separate solver variants and select them:
 jorek-suite --model 303 --solver mumps < input
 jorek-suite --model 303 --solver pastix6 < input
 jorek-suite --model 303 --solver strumpack < input
