@@ -1482,7 +1482,22 @@ static int js_run_script(Suite *s, const char *name, char **child, int nchild, i
     int i, k = 0;
     if (!p) js_die(2, "no embedded script named '%s' (use --list-helpers)", name);
     path = js_path_join(dir, name);
-    args = (char **)js_calloc((size_t)nchild + 2, sizeof(char *));
+    args = (char **)js_calloc((size_t)nchild + 4, sizeof(char *));
+    {
+        const char *dot = strrchr(path, '.');
+        const char *interp = NULL;
+        char interp_buf[PATH_MAX];
+        if (dot && js_streq(dot, ".py")) {
+            if (js_which_path("python3", interp_buf, sizeof(interp_buf)) == 0)
+                interp = interp_buf;
+            else if (js_which_path("python", interp_buf, sizeof(interp_buf)) == 0)
+                interp = interp_buf;
+        } else if (dot && js_streq(dot, ".sh")) {
+            if (js_which_path("bash", interp_buf, sizeof(interp_buf)) == 0)
+                interp = interp_buf;
+        }
+        if (interp) args[k++] = (char *)interp;
+    }
     args[k++] = path;
     for (i = 0; i < nchild; ++i) args[k++] = child[i];
     args[k] = NULL;
@@ -1493,20 +1508,9 @@ static int js_run_script(Suite *s, const char *name, char **child, int nchild, i
         return 0;
     }
 #ifdef _WIN32
-    {
-        const char *suffix = strrchr(path, '.');
-        if (suffix && (_stricmp(suffix, ".sh") == 0)) {
-            char **wrapped = (char **)js_calloc((size_t)k + 3, sizeof(char *));
-            wrapped[0] = (char *)"bash";
-            wrapped[1] = path;
-            for (i = 1; i < k; ++i) wrapped[i + 1] = args[i];
-            wrapped[k + 1] = NULL;
-            return js_run_windows("bash", wrapped, NULL, 0, 1);
-        }
-        return js_run_windows(path, args, NULL, 0, 1);
-    }
+    return js_run_windows(args[0], args, NULL, 0, 1);
 #else
-    execv(path, args);
+    execv(args[0], args);
     js_die(5, "cannot execute script %s: %s", path, strerror(errno));
 #endif
     return 1;
