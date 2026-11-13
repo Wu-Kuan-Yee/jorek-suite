@@ -16,8 +16,20 @@ python3 build.py full --fetch-source --work /big/jorek-build --jobs 32
 ```
 
 Without `--fetch-source` the builder only searches for an existing checkout;
-it does not silently download source.  The default search order is
-`JOREK_ROOT`, `../JOREK`, the parent directory, and the current directory.
+it does not silently download source.  The search order is:
+
+1. `--root`
+2. `JOREK_ROOT`
+3. `$WORK/src/JOREK`
+4. `build-jorek/../JOREK`
+5. the parent directory
+6. the current directory
+
+With `--fetch-source`, the clone goes to the same source tree used for all
+other dependencies: `$WORK/src/JOREK` (for example
+`/big/jorek-build/src/JOREK`).  Dependency archives remain in
+`$WORK/downloads/` and extracted libraries in `$WORK/src/<name>-<version>/`,
+so the layout is uniform.
 
 `build.py` is the cross-platform implementation; the same command works on
 Linux and macOS (and the POSIX backend generally).  It:

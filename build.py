@@ -46,6 +46,7 @@ from common import BuildError, Downloader, PlatformInfo, ensure_dir, human_bytes
 
 VERSION = "1.0.0"
 def _default_root() -> Path:
+    """Best-effort checkout for display and legacy callers."""
     env = os.environ.get("JOREK_ROOT")
     if env:
         return Path(env).expanduser()
@@ -55,39 +56,66 @@ def _default_root() -> Path:
     return HERE.parent / "JOREK"
 
 
+def _find_jorek_root(work: Optional[Path] = None,
+                     explicit: Optional[Path] = None) -> Optional[Path]:
+    """Find an existing checkout in the conventional source locations."""
+    candidates = []
+    if explicit:
+        # An explicit --root is authoritative; do not silently substitute a
+        # different checkout.
+        candidates.append(explicit)
+    else:
+        env = os.environ.get("JOREK_ROOT")
+        if env:
+            candidates.append(Path(env).expanduser())
+        if work:
+            # Same layout as dependency sources: $WORK/src/<package>.
+            candidates.append(Path(work).expanduser() / "src" / "JOREK")
+        candidates.extend([HERE.parent / "JOREK", HERE.parent, Path.cwd()])
+    for candidate in candidates:
+        if (candidate / "jorek2_main.f90").exists() and (candidate / "models").is_dir():
+            return candidate
+    return None
+
+
 DEFAULT_ROOT = _default_root()
 WORK_DEFAULT = HERE / "build"
 JOREK_GIT_URL = "https://github.com/iterorganization/JOREK.git"
 
 
 def _ensure_jorek_source(args) -> Path:
-    """Validate --root, optionally cloning JOREK from its public repository."""
-    root = Path(args.root).expanduser()
-    if (root / "jorek2_main.f90").exists() and (root / "models").is_dir():
-        return root
+    """Validate --root; with --fetch-source clone into the unified source tree."""
+    work = Path(args.work).expanduser()
+    explicit = Path(args.root).expanduser() if getattr(args, "root", None) else None
+    found = _find_jorek_root(work, explicit)
+    if found:
+        args.root = str(found)
+        return found
+    target = explicit or (work / "src" / "JOREK")
     if not getattr(args, "fetch_source", False):
         raise BuildError(
-            "JOREK source not found at %s.  Pass --root /path/to/JOREK, set "
-            "JOREK_ROOT, or use --fetch-source to clone %s." % (root, JOREK_GIT_URL)
+            "JOREK source not found.  Searched --root/JOREK_ROOT, %s, %s and %s.\n"
+            "Pass --root /path/to/JOREK, set JOREK_ROOT, or use --fetch-source "
+            "to clone %s into %s." % (
+                work / "src" / "JOREK", HERE.parent / "JOREK", Path.cwd(),
+                JOREK_GIT_URL, target)
         )
     git = which("git") or "git"
-    if root.exists() and any(root.iterdir()):
+    if target.exists() and any(target.iterdir()):
         raise BuildError(
             "cannot clone JOREK into %s: directory is not empty and does not "
-            "look like a JOREK checkout" % root
+            "look like a JOREK checkout" % target
         )
-    root.parent.mkdir(parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     url = getattr(args, "jorek_url", None) or JOREK_GIT_URL
-    print("JOREK source not found; cloning %s into %s" % (url, root))
-    run([git, "clone", "--depth", "1", url, str(root)])
-    if not (root / "jorek2_main.f90").exists():
-        raise BuildError("cloned source at %s does not look like JOREK" % root)
-    return root
+    print("JOREK source not found; cloning %s into %s" % (url, target))
+    run([git, "clone", "--depth", "1", url, str(target)])
+    if not (target / "jorek2_main.f90").exists():
+        raise BuildError("cloned source at %s does not look like JOREK" % target)
+    args.root = str(target)
+    return target
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 def banner(args) -> None:
     if getattr(args, "quiet", False):
         return
@@ -1104,6 +1132,12 @@ def cmd_full(args) -> int:
     platform = _platform()
     if not (platform.is_linux or platform.is_macos or platform.is_bsd):
         raise BuildError("the full solver builder is currently supported on Linux, macOS and the BSDs")
+    if args.dry_run:
+        print("Would build the full suite with core deps and PaStiX 5/6 + STRUMPACK.")
+        print("  work    : %s" % args.work)
+        print("  root    : %s" % args.root)
+        print("  output  : %s" % (args.output or (Path(args.work) / "dist" / "jorek-suite")))
+        return 0
     work = Path(args.work)
     ensure_dir(work)
     core_prefix = work / "deps"
@@ -1311,7 +1345,7 @@ def make_parser() -> argparse.ArgumentParser:
                 them.  IMAS and ParaView Catalyst are large optional layers.
         """),
     )
-    parser.add_argument("--root", default=str(DEFAULT_ROOT), help="JOREK source checkout (default: %(default)s)")
+    parser.add_argument("--root", default=None, help="JOREK source checkout (default: auto-detect; with --fetch-source, WORK/src/JOREK)")
     parser.add_argument("--fetch-source", action="store_true", help="clone JOREK into --root if it is missing")
     parser.add_argument("--jorek-url", default=JOREK_GIT_URL, help="JOREK git URL used by --fetch-source")
     parser.add_argument("--work", default=os.environ.get("JOREK_BUILD_DIR", str(WORK_DEFAULT)), help="build directory (default: %(default)s)")
