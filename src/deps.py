@@ -769,7 +769,10 @@ def build_scalapack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     text = re.sub(r"(?m)^BLASLIB\s*=.*$", "BLASLIB = %s" % blas, text)
     text = re.sub(r"(?m)^LAPACKLIB\s*=.*$", "LAPACKLIB = %s" % blas, text)
     text = re.sub(r"(?m)^FCFLAGS\s*=.*$", "FCFLAGS = -O2 -fPIC -fallow-argument-mismatch -std=legacy", text)
-    text = re.sub(r"(?m)^CCFLAGS\s*=.*$", "CCFLAGS = -O2 -fPIC -Wno-implicit-function-declaration -Wno-implicit-int -fcommon", text)
+    # GCC 15 defaults to C23, where ``void f();`` means "no arguments" and
+    # ScaLAPACK's old BLACS prototypes stop compiling.  Pin the C dialect.
+    text = re.sub(r"(?m)^CCFLAGS\s*=.*$", "CCFLAGS = -O2 -fPIC -std=gnu17 -Wno-implicit-function-declaration -Wno-implicit-int -fcommon", text)
+    text = re.sub(r"(?m)^CFLAGS\s*=.*$", "CFLAGS = -O2 -fPIC -std=gnu17 -Wno-implicit-function-declaration -Wno-implicit-int -fcommon", text)
     write_text(src / "SLmake.inc", text)
     env = ctx.build_env(dep)
     # A single make process prevents concurrent `ar` updates to libscalapack.a.
