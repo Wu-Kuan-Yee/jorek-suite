@@ -7,7 +7,7 @@ compile-time switches are:
 | --- | --- | --- | --- |
 | MUMPS | `USE_MUMPS` | `use_mumps`, `use_mumps_eq`, `use_mumps_prj` | **statically embedded in the reference suite** |
 | PaStiX 6 | `USE_PASTIX6` | `use_pastix`, `use_pastix_eq`, `use_pastix_prj` | **statically embedded in the reference suite** |
-| PaStiX 5 | `USE_PASTIX` | same | legacy `pastix-conf` recipe; not in the reference suite |
+| PaStiX 5 | `USE_PASTIX` | same | **statically embedded as separate `pastix5` variants** |
 | STRUMPACK | `USE_STRUMPACK` | `use_strumpack`, ... | **statically embedded in the reference suite** |
 | WSMP | `USE_WSMP` | `use_wsmp` | proprietary IBM library; never downloaded |
 | HIPS | `USE_HIPS` | historical switch | in-house legacy library; not publicly distributed |
@@ -17,6 +17,7 @@ The launcher exposes a solver selector:
 ```sh
 jorek-suite --list
 jorek-suite --solver all --model 303 < input
+jorek-suite --solver pastix5 --model 303 -- --version
 # or build separate solver variants and select them:
 jorek-suite --model 303 --solver mumps < input
 jorek-suite --model 303 --solver pastix6 < input
@@ -35,7 +36,10 @@ jorek-suite --solver all --model 303 < input
 ```
 
 The all-solver binary is one executable per model; it does not contain the
-full cross-product of every solver and every feature combination.
+full cross-product of every solver and every feature combination.  PaStiX 5
+is a separate variant per model because JOREK's PaStiX 5 and PaStiX 6
+interfaces are compile-time exclusive.  The reference suite therefore carries
+42 variants: 21 `solver=all` binaries and 21 `pastix5` binaries.
 
 ## Why the reference suite uses MUMPS
 

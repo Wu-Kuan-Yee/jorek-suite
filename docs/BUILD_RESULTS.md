@@ -20,12 +20,17 @@ python3 build.py \
   --deps none --dep-prefix ... --mpi-prefix /opt/homebrew/opt/mpich \
   --keep-source --jobs 12 \
   dist --matrix maximal --solver all --programs most \
-  --output build/dist/jorek-suite
+  --output build/dist/jorek-suite-solvers
+# Then build the PaStiX5 variants and merge the two manifests:
+#   build.py build --matrix maximal --solver pastix5 --programs main
+#   tools/merge_suites.py ... (see docs/SOLVERS.md)
 ```
 
 `--matrix maximal --solver all` builds one variant per model with every
 supported model extension enabled and links all available direct solvers
-(MUMPS, PaStiX 6 and STRUMPACK) into each binary.  The model extensions are:
+(MUMPS, PaStiX 6 and STRUMPACK) into each binary.  A second set of
+`pastix5` variants is built and merged into the same suite, so the launcher can
+select PaStiX 5 as well.  The model extensions are:
 180 (`with_TiTe`, `with_vpar`), 600 (all five), 750 (all three).  Model 183 is
 built with its default extension set because `algexpr2fort` has an upstream
 bounds defect when both 183 extensions are enabled.  `--programs most` adds the
@@ -35,10 +40,10 @@ curated diagnostic set to every model.
 
 | Property | Value |
 | --- | --- |
-| Models / variants | 21, solver=all (MUMPS + PaStiX6 + STRUMPACK) |
-| Packed programs | 426 |
-| Uncompressed payload | 11577.70 MiB |
-| Single-file size | 2.75 GiB |
+| Models / variants | 21 × 2: `solver=all` (MUMPS + PaStiX6 + STRUMPACK) and `pastix5` |
+| Packed programs | 447 |
+| Uncompressed payload | 12160.93 MiB |
+| Single-file size | 3.12 GiB |
 | Runtime script/helper files | 168 + 6 MPI + jorek-tool (175 total) |
 | Static dependency check | passed (system libraries only) |
 | macOS code signature | valid ad-hoc signature |
@@ -80,6 +85,7 @@ skipped.
 ```sh
 build/dist/jorek-suite --info
 build/dist/jorek-suite --solver all --model 303 --program jorek2vtk < input
+build/dist/jorek-suite --solver pastix5 --model 303 -- --version
 build/dist/jorek-suite --mpi -np 8 --solver all --model 303 < namelist
 ```
 

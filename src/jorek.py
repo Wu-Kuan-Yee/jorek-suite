@@ -946,22 +946,27 @@ class MakeBuilder:
 
     def _pastix5_block(self) -> List[str]:
         layout = self.layout
-        home = layout.prefixes[0] if layout.prefixes else Path(".")
-        conf = Path(home) / "bin" / "pastix-conf"
-        lines = [
+        libs = []
+        for name in ("libpastix.a", "libmetis.a", "libopenblas.a",
+                     "libomp.a", "libhwloc.a"):
+            try:
+                libs.append(str(layout.lib(name)))
+            except BuildError:
+                pass
+        inc = layout.include("pastix.h")
+        murge = []
+        try:
+            murge.append(str(layout.lib("libpastix_murge.a")))
+        except BuildError:
+            pass
+        return [
             "USE_PASTIX = 1",
-            "PASTIX_HOME = %s" % home,
+            "PASTIX_MEMORY_USAGE = 0",
+            "LIB_PASTIX = %s" % " ".join(libs),
+            "LIB_PASTIX_MURGE = %s" % " ".join(murge),
+            "LIB_PASTIX_BLAS = %s" % layout.lib("libopenblas.a"),
+            "INC_PASTIX = -I%s" % (inc.parent if inc else ""),
         ]
-        if conf.exists():
-            lines.extend([
-                "LIB_PASTIX = `$(PASTIX_HOME)/bin/pastix-conf --libs`",
-                "LIB_PASTIX_MURGE = `$(PASTIX_HOME)/bin/pastix-conf --libs_murge`",
-                "LIB_PASTIX_BLAS = `$(PASTIX_HOME)/bin/pastix-conf --blas`",
-                "INC_PASTIX = `$(PASTIX_HOME)/bin/pastix-conf --incs`",
-            ])
-        else:
-            lines.append("# PaStiX 5 needs a pastix-conf script in the dependency prefix")
-        return lines
 
     def _strumpack_block(self) -> List[str]:
         layout = self.layout

@@ -199,8 +199,8 @@ stamp files under `build/stamps/` make repeated runs incremental.
 ## Reference result
 
 A locally verified macOS arm64 build is recorded in
-[BUILD_RESULTS.md](docs/BUILD_RESULTS.md): 21 model variants, 426 packed
-programs, a 2.75 GiB single file with a valid code signature, static system-only
+[BUILD_RESULTS.md](docs/BUILD_RESULTS.md): 21 model variants, 42 solver variants, 447 packed
+programs, a 3.12 GiB single file with a valid code signature, static system-only
 dependencies, and a working embedded two-rank Hydra launch.
 
 ## Tests
@@ -222,6 +222,7 @@ model inference from a JOREK namelist.
 * [MPI and clusters](docs/MPI.md)
 * [Job scheduler adapters](docs/SCHEDULERS.md)
 * [Solver backends](docs/SOLVERS.md)
+* [Building the full Cartesian matrix](docs/CARTESIAN.md)
 * [Embedded runtime scripts and native jorek-tool](docs/RUNTIME_SCRIPTS.md)
 * [Single-file format](docs/SUITE_FORMAT.md)
 * [Security](docs/SECURITY.md)
