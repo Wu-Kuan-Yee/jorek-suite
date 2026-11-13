@@ -42,7 +42,8 @@ python3 build.py dist --model 303 --programs main
 # 4. Inspect and run the suite.  No compiler, Python, or library is needed at
 #    this point.
 ./build/dist/jorek-suite --list
-mpirun -np 4 ./build/dist/jorek-suite --model 303 < namelist/model303/intear_square
+# The suite contains its own Hydra mpiexec:
+./build/dist/jorek-suite --mpi -np 4 --model 303 < namelist/model303/intear_square
 ```
 
 To build every model and every supported model-family extension:
@@ -50,6 +51,10 @@ To build every model and every supported model-family extension:
 ```sh
 python3 build.py dist --matrix complete --programs main
 ```
+
+`--matrix maximal` builds one variant per model with **every supported model
+extension enabled simultaneously** (21 variants for the current tree).  The
+complete family matrix (65 variants) is available with `--matrix complete`.
 
 To enumerate the matrix without building it:
 
@@ -207,6 +212,7 @@ model inference from a JOREK namelist.
 * [Dependency catalogue](docs/DEPENDENCIES.md)
 * [Variant and feature matrix](docs/VARIANTS.md)
 * [Platform notes](docs/PLATFORMS.md)
+* [MPI and clusters](docs/MPI.md)
 * [Single-file format](docs/SUITE_FORMAT.md)
 * [Security](docs/SECURITY.md)
 

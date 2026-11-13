@@ -25,6 +25,10 @@ For families, the extension flags are Fortran `parameter` logicals in
 | 600 | `with_TiTe`, `with_vpar`, `with_rho`, `with_neutrals`, `with_impurities` |
 | 750 | `with_TiTe`, `with_neutrals`, `with_impurities` |
 
+`--matrix maximal` builds one binary per model with every supported extension
+enabled at once.  `--matrix complete` enumerates the Cartesian product of the
+supported toggles (65 variants in the current tree).
+
 `with_refluid` is declared by 600 but explicitly marked unsupported in the
 source and is therefore not enumerated.  It can still be forced with
 `--enable`-style parameter editing if the code is updated.

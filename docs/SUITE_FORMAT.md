@@ -55,7 +55,12 @@ default-variant <name>
 group <id> <offset> <compressed-size> <uncompressed-size> <sha256>
 variant <name> <model> <features> <params> <group>
 program <variant> <name> <group> <offset> <size> <mode> <sha256>
+helper <name> <group> <offset> <size> <mode> <sha256>
 ```
+
+`helper` entries are executable support files packaged with the suite, such as
+the bundled `mpiexec`/Hydra process manager.  They are not JOREK variants and
+are omitted from `--list`.
 
 `features` and `params` are comma-separated, with `-` for an empty list.
 Names are restricted to `[A-Za-z0-9._+=-]` and may not contain path

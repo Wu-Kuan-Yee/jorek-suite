@@ -130,6 +130,7 @@ class SuiteBuilder:
         self.jorek_version = jorek_version
         self.compression_level = max(0, min(9, compression_level))
         self.variants: List[Variant] = []
+        self.helpers: List[Program] = []
         self.build_id = ""
         self.default_variant = ""
         self._by_name: Dict[str, Variant] = {}
@@ -181,6 +182,17 @@ class SuiteBuilder:
         variant.programs.append(program)
         return program
 
+    def add_helper(self, name: str, path: Path, mode: int = 0o755) -> Program:
+        """Embed an auxiliary executable (for example mpiexec.hydra)."""
+        if not _safe_name(name):
+            raise SuiteError("unsafe helper name: %r" % (name,))
+        path = Path(path)
+        if not path.is_file() or path.stat().st_size == 0:
+            raise SuiteError("helper payload is missing or empty: %s" % path)
+        program = Program(variant="__helpers__", name=name, path=path, mode=mode)
+        self.helpers.append(program)
+        return program
+
     def _build_groups(self) -> List[Group]:
         groups: List[Group] = []
         for index, variant in enumerate(self.variants):
@@ -212,6 +224,32 @@ class SuiteBuilder:
             compressed = compressor.compress(raw) + compressor.flush()
             del raw
             groups.append(Group(index, compressed, list(variant.programs), group_sha, offset))
+        if self.helpers:
+            index = len(groups)
+            chunks = []
+            offset = 0
+            seen = {}
+            for program in self.helpers:
+                data = program.data if program.data is not None else program.path.read_bytes()
+                digest = _sha256(data)
+                if digest in seen:
+                    start, size, _ = seen[digest]
+                else:
+                    start = offset
+                    size = len(data)
+                    chunks.append(data)
+                    offset += size
+                    seen[digest] = (start, size, digest)
+                program.offset = start
+                program.size = size
+                program.sha = digest
+                program.group = index
+            raw = b"".join(chunks)
+            group_sha = _sha256(raw)
+            compressor = zlib.compressobj(self.compression_level, zlib.DEFLATED, -15, 9, zlib.Z_DEFAULT_STRATEGY)
+            compressed = compressor.compress(raw) + compressor.flush()
+            del raw
+            groups.append(Group(index, compressed, list(self.helpers), group_sha, offset))
         return groups
 
     def _manifest_text(self, groups: Sequence[Group]) -> bytes:
@@ -274,6 +312,12 @@ class SuiteBuilder:
                         _hex(program.sha),
                     )
                 )
+        for program in self.helpers:
+            lines.append(
+                "helper %s %d %d %d %o %s"
+                % (program.name, program.group, program.offset, program.size,
+                   program.mode, _hex(program.sha))
+            )
         return ("\n".join(lines) + "\n").encode("ascii")
 
     def _pack(self, groups: Sequence[Group], archive_off: int) -> Tuple[bytes, bytes, bytes, bytes]:

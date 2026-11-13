@@ -330,6 +330,13 @@ def make_variant(
 ) -> VariantSpec:
     if model not in models:
         raise BuildError("unknown JOREK model: %s" % model)
+    effective = replace(features, values=dict(features.values))
+    # The stellarator equilibrium path in models 180/183 still calls the
+    # R-tree API even when USE_QUADTREE is selected.  That upstream mismatch
+    # makes the quadtree variant unlinkable; use the R-tree path instead.
+    if model in ("180", "183"):
+        effective.values["quadtree"] = False
+        effective.values["no_tree"] = False
     info = models[model]
     merged_params = {k: v for k, v in info.params.items() if k in HARDCODED_PARAMS}
     if params:
@@ -348,7 +355,7 @@ def make_variant(
     spec = VariantSpec(
         name="",
         model=model,
-        features=features,
+        features=effective,
         params=merged_params,
         toggles=merged_toggles,
         programs=tuple(programs),
@@ -427,6 +434,96 @@ def patch_settings(source: Path, spec: VariantSpec) -> None:
     write_text(model_settings, model_text)
 
 
+def _apply_source_compatibility_fixes(source: Path, spec: VariantSpec) -> None:
+    """Apply narrowly scoped fixes for known upstream model-source defects.
+
+    These are not feature switches: they remove duplicate declarations that a
+    strict modern compiler rejects.  Each fix is tied to a model and is logged
+    in docs/VARIANTS.md.
+    """
+    if spec.model == "001":
+        path = source / "models" / "model001" / "mod_elt_matrix.f90"
+        text = read_text(path)
+        duplicate = "type (type_node),optional :: aux_nodes(n_vertex_max)\n"
+        if duplicate in text:
+            text = text.replace(duplicate, "", 1)
+            write_text(path, text)
+    if spec.model == "712":
+        path = source / "models" / "model712" / "initialise_parameters.f90"
+        text = read_text(path)
+        if "eta_ARAZ_on == .true." in text:
+            write_text(path, text.replace("eta_ARAZ_on == .true.", "eta_ARAZ_on .eqv. .true."))
+    if spec.model in ("401", "502", "711", "712"):
+        replacements = {
+            "diagnostics/integrals.f90": ("""#else
+        call sources(xpoint, xcase, y_g(ms,mt), Z_xpoint, eq_g(var_psi,ms,mt), psi_axis, &
+          psi_limit, part_src, heat_src)
+#endif""", """#elif (JOREK_MODEL == 401) || (JOREK_MODEL == 502) || (JOREK_MODEL == 711) || (JOREK_MODEL == 712)
+        call sources(xpoint, xcase, y_g(ms,mt), Z_xpoint, eq_g(var_psi,ms,mt), psi_axis, &
+          psi_limit, part_src, heat_src_i, heat_src_e)
+        heat_src = heat_src_i + heat_src_e
+#else
+        call sources(xpoint, xcase, y_g(ms,mt), Z_xpoint, eq_g(var_psi,ms,mt), psi_axis, &
+          psi_limit, part_src, heat_src)
+#endif"""),
+            "diagnostics/mod_integrals3D.f90": ("""#else
+        call sources(xpoint, xcase, y_g(mp,ms,mt), Z_xpoint, psi_as_coord, psi_axis, psi_bnd, &
+                     particle_source,heat_source)
+#endif""", """#elif (JOREK_MODEL == 401) || (JOREK_MODEL == 502) || (JOREK_MODEL == 711) || (JOREK_MODEL == 712)
+        call sources(xpoint, xcase, y_g(mp,ms,mt), Z_xpoint, psi_as_coord, psi_axis, psi_bnd, &
+                     particle_source,heat_source_i,heat_source_e)
+        heat_source = heat_source_i + heat_source_e
+#else
+        call sources(xpoint, xcase, y_g(mp,ms,mt), Z_xpoint, psi_as_coord, psi_axis, psi_bnd, &
+                     particle_source,heat_source)
+#endif"""),
+            "diagnostics/integrals_3D.f90": ("""#else
+        call sources(xpoint, xcase, y_g(ms,mt), ES%Z_xpoint, ps0, ES%psi_axis, psi_limit, &
+                     particle_source,heat_source)
+#endif""", """#elif (JOREK_MODEL == 401) || (JOREK_MODEL == 502) || (JOREK_MODEL == 711) || (JOREK_MODEL == 712)
+        call sources(xpoint, xcase, y_g(ms,mt), ES%Z_xpoint, ps0, ES%psi_axis, psi_limit, &
+                     particle_source,heat_source_i,heat_source_e)
+        heat_source = heat_source_i + heat_source_e
+#else
+        call sources(xpoint, xcase, y_g(ms,mt), ES%Z_xpoint, ps0, ES%psi_axis, psi_limit, &
+                     particle_source,heat_source)
+#endif"""),
+        }
+        for relative, (old, replacement) in replacements.items():
+            path = source / relative
+            text = read_text(path)
+            if old in text:
+                write_text(path, text.replace(old, replacement, 1))
+    if spec.model == "333":
+        path = source / "models" / "model333" / "construct_variables.f90"
+        text = read_text(path)
+        # Fortran is case-insensitive: the dummy VAR_t collides with the
+        # model parameter var_T imported from mod_parameters.  Rename the
+        # dummy argument consistently; all calls are positional.
+        if "VAR_t" in text:
+            write_text(path, text.replace("VAR_t", "VAR_t_d"))
+    if spec.model == "306":
+        path = source / "matrix" / "construct_matrix_mod.f90"
+        text = read_text(path)
+        text = text.replace(
+            "        thread_struct(omp_tid)%delta_s, thread_struct(omp_tid)%delta_t, i_tor_min, i_tor_max,      &\n        aux_nodes, thread_struct(omp_tid)%ELM_pnn)",
+            "        thread_struct(omp_tid)%delta_s, thread_struct(omp_tid)%delta_t, i_tor_min, i_tor_max,      &\n        thread_struct(omp_tid)%ELM_pnn)")
+        text = text.replace(
+            "        i_tor_min, i_tor_max, aux_nodes)\n    endif",
+            "        i_tor_min, i_tor_max)\n    endif")
+        write_text(path, text)
+    if spec.model in ("305", "306"):
+        path = source / "models" / ("model" + spec.model) / "initial_conditions.f90"
+        text = read_text(path)
+        if ":: Omega" not in text.split("contains")[0]:
+            marker = "real*8     :: amplitude, psi, psi_n, theta\n"
+            declaration = ("real*8     :: Omega, dOmega_dpsi, dOmega_dz, dOmega_dpsi2, "
+                           "dOmega_dz2, dOmega_dpsi_dz\n")
+            if marker in text:
+                text = text.replace(marker, marker + declaration, 1)
+                write_text(path, text)
+
+
 def stage_source(jorek_root: Path, destination: Path, spec: VariantSpec) -> Path:
     destination = ensure_dir(destination)
     marker = destination / ".jorek-variant"
@@ -445,6 +542,7 @@ def stage_source(jorek_root: Path, destination: Path, spec: VariantSpec) -> Path
             target.unlink()
         shutil.copy2(source, target)
     patch_settings(destination, spec)
+    _apply_source_compatibility_fixes(destination, spec)
     marker = destination / ".jorek-variant"
     marker.write_text(spec.build_key() + "\n", encoding="utf-8")
     return destination
@@ -855,6 +953,15 @@ class MakeBuilder:
 
     def configure(self, source: Path) -> None:
         write_text(source / "Makefile.inc", self.makefile_inc())
+        if self.fc_family == "gnu":
+            # defaults.mk unconditionally adds the Intel-only -heap-arrays flag
+            # for the stellarator models.  GNU Fortran rejects it (and reports
+            # the confusing "-h" error).  Strip it only for GNU toolchains.
+            defaults = source / "defaults.mk"
+            if defaults.exists():
+                text = read_text(defaults)
+                if "-heap-arrays" in text:
+                    write_text(defaults, text.replace(" -heap-arrays", "").replace("-heap-arrays", ""))
 
     def build(self, source: Path, targets: Sequence[str], env: Optional[Dict[str, str]] = None) -> Tuple[int, List[str]]:
         self.configure(source)

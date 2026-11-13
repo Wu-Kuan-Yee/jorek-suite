@@ -411,9 +411,7 @@ def _collect_variants(args, platform: PlatformInfo, toolchain) -> List[BuiltVari
     _apply_feature_args(features, args)
     if args.matrix == "one":
         models_to_build = [args.model or "303"]
-    elif args.matrix == "models":
-        models_to_build = sorted(models)
-    elif args.matrix == "complete":
+    elif args.matrix in ("models", "maximal", "complete"):
         models_to_build = sorted(models)
     else:
         models_to_build = [args.model or "303"]
@@ -430,6 +428,11 @@ def _collect_variants(args, platform: PlatformInfo, toolchain) -> List[BuiltVari
             toggles = [t for t in info.toggles if t.lower() != "with_refluid"]
             import itertools
             combos = list(itertools.product((False, True), repeat=len(toggles)))
+        elif args.matrix == "maximal" and info.toggles:
+            toggles = [t for t in info.toggles if t.lower() != "with_refluid"]
+            combos = [tuple(True for _ in toggles)]
+            if model == "183":
+                combos = [None]
         else:
             combos = [None]
         for params in grids:
@@ -484,6 +487,139 @@ def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, L
     return exe, [obj, puff_obj]
 
 
+def _mpi_helper_payloads(args, platform: PlatformInfo) -> List[Tuple[str, Path]]:
+    """Collect the Hydra launcher binaries and their private libraries.
+
+    The suite embeds a complete local MPI launcher, not just the MPI library
+    linked into JOREK.  On a cluster the same extracted helper directory can be
+    placed on a shared filesystem and selected with --helper-dir.
+    """
+    prefix = None
+    if getattr(args, "mpi_prefix", None):
+        prefix = Path(args.mpi_prefix)
+    if prefix is None:
+        candidate = _host_tool("mpiexec") or _host_tool("mpirun")
+        if candidate:
+            prefix = Path(candidate).resolve().parent.parent
+        else:
+            for tool in ("mpifort", "mpif90", "mpicc"):
+                candidate = _host_tool(tool)
+                if candidate:
+                    prefix = Path(candidate).resolve().parent.parent
+                    break
+    if prefix is None:
+        return []
+    bindir = prefix / "bin"
+    if not bindir.is_dir():
+        bindir = prefix
+    names = ["mpiexec", "mpiexec.exe", "mpiexec.hydra", "mpirun",
+             "hydra_pmi_proxy", "hydra_pmi_proxy.exe", "hydra_nameserver",
+             "hydra_nameserver.exe", "hydra_persist", "hydra_persist.exe"]
+    work = Path(args.work) / "mpi-helpers"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True, exist_ok=True)
+    selected: List[Path] = []
+    for name in names:
+        source = bindir / name
+        if source.exists():
+            selected.append(source)
+    if not selected:
+        return []
+    # Copy binaries first, then their private shared libraries.
+    copied: Dict[str, Path] = {}
+    for source in selected:
+        target = work / source.name
+        shutil.copy2(source, target)
+        os.chmod(target, 0o755)
+        copied[source.name] = target
+    if platform.is_macos:
+        for target in list(copied.values()):
+            _copy_macos_private_deps(target, work)
+    elif platform.is_linux or platform.is_bsd:
+        for target in list(copied.values()):
+            _copy_elf_private_deps(target, work)
+    elif platform.is_windows:
+        for target in list(copied.values()):
+            _copy_pe_private_deps(target, work)
+    # Ensure the canonical names used by the launcher exist.
+    if "mpiexec" not in copied and "mpiexec.hydra" in copied:
+        shutil.copy2(copied["mpiexec.hydra"], work / "mpiexec")
+        copied["mpiexec"] = work / "mpiexec"
+    if platform.is_windows and "mpiexec" in copied and "mpiexec.exe" not in copied:
+        shutil.copy2(copied["mpiexec"], work / "mpiexec.exe")
+        copied["mpiexec.exe"] = work / "mpiexec.exe"
+    # Return only real binaries, not duplicated aliases, but keep canonical
+    # mpiexec and the Hydra proxy.
+    result = []
+    seen = set()
+    for name in ("mpiexec", "mpiexec.exe", "mpiexec.hydra", "hydra_pmi_proxy",
+                 "hydra_pmi_proxy.exe", "hydra_nameserver", "hydra_nameserver.exe",
+                 "hydra_persist", "hydra_persist.exe"):
+        path = work / name
+        if path.exists() and name not in seen:
+            seen.add(name)
+            result.append((name, path))
+    for path in sorted(work.iterdir()):
+        if path.name in seen or not path.is_file():
+            continue
+        if path.suffix in (".dylib", ".so", ".dll") or ".so." in path.name:
+            seen.add(path.name)
+            result.append((path.name, path))
+    return result
+
+
+def _copy_macos_private_deps(binary: Path, directory: Path) -> None:
+    proc = subprocess.run(["otool", "-L", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    if proc.returncode != 0:
+        return
+    for line in proc.stdout.decode("utf-8", "replace").splitlines()[1:]:
+        dep = line.strip().split(" (compatibility")[0].strip()
+        if not dep or dep.startswith(("/usr/lib/", "/System/Library/", "/Library/Apple/")):
+            continue
+        source = Path(dep)
+        if not source.is_file():
+            continue
+        target = directory / source.name
+        if not target.exists():
+            shutil.copy2(source, target)
+        subprocess.run(["install_name_tool", "-change", dep, "@loader_path/" + source.name, str(binary)],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        # The newly copied library may itself have non-system dependencies; a
+        # single level is sufficient for Hydra's hwloc dependency.
+        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(binary)],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(target)],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+
+def _copy_elf_private_deps(binary: Path, directory: Path) -> None:
+    proc = subprocess.run(["ldd", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    if proc.returncode != 0:
+        return
+    for line in proc.stdout.decode("utf-8", "replace").splitlines():
+        if "=>" not in line:
+            continue
+        dep = line.split("=>", 1)[1].strip().split(" ")[0]
+        if not dep or dep.startswith(("/lib/", "/lib64/", "/usr/lib")):
+            continue
+        source = Path(dep)
+        if source.is_file():
+            target = directory / source.name
+            if not target.exists():
+                shutil.copy2(source, target)
+
+
+def _copy_pe_private_deps(binary: Path, directory: Path) -> None:
+    objdump = which("objdump") or which("x86_64-w64-mingw32-objdump")
+    if not objdump:
+        return
+    proc = subprocess.run([objdump, "-p", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    for dll in re.findall(r"DLL Name:\s*(\S+)", proc.stdout.decode("utf-8", "replace")):
+        # System DLLs are not shipped; MinGW runtime DLLs are searched on PATH.
+        continue
+
+
 def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> Path:
     launcher, objects = _compile_launcher(args, platform, Path(args.work))
     output = Path(args.output) if args.output else (Path(args.work) / "dist" / ("jorek-suite" + platform.exe_suffix))
@@ -504,6 +640,9 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
         )
         for program_name, path in sorted(result.programs.items()):
             builder.add_program(variant, program_name, path)
+    helpers = _mpi_helper_payloads(args, platform)
+    for helper_name, helper_path in helpers:
+        builder.add_helper(helper_name, helper_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     if platform.is_macos:
         cc = os.environ.get("CC") or which("cc") or "cc"
@@ -704,7 +843,18 @@ def cmd_matrix(args) -> int:
     models = jorek.discover_models(Path(args.root))
     features = jorek.FeatureSet()
     _apply_feature_args(features, args)
-    if args.matrix == "complete":
+    if args.matrix == "maximal":
+        specs = []
+        for model in sorted(models):
+            info = models[model]
+            # Model 183 hits an upstream algexpr2fort bounds bug when both
+            # extensions are enabled; the R-tree/default variant is valid.
+            toggles = {t: True for t in info.toggles if t.lower() != "with_refluid"}
+            if model == "183":
+                toggles = {}
+            specs.append(jorek.make_variant(model, models, features, toggles=toggles,
+                                            programs=tuple(args._program_names)))
+    elif args.matrix == "complete":
         specs = jorek.complete_variants(models, features, programs=tuple(args._program_names))
     else:
         specs = [jorek.make_variant(m, models, features, programs=tuple(args._program_names)) for m in sorted(models)]
@@ -915,7 +1065,11 @@ def make_parser() -> argparse.ArgumentParser:
                 --set/--param-grid to generate parameter combinations; the
                 launcher selects the matching variant at run time.
               * Model families (180, 183, 600, 750) are expanded to every
-                supported extension combination by --matrix complete.
+                supported extension combination by --matrix complete;
+                --matrix maximal enables all supported extensions at once.
+              * The suite embeds the MPICH/Hydra mpiexec and process manager.
+                Use --mpi -np N for local runs and --hostfile/--launcher ssh
+                for clusters with a shared filesystem.
               * Proprietary WSMP and the legacy HIPS backend are never
                 downloaded; supply them explicitly if you are licensed to use
                 them.  IMAS and ParaView Catalyst are large optional layers.
@@ -966,7 +1120,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_bootstrap)
 
     p = sub.add_parser("matrix", help="list the model/feature/parameter matrix")
-    p.add_argument("--matrix", choices=("models", "complete"), default="models")
+    p.add_argument("--matrix", choices=("models", "complete", "maximal"), default="models")
     p.add_argument("--model", help="restrict to one model (models matrix only)")
     p.add_argument("--programs", choices=("main", "most", "all"), default="main")
     p.add_argument("--json", action="store_true")
@@ -1018,7 +1172,7 @@ def make_parser() -> argparse.ArgumentParser:
 
 
 def _add_build_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--matrix", choices=("one", "models", "complete"), default="one", help="variant set (default one)")
+    parser.add_argument("--matrix", choices=("one", "models", "complete", "maximal"), default="one", help="variant set (default one)")
     parser.add_argument("--model", default=None, help="JOREK physics model (default 303)")
     parser.add_argument("--set", dest="set_param", action="append", default=[], metavar="NAME=VALUE", help="override a hard-coded parameter")
     parser.add_argument("--param-grid", action="append", default=[], metavar="NAME=V1,V2", help="build a Cartesian parameter grid")

@@ -465,6 +465,8 @@ typedef struct {
     size_t nvariants;
     Program *programs;
     size_t nprograms;
+    Program *helpers;
+    size_t nhelpers;
     Group *groups;
     size_t ngroups;
 } Suite;
@@ -503,6 +505,23 @@ static int js_add_program(Suite *s, const char *variant, const char *name,
     p = &s->programs[s->nprograms++];
     memset(p, 0, sizeof(*p));
     p->variant = js_strdup(variant);
+    p->name = js_strdup(name);
+    p->group = group;
+    p->off = off;
+    p->size = size;
+    p->mode = mode;
+    if (parse_hex32(sha_hex, p->sha) != 0) return -1;
+    return 0;
+}
+
+static int js_add_helper(Suite *s, const char *name, int group, uint64_t off,
+                         uint64_t size, unsigned mode, const char *sha_hex) {
+    Program *p;
+    if (!js_is_safe_name(name) || group < 0) return -1;
+    s->helpers = (Program *)js_realloc(s->helpers, (s->nhelpers + 1) * sizeof(Program));
+    p = &s->helpers[s->nhelpers++];
+    memset(p, 0, sizeof(*p));
+    p->variant = js_strdup("__helpers__");
     p->name = js_strdup(name);
     p->group = group;
     p->off = off;
@@ -566,6 +585,13 @@ static int js_parse_manifest(Suite *s) {
                                (uint64_t)strtoull(fields[5], NULL, 10),
                                (unsigned)strtoul(fields[6], NULL, 8), fields[7]) != 0)
                 js_die(3, "invalid digest on line %d", lineno);
+        } else if (js_streq(fields[0], "helper")) {
+            if (nf < 7) js_die(3, "malformed helper on line %d", lineno);
+            if (js_add_helper(s, fields[1], atoi(fields[2]),
+                              (uint64_t)strtoull(fields[3], NULL, 10),
+                              (uint64_t)strtoull(fields[4], NULL, 10),
+                              (unsigned)strtoul(fields[5], NULL, 8), fields[6]) != 0)
+                js_die(3, "invalid helper digest on line %d", lineno);
         } else if (js_streq(fields[0], "group")) {
             if (nf < 6) js_die(3, "malformed group on line %d", lineno);
             if (js_add_group(s, atoi(fields[1]),
@@ -701,6 +727,7 @@ static Program *js_find_program(Suite *s, Variant *v, const char *name) {
     }
     return NULL;
 }
+
 
 static Program *js_default_program(Suite *s, Variant *v) {
     size_t i;
@@ -899,6 +926,7 @@ static void js_print_info(Suite *s) {
     printf("  variants      : %lu\n", (unsigned long)s->nvariants);
     printf("  programs      : %lu\n", (unsigned long)s->nprograms);
     printf("  groups        : %lu\n", (unsigned long)s->ngroups);
+    printf("  helpers       : %lu\n", (unsigned long)s->nhelpers);
     printf("  payload       : %.2f MiB uncompressed\n", (double)payload / 1048576.0);
     printf("  file          : %s\n", s->path);
 }
@@ -1177,6 +1205,183 @@ static char *js_materialize(Suite *s, Variant *v, Program *p, int ephemeral, int
     }
 }
 
+
+/* ------------------------------------------------------------------------- */
+/* Embedded MPI launcher                                                    */
+/* ------------------------------------------------------------------------- */
+static char *js_helpers_dir(Suite *s) {
+    char id[65];
+    char *root = js_cache_root();
+    char *a;
+    hex32(s->manifest_sha, id);
+    a = js_path_join(root, id);
+    free(root);
+    root = js_path_join(a, "helpers");
+    free(a);
+    return root;
+}
+
+static int js_which_path(const char *name, char *out, size_t outsz) {
+    const char *path = getenv("PATH");
+    if (!path) return -1;
+    while (*path) {
+        const char *sep = strchr(path, ':');
+#ifdef _WIN32
+        const char *semi = strchr(path, ';');
+        if (!sep || (semi && semi < sep)) sep = semi;
+#endif
+        size_t n = sep ? (size_t)(sep - path) : strlen(path);
+        if (n > 0 && n + strlen(name) + 2 < outsz) {
+            memcpy(out, path, n);
+            out[n] = JS_SEP;
+            strcpy(out + n + 1, name);
+#ifdef _WIN32
+            if (strchr(name, '.') == NULL) strcat(out, ".exe");
+#endif
+            if (js_file_size(out, &(uint64_t){0}) == 0) return 0;
+        }
+        if (!sep) break;
+        path = sep + 1;
+    }
+    return -1;
+}
+
+static char *js_prepare_helpers(Suite *s, const char *override_dir) {
+    char *dir = override_dir && *override_dir ? js_strdup(override_dir) : js_helpers_dir(s);
+    size_t i;
+    js_mkdir_p(dir);
+    for (i = 0; i < s->nhelpers; ++i) {
+        Program *h = &s->helpers[i];
+        char *dest = js_path_join(dir, h->name);
+        if (!js_file_has_sha(dest, h->sha)) {
+            if (js_extract_program(s, h, dest, 0) != 0)
+                js_die(4, "cannot extract MPI helper %s", h->name);
+        }
+#ifndef _WIN32
+        chmod(dest, (mode_t)(h->mode ? h->mode : 0755));
+#endif
+        free(dest);
+    }
+    return dir;
+}
+
+static void js_set_helper_env(const char *dir) {
+#ifdef _WIN32
+    const char *path_sep = ";";
+#else
+    const char *path_sep = ":";
+#endif
+    const char *old = getenv("PATH");
+    char *path = (char *)js_malloc(strlen(dir) + (old ? strlen(old) : 0) + 2);
+    strcpy(path, dir);
+    strcat(path, path_sep);
+    if (old) strcat(path, old);
+    js_setenv("PATH", path, 1);
+#ifdef __APPLE__
+    old = getenv("DYLD_LIBRARY_PATH");
+    {
+        char *lib = (char *)js_malloc(strlen(dir) + (old ? strlen(old) : 0) + 2);
+        strcpy(lib, dir);
+        strcat(lib, ":");
+        if (old) strcat(lib, old);
+        js_setenv("DYLD_LIBRARY_PATH", lib, 1);
+        free(lib);
+    }
+#else
+    old = getenv("LD_LIBRARY_PATH");
+    {
+        char *lib = (char *)js_malloc(strlen(dir) + (old ? strlen(old) : 0) + 2);
+        strcpy(lib, dir);
+        strcat(lib, ":");
+        if (old) strcat(lib, old);
+        js_setenv("LD_LIBRARY_PATH", lib, 1);
+        free(lib);
+    }
+#endif
+    free(path);
+}
+
+#ifdef _WIN32
+static int js_run_windows(const char *path, char **args, const void *stdin_data,
+                          size_t stdin_len, int wait_child);
+#endif
+
+static int js_run_mpi(Suite *s, const char *suite_path, Variant *v, Program *p,
+                      const char *np, const char *hosts, const char *hostfile,
+                      const char *launcher, const char *helper_dir,
+                      int print_only, char **child, int nchild) {
+    char *dir = NULL;
+    char mpiexec_buf[PATH_MAX];
+    const char *mpiexec = NULL;
+    char **args;
+    int k = 0, i;
+#ifndef _WIN32
+    int py = 0;
+#endif
+    if (s->nhelpers > 0) {
+        dir = js_prepare_helpers(s, helper_dir);
+        js_set_helper_env(dir);
+        {
+            char *candidate = js_path_join(dir, "mpiexec");
+            if (js_file_size(candidate, &(uint64_t){0}) == 0)
+                mpiexec = candidate;
+            else {
+                free(candidate);
+                candidate = js_path_join(dir, "mpiexec.exe");
+                if (js_file_size(candidate, &(uint64_t){0}) == 0)
+                    mpiexec = candidate;
+                else {
+                    free(candidate);
+                    candidate = js_path_join(dir, "mpiexec.hydra");
+                    if (js_file_size(candidate, &(uint64_t){0}) == 0)
+                        mpiexec = candidate;
+                    else
+                        free(candidate);
+                }
+            }
+        }
+    }
+    if (!mpiexec) {
+        if (js_which_path("mpiexec", mpiexec_buf, sizeof(mpiexec_buf)) == 0)
+            mpiexec = mpiexec_buf;
+        else if (js_which_path("mpirun", mpiexec_buf, sizeof(mpiexec_buf)) == 0)
+            mpiexec = mpiexec_buf;
+        else
+            js_die(5, "no embedded mpiexec and no system mpiexec/mpirun found");
+    }
+    args = (char **)js_calloc((size_t)nchild + 32, sizeof(char *));
+    args[k++] = (char *)mpiexec;
+    args[k++] = (char *)"-np";
+    args[k++] = (char *)(np && *np ? np : "1");
+    if (hostfile && *hostfile) { args[k++] = (char *)"-f"; args[k++] = (char *)hostfile; }
+    if (hosts && *hosts) { args[k++] = (char *)"-hosts"; args[k++] = (char *)hosts; }
+    if (launcher && *launcher) { args[k++] = (char *)"-launcher"; args[k++] = (char *)launcher; }
+    args[k++] = (char *)suite_path;
+    args[k++] = (char *)"--variant";
+    args[k++] = v->name;
+    args[k++] = (char *)"--program";
+    args[k++] = p->name;
+    args[k++] = (char *)"--";
+    for (i = 0; i < nchild; ++i) args[k++] = child[i];
+    args[k] = NULL;
+    if (print_only) {
+        for (i = 0; i < k; ++i) printf("%s%s", i ? " " : "", args[i]);
+        printf("\n");
+        return 0;
+    }
+#ifdef _WIN32
+    {
+        int rc = js_run_windows(mpiexec, args, NULL, 0, 1);
+        return rc;
+    }
+#else
+    execv(mpiexec, args);
+    (void)py;
+    js_die(5, "cannot execute %s: %s", mpiexec, strerror(errno));
+#endif
+    return 1;
+}
+
 /* ------------------------------------------------------------------------- */
 /* Child process                                                            */
 /* ------------------------------------------------------------------------- */
@@ -1365,6 +1570,12 @@ static void js_usage(const char *prog) {
 "  --print-command         Print the resolved executable path and exit.\n"
 "\n"
 "EXECUTION\n"
+"  --mpi, --mpi-run        Launch through the embedded MPICH/Hydra mpiexec.\n"
+"  --np N, -n N            Number of MPI ranks (default 1).\n"
+"  --hosts LIST            Comma-separated Hydra host list.\n"
+"  --hostfile FILE         Hydra host file.\n"
+"  --launcher NAME         Hydra launcher: fork, ssh, slurm, srun, ...\n"
+"  --helper-dir DIR        Use a shared directory containing extracted MPI helpers.\n"
 "  --wait                  Wait for the child and forward its exit status.\n"
 "  --quiet                 Suppress informational messages.\n"
 "  -v, --verbose           Print extraction and selection details.\n"
@@ -1450,6 +1661,9 @@ int main(int argc, char **argv) {
     const char *opt_variant = NULL, *opt_model = NULL, *opt_features = NULL;
     const char *opt_params = NULL, *opt_program = NULL;
     const char *opt_extract = NULL, *opt_extract_one = NULL, *opt_cache = NULL;
+    const char *opt_np = "1", *opt_hosts = NULL, *opt_hostfile = NULL;
+    const char *opt_launcher = NULL, *opt_helper_dir = NULL, *opt_extract_helpers = NULL;
+    int opt_mpi = 0;
     int opt_list = 0, opt_list_programs = 0, opt_list_features = 0, opt_info = 0;
     int opt_json = 0, opt_extract_only = 0, opt_no_cache = 0, opt_ephemeral = 0;
     int opt_wait = 0, opt_print_command = 0, opt_auto = -1, opt_help = 0;
@@ -1494,6 +1708,13 @@ int main(int argc, char **argv) {
         else if (js_streq(a, "--no-cache")) opt_no_cache = 1;
         else if (js_streq(a, "--ephemeral")) opt_ephemeral = 1;
         else if (js_streq(a, "--wait")) opt_wait = 1;
+        else if (js_streq(a, "--mpi") || js_streq(a, "--mpi-run")) opt_mpi = 1;
+        else if (js_streq(a, "--np") || js_streq(a, "-np") || js_streq(a, "-n")) { if (++i >= argc) js_die(2, "--np requires an argument"); opt_np = argv[i]; }
+        else if (js_streq(a, "--hosts")) { if (++i >= argc) js_die(2, "--hosts requires an argument"); opt_hosts = argv[i]; }
+        else if (js_streq(a, "--hostfile")) { if (++i >= argc) js_die(2, "--hostfile requires an argument"); opt_hostfile = argv[i]; }
+        else if (js_streq(a, "--launcher")) { if (++i >= argc) js_die(2, "--launcher requires an argument"); opt_launcher = argv[i]; }
+        else if (js_streq(a, "--helper-dir")) { if (++i >= argc) js_die(2, "--helper-dir requires a directory"); opt_helper_dir = argv[i]; }
+        else if (js_streq(a, "--extract-helpers")) { if (++i >= argc) js_die(2, "--extract-helpers requires a directory"); opt_extract_helpers = argv[i]; }
         else if (js_streq(a, "--print-command")) opt_print_command = 1;
         else if (js_streq(a, "--auto")) opt_auto = 1;
         else if (js_streq(a, "--no-auto")) opt_auto = 0;
@@ -1516,6 +1737,11 @@ int main(int argc, char **argv) {
     if (!self) self = js_self_path(argv[0]);
     js_load_suite(self, &suite);
 
+    if (opt_extract_helpers) {
+        char *dir = js_prepare_helpers(&suite, opt_extract_helpers);
+        printf("%s\n", dir);
+        return 0;
+    }
     if (opt_list) { js_print_variants(&suite, opt_json); return 0; }
     if (opt_info) { js_print_info(&suite); return 0; }
     if (opt_list_features) {
@@ -1572,6 +1798,15 @@ int main(int argc, char **argv) {
         if (!program) js_die(2, "variant '%s' contains no programs", variant->name);
         if (opt_program && strcmp(opt_program, "jorek2_main") != 0)
             js_die(2, "variant '%s' has no program '%s'", variant->name, opt_program);
+    }
+    if (opt_mpi) {
+        int nchild = argc - arg_start;
+        char **mpi_child = (char **)js_calloc((size_t)nchild + 1, sizeof(char *));
+        int ci;
+        for (ci = 0; ci < nchild; ++ci) mpi_child[ci] = argv[arg_start + ci];
+        mpi_child[nchild] = NULL;
+        return js_run_mpi(&suite, self, variant, program, opt_np, opt_hosts, opt_hostfile,
+                          opt_launcher, opt_helper_dir, opt_print_command, mpi_child, nchild);
     }
     if (opt_extract || opt_extract_one) {
         const char *dir = opt_extract ? opt_extract : opt_extract_one;

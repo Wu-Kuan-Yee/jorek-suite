@@ -65,6 +65,7 @@ class SuiteTest(unittest.TestCase):
         v2 = builder.add_variant("model199-full", "199", ("hdf5",), ("n_tor=1",))
         builder.add_program(v2, "jorek2_main", self.payload_b)
         builder.add_program(v2, "jorek2vtk", self.payload_b)
+        builder.add_helper("mpiexec", self.payload_a)
         if sys.platform == "darwin":
             builder.build_macho_section(self.suite, [self.cc], [self.launcher_obj, self.puff_obj])
         else:
@@ -121,6 +122,15 @@ class SuiteTest(unittest.TestCase):
         proc = self.run_suite(stdin="! @jorek_model: 199\n&in1\n/\n")
         self.assertEqual(proc.returncode, 7, proc.stdout)
         self.assertIn("model=199", proc.stdout)
+
+    def test_mpi_helper_extract_and_command(self) -> None:
+        proc = self.run_suite("--mpi", "-np", "2", "--model", "303", "--print-command")
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertIn("mpiexec", proc.stdout)
+        directory = self.tmp / "helpers"
+        proc = self.run_suite("--extract-helpers", str(directory))
+        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertTrue((directory / "mpiexec").exists())
 
     def test_append_footer(self) -> None:
         if sys.platform == "darwin":

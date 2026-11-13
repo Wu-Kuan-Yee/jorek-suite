@@ -35,6 +35,12 @@ class VariantTest(unittest.TestCase):
         models = jorek.discover_models(root)
         specs = jorek.complete_variants(models, jorek.FeatureSet())
         self.assertGreaterEqual(len(specs), 60)
+        maximal = []
+        for model in sorted(models):
+            info = models[model]
+            toggles = {} if model == "183" else {t: True for t in info.toggles if t.lower() != "with_refluid"}
+            maximal.append(jorek.make_variant(model, models, jorek.FeatureSet(), toggles=toggles))
+        self.assertEqual(len(maximal), len(models))
         names = [s.name for s in specs]
         self.assertEqual(len(names), len(set(names)))
 
