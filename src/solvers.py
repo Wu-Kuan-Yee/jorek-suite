@@ -117,8 +117,12 @@ class SolverBuild:
             self.cmake_build(build, "metis", install=True)
 
         merged = self.prefix / "lib" / "libmetis-merged.a"
-        if not merged.exists():
-            split = self.prefix / "lib" / "libmetis.a"
+        marker = self.prefix / "lib" / ".metis-merged-ok"
+        if not merged.exists() or not marker.exists():
+            split = self.prefix / "lib" / "libmetis-split.a"
+            if not split.exists():
+                split = self.prefix / "lib" / "libmetis.a"
+                shutil.copy2(split, self.prefix / "lib" / "libmetis-split.a")
             gklib = self.prefix / "lib" / "libGKlib.a"
             if self.platform.is_macos and self.libtool:
                 run([self.libtool, "-static", "-o", str(merged), str(split), str(gklib)],
@@ -130,14 +134,13 @@ class SolverBuild:
                 run([self.ar, "x", str(split)], cwd=m, log=self.log("metis-merge"))
                 run([self.ar, "x", str(gklib)], cwd=g, log=self.log("metis-merge"))
                 objects = []
-                for directory in (m, g):
+                for directory, tag in ((m, "metis_"), (g, "gklib_")):
                     for obj in directory.glob("*.o"):
-                        target = tmp / ("m_" + obj.name)
+                        target = tmp / (tag + obj.name)
                         shutil.copy2(obj, target)
                         objects.append(str(target))
                 run([self.ar, "rcs", str(merged)] + objects, log=self.log("metis-merge"))
-            shutil.copy2(self.prefix / "lib" / "libmetis.a",
-                         self.prefix / "lib" / "libmetis-split.a")
+            write_text(marker, "ok\n")
             shutil.copy2(merged, self.prefix / "lib" / "libmetis.a")
 
     # -- PaStiX 6 ----------------------------------------------------------
