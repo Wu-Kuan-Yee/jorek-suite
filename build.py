@@ -57,6 +57,32 @@ def _default_root() -> Path:
 
 DEFAULT_ROOT = _default_root()
 WORK_DEFAULT = HERE / "build"
+JOREK_GIT_URL = "https://github.com/iterorganization/JOREK.git"
+
+
+def _ensure_jorek_source(args) -> Path:
+    """Validate --root, optionally cloning JOREK from its public repository."""
+    root = Path(args.root).expanduser()
+    if (root / "jorek2_main.f90").exists() and (root / "models").is_dir():
+        return root
+    if not getattr(args, "fetch_source", False):
+        raise BuildError(
+            "JOREK source not found at %s.  Pass --root /path/to/JOREK, set "
+            "JOREK_ROOT, or use --fetch-source to clone %s." % (root, JOREK_GIT_URL)
+        )
+    git = which("git") or "git"
+    if root.exists() and any(root.iterdir()):
+        raise BuildError(
+            "cannot clone JOREK into %s: directory is not empty and does not "
+            "look like a JOREK checkout" % root
+        )
+    root.parent.mkdir(parents=True, exist_ok=True)
+    url = getattr(args, "jorek_url", None) or JOREK_GIT_URL
+    print("JOREK source not found; cloning %s into %s" % (url, root))
+    run([git, "clone", "--depth", "1", url, str(root)])
+    if not (root / "jorek2_main.f90").exists():
+        raise BuildError("cloned source at %s does not look like JOREK" % root)
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +942,7 @@ def _find_tool_in_prefix(prefix: Path, name: str) -> Optional[Path]:
 
 
 def cmd_matrix(args) -> int:
+    _ensure_jorek_source(args)
     models = jorek.discover_models(Path(args.root))
     features = jorek.FeatureSet()
     _apply_feature_args(features, args)
@@ -953,6 +980,7 @@ def cmd_matrix(args) -> int:
 
 def cmd_build(args) -> int:
     banner(args)
+    _ensure_jorek_source(args)
     platform = _platform()
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
@@ -1002,6 +1030,7 @@ def _ensure_source_deps(args) -> None:
 
 def cmd_dist(args) -> int:
     banner(args)
+    _ensure_jorek_source(args)
     platform = _platform()
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
@@ -1071,6 +1100,7 @@ def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[
 def cmd_full(args) -> int:
     """Build the complete reference suite: all-solver + PaStiX5 variants."""
     banner(args)
+    _ensure_jorek_source(args)
     platform = _platform()
     if not (platform.is_linux or platform.is_macos or platform.is_bsd):
         raise BuildError("the full solver builder is currently supported on Linux, macOS and the BSDs")
@@ -1282,6 +1312,8 @@ def make_parser() -> argparse.ArgumentParser:
         """),
     )
     parser.add_argument("--root", default=str(DEFAULT_ROOT), help="JOREK source checkout (default: %(default)s)")
+    parser.add_argument("--fetch-source", action="store_true", help="clone JOREK into --root if it is missing")
+    parser.add_argument("--jorek-url", default=JOREK_GIT_URL, help="JOREK git URL used by --fetch-source")
     parser.add_argument("--work", default=os.environ.get("JOREK_BUILD_DIR", str(WORK_DEFAULT)), help="build directory (default: %(default)s)")
     parser.add_argument("--jobs", "-j", type=int, default=common.cpu_count(), help="parallel build jobs (default: CPU count)")
     parser.add_argument("--verbose", "-v", action="store_true", help="show every command")
@@ -1402,6 +1434,8 @@ def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
     """Let users place global options after the subcommand as well."""
     common_opts = [
         ("--root", dict(default=argparse.SUPPRESS)),
+        ("--fetch-source", dict(action="store_true", default=argparse.SUPPRESS)),
+        ("--jorek-url", dict(default=argparse.SUPPRESS)),
         ("--work", dict(default=argparse.SUPPRESS)),
         ("--jobs", dict(type=int, default=argparse.SUPPRESS)),
         ("--verbose", dict(action="store_true", default=argparse.SUPPRESS)),

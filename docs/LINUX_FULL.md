@@ -9,6 +9,16 @@ python3 build.py full \
   --jobs 32
 ```
 
+If JOREK is not present, let the same command clone it:
+
+```sh
+python3 build.py full --fetch-source --work /big/jorek-build --jobs 32
+```
+
+Without `--fetch-source` the builder only searches for an existing checkout;
+it does not silently download source.  The default search order is
+`JOREK_ROOT`, `../JOREK`, the parent directory, and the current directory.
+
 `build.py` is the cross-platform implementation; the same command works on
 Linux and macOS (and the POSIX backend generally).  It:
 

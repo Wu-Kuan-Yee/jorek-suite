@@ -32,6 +32,10 @@ operating-system libraries that are unavoidable on that platform.
 python3 build.py full --root ../JOREK --work /big/jorek-build --jobs 32
 ```
 
+If the source tree is absent, add `--fetch-source`; without it, `build.py`
+searches `JOREK_ROOT`, `../JOREK`, the parent directory and the current
+directory, and fails if none is a JOREK checkout.
+
 This produces a single `jorek-suite` with MUMPS, PaStiX 5, PaStiX 6 and
 STRUMPACK variants.  See [LINUX_FULL.md](docs/LINUX_FULL.md).
 
