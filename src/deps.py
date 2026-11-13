@@ -724,8 +724,15 @@ def build_openblas(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     else:
         args.append("DYNAMIC_ARCH=1")
     run(args, cwd=src, env=env, log=ctx.log_path(dep.name))
-    run([ctx.make, "PREFIX=%s" % ctx.prefix, "install"],
-        cwd=src, env=env, log=ctx.log_path(dep.name))
+    # OpenBLAS install honours the same build flags; without NO_SHARED the
+    # install target tries to copy a shared object that was never built.
+    install_args = [ctx.make, "PREFIX=%s" % ctx.prefix, "install",
+                    "NO_SHARED=1", "USE_OPENMP=1", "NUM_THREADS=64", "NO_LAPACKE=0"]
+    if ctx.platform.is_macos and ctx.platform.machine == "arm64":
+        install_args += ["TARGET=ARMV8", "DYNAMIC_ARCH=0"]
+    else:
+        install_args += ["DYNAMIC_ARCH=1"]
+    run(install_args, cwd=src, env=env, log=ctx.log_path(dep.name))
 
 
 def build_hdf5(ctx: BuildContext, dep: Dependency, src: Path) -> None:
