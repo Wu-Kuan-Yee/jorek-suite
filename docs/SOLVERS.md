@@ -5,10 +5,10 @@ compile-time switches are:
 
 | Backend | Compile switch | Typical namelist flags | Build status in this repository |
 | --- | --- | --- | --- |
-| MUMPS | `USE_MUMPS` | `use_mumps`, `use_mumps_eq`, `use_mumps_prj` | source recipe; **embedded in the reference suite** |
-| PaStiX 6 | `USE_PASTIX6` | `use_pastix`, `use_pastix_eq`, `use_pastix_prj` | CMake recipe; needs PaStiX 6 + ordering libraries |
-| PaStiX 5 | `USE_PASTIX` | same | legacy `pastix-conf` recipe; Murge optional |
-| STRUMPACK | `USE_STRUMPACK` | `use_strumpack`, ... | CMake recipe; needs ScaLAPACK/METIS/ParMETIS/SCOTCH |
+| MUMPS | `USE_MUMPS` | `use_mumps`, `use_mumps_eq`, `use_mumps_prj` | **statically embedded in the reference suite** |
+| PaStiX 6 | `USE_PASTIX6` | `use_pastix`, `use_pastix_eq`, `use_pastix_prj` | **statically embedded in the reference suite** |
+| PaStiX 5 | `USE_PASTIX` | same | legacy `pastix-conf` recipe; not in the reference suite |
+| STRUMPACK | `USE_STRUMPACK` | `use_strumpack`, ... | **statically embedded in the reference suite** |
 | WSMP | `USE_WSMP` | `use_wsmp` | proprietary IBM library; never downloaded |
 | HIPS | `USE_HIPS` | historical switch | in-house legacy library; not publicly distributed |
 
@@ -25,15 +25,22 @@ jorek-suite --model 303 --solver strumpack < input
 the same model, each linked with a different backend; the launcher picks the
 matching one.  A single binary can also contain several backends
 (`build.py --solver all`), in which case the namelist's `use_*` flags choose
-the backend at run time.
+the backend at run time.  The reference suite uses the latter layout:
+
+```sh
+jorek-suite --solver all --model 303 < input
+# then choose use_mumps / use_pastix / use_strumpack in the namelist
+```
+
+The all-solver binary is one executable per model; it does not contain the
+full cross-product of every solver and every feature combination.
 
 ## Why the reference suite uses MUMPS
 
-MUMPS was the only backend whose complete static dependency chain was
-available and validated in the reference build (MPI, ScaLAPACK, OpenBLAS,
-METIS, MUMPS/PORD).  PaStiX and STRUMPACK are supported by the build logic and
-have source recipes, but their static builds have additional third-party
-dependencies and were not part of that artifact.
+The reference build now has static MUMPS, PaStiX 6 and STRUMPACK libraries.
+PaStiX uses METIS/GKlib and hwloc; STRUMPACK uses METIS/GKlib, ScaLAPACK,
+OpenBLAS and its OpenMP runtime.  All three are linked into each model binary,
+and the static dependency check still reports system libraries only.
 
 The builder does not pretend that a proprietary backend exists.  WSMP and HIPS
 require a user-supplied, licensed installation; their switches are preserved

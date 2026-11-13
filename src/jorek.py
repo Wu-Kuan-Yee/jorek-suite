@@ -448,6 +448,23 @@ def _apply_source_compatibility_fixes(source: Path, spec: VariantSpec) -> None:
         if duplicate in text:
             text = text.replace(duplicate, "", 1)
             write_text(path, text)
+    if spec.features.solver in ("pastix6", "pastix5", "all"):
+        path = source / "solvers" / "ptx.cpp"
+        text = read_text(path)
+        if "#include <mkl_spblas.h>" in text:
+            text = text.replace("#include <mkl_spblas.h>\n#include <mkl.h>\n", "")
+        # PaStiX 6.3 added the leading dimension to task_solve.
+        text = text.replace(
+            "pastix_task_solve(pastix_data, nrhs, x, spm->n);",
+            "pastix_task_solve(pastix_data, spm->n, nrhs, x, spm->n);")
+        write_text(path, text)
+    if spec.features.solver in ("strumpack", "all"):
+        path = source / "solvers" / "spk.cpp"
+        text = read_text(path)
+        if "#include <sys/sysinfo.h>" in text:
+            write_text(path, text.replace(
+                "#include <sys/sysinfo.h>",
+                "#ifndef __APPLE__\n#include <sys/sysinfo.h>\n#endif"))
     if spec.model == "712":
         path = source / "models" / "model712" / "initialise_parameters.f90"
         text = read_text(path)
@@ -741,8 +758,8 @@ class MakeBuilder:
         lines.append("")
         solver = feature.solver
         lines.append("USE_HIPS = %d" % (1 if solver == "hips" else 0))
-        lines.append("USE_PASTIX = %d" % (1 if solver in ("pastix5", "all") else 0))
-        lines.append("USE_PASTIX_MURGE = %d" % (1 if solver in ("pastix5", "all") and feature.enabled("murge") else 0))
+        lines.append("USE_PASTIX = %d" % (1 if solver == "pastix5" else 0))
+        lines.append("USE_PASTIX_MURGE = %d" % (1 if solver == "pastix5" and feature.enabled("murge") else 0))
         lines.append("USE_PASTIX6 = %d" % (1 if solver in ("pastix6", "all") else 0))
         lines.append("USE_MUMPS = %d" % (1 if solver in ("mumps", "all") else 0))
         lines.append("USE_WSMP = %d" % (1 if solver == "wsmp" else 0))
@@ -824,7 +841,7 @@ class MakeBuilder:
             lines.extend(self._mumps_block())
         if solver in ("pastix6", "all"):
             lines.extend(self._pastix6_block())
-        if solver in ("pastix5", "all"):
+        if solver == "pastix5":
             lines.extend(self._pastix5_block())
         if solver in ("strumpack", "all"):
             lines.extend(self._strumpack_block())
@@ -907,7 +924,9 @@ class MakeBuilder:
 
     def _pastix6_block(self) -> List[str]:
         layout = self.layout
-        names = ("libpastixf.a", "libspmf.a", "libpastix.a", "libspm.a", "libpastix_kernels.a")
+        names = ("libpastix.a", "libspm.a", "libpastix_kernels.a",
+                 "libmetis.a", "libGKlib.a", "libscalapack.a",
+                 "libopenblas.a", "libomp.a", "libhwloc.a")
         libs = []
         for name in names:
             try:
@@ -918,7 +937,9 @@ class MakeBuilder:
             "PASTIX6_HOME = %s" % (layout.prefixes[0] if layout.prefixes else ""),
             "LIB_PASTIX = %s" % " ".join(libs),
             "LIB_PASTIX6_BLAS = %s" % layout.lib("libopenblas.a"),
-            "INC_PASTIX = -I%s" % (layout.include("pastix.h").parent if layout.include("pastix.h") else ""),
+            "INC_PASTIX = -I%s -I%s" % (
+                layout.include("pastix.h").parent if layout.include("pastix.h") else "",
+                layout.include("spm.h").parent if layout.include("spm.h") else ""),
             "USE_PASTIX6 = 1",
         ]
         return lines
@@ -945,10 +966,25 @@ class MakeBuilder:
     def _strumpack_block(self) -> List[str]:
         layout = self.layout
         lib = layout.lib("libstrumpack.a")
+        inc = layout.include("StrumpackSparseSolverMPIDist.hpp").parent
+        libs = [str(lib)]
+        # STRUMPACK is built on METIS/GKlib, ScaLAPACK, BLAS and its OpenMP
+        # runtime; static archives need these on the final link line.
+        for name in ("libmetis.a", "libGKlib.a", "libscalapack.a",
+                     "libopenblas.a", "libomp.a"):
+            try:
+                libs.append(str(layout.lib(name)))
+            except BuildError:
+                pass
         return [
             "USE_STRUMPACK = 1",
-            "STRUMPACKLIB = %s" % lib,
-            "STRUMPACKINC = -I%s" % layout.include("strumpack.h").parent,
+            "STRUMPACKLIB = %s" % " ".join(libs),
+            "STRUMPACKINC = -I%s" % inc,
+            # Put ScaLAPACK before OpenBLAS so the LAPACK auxiliary symbols
+            # come from one archive rather than triggering a duplicate in
+            # OpenBLAS (notably dcombssq).
+            "LIBLAPACK = %s %s" % (
+                layout.lib("libscalapack.a"), layout.lib("libopenblas.a")),
         ]
 
     def configure(self, source: Path) -> None:

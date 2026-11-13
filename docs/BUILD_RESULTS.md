@@ -9,8 +9,8 @@ record, not a platform-independent promise.
 * Python 3.9.6
 * Homebrew GCC 16.2.0 and gfortran, MPICH 5.0.2
 * Static test prefix: HDF5 1.14.6 (parallel, Fortran/HL), FFTW 3.3.11,
-  OpenBLAS, METIS, MUMPS 5.7.3 (PORD), ScaLAPACK 2.2.0, Boost.Math, zlib,
-  libaec/SZIP
+  OpenBLAS, METIS 5.2.1 + GKlib, MUMPS 5.7.3 (PORD), PaStiX 6.3.2,
+  STRUMPACK 7.1.0, ScaLAPACK 2.2.0, Boost.Math, zlib, libaec/SZIP
 * JOREK `v2.26.09.0-95-g8c8e9c3d21db`
 
 ## Command
@@ -19,12 +19,13 @@ record, not a platform-independent promise.
 python3 build.py \
   --deps none --dep-prefix ... --mpi-prefix /opt/homebrew/opt/mpich \
   --keep-source --jobs 12 \
-  dist --matrix maximal --programs most \
-  --output build/dist/jorek-suite-all
+  dist --matrix maximal --solver all --programs most \
+  --output build/dist/jorek-suite
 ```
 
-`--matrix maximal` builds one variant per model with every supported model
-extension enabled:
+`--matrix maximal --solver all` builds one variant per model with every
+supported model extension enabled and links all available direct solvers
+(MUMPS, PaStiX 6 and STRUMPACK) into each binary.  The model extensions are:
 180 (`with_TiTe`, `with_vpar`), 600 (all five), 750 (all three).  Model 183 is
 built with its default extension set because `algexpr2fort` has an upstream
 bounds defect when both 183 extensions are enabled.  `--programs most` adds the
@@ -34,10 +35,10 @@ curated diagnostic set to every model.
 
 | Property | Value |
 | --- | --- |
-| Models / variants | 21 |
-| Packed programs | 496 |
-| Uncompressed payload | 10447.98 MiB |
-| Single-file size | 2.53 GiB |
+| Models / variants | 21, solver=all (MUMPS + PaStiX6 + STRUMPACK) |
+| Packed programs | 426 |
+| Uncompressed payload | 11577.70 MiB |
+| Single-file size | 2.75 GiB |
 | Runtime script/helper files | 168 + 6 MPI + jorek-tool (175 total) |
 | Static dependency check | passed (system libraries only) |
 | macOS code signature | valid ad-hoc signature |
@@ -65,6 +66,9 @@ documented here so the transformation is auditable.
 | 333 | `construct_variables.f90` | rename dummy `VAR_t` colliding with parameter `var_T` |
 | 401/502/711/712 | diagnostic integral modules | pass the third source argument required by those models |
 | 712 | `initialise_parameters.f90` | replace invalid logical `==` with `.eqv.` |
+| PaStiX6 | `solvers/ptx.cpp` | remove MKL-only headers; update `pastix_task_solve` to the 6.3 signature |
+| STRUMPACK | `solvers/spk.cpp` | guard the Linux-only `sys/sysinfo.h` include on macOS |
+| STRUMPACK | link order | link ScaLAPACK before OpenBLAS to avoid the duplicate `dcombssq` |
 
 The complete family matrix (`--matrix complete`, 65 variants) remains available
 for users who need each extension combination separately; some combinations
@@ -74,9 +78,9 @@ skipped.
 ## Running the reference suite
 
 ```sh
-build/dist/jorek-suite-all --info
-build/dist/jorek-suite-all --model 303 --program jorek2vtk < input
-build/dist/jorek-suite-all --mpi -np 8 --model 303 < namelist
+build/dist/jorek-suite --info
+build/dist/jorek-suite --solver all --model 303 --program jorek2vtk < input
+build/dist/jorek-suite --mpi -np 8 --solver all --model 303 < namelist
 ```
 
 For a cluster, see [MPI.md](MPI.md).  The helper directory must be on shared
