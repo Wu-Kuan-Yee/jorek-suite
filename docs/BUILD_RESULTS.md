@@ -35,12 +35,14 @@ curated diagnostic set to every model.
 | Property | Value |
 | --- | --- |
 | Models / variants | 21 |
-| Packed programs | 430 |
-| Uncompressed payload | 9123.77 MiB |
-| Single-file size | 2.19 GiB |
+| Packed programs | 471 |
+| Uncompressed payload | 9919.80 MiB |
+| Single-file size | 2.39 GiB |
+| Runtime script/helper files | 168 + 6 MPI helpers |
 | Static dependency check | passed (system libraries only) |
 | macOS code signature | valid ad-hoc signature |
 | Embedded MPI helpers | `mpiexec`, `hydra_pmi_proxy`, `hydra_nameserver`, `hydra_persist`, `mpiexec.hydra`, `libhwloc` |
+| Embedded runtime scripts | `util/`, `run_jorek/`, scheduler templates, particle post-processing |
 | Local MPI smoke test | `--mpi -np 2 --model 600 -- --version` reports 2 MPI ranks |
 
 Programs per model include `jorek2_main`, `jorek2vtk`, `jorek2_postproc`,

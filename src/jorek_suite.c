@@ -273,6 +273,18 @@ static int js_is_safe_name(const char *s) {
     return 1;
 }
 
+static int js_is_safe_relpath(const char *s) {
+    char *copy, *part, *save = NULL;
+    int ok = 1;
+    if (!s || !*s || s[0] == '/' || s[0] == '\\') return 0;
+    copy = js_strdup(s);
+    for (part = strtok_r(copy, "/\\", &save); part; part = strtok_r(NULL, "/\\", &save)) {
+        if (!js_is_safe_name(part)) { ok = 0; break; }
+    }
+    free(copy);
+    return ok;
+}
+
 #ifdef _WIN32
 static void js_strlcpy(char *dst, const char *src, size_t size) {
     if (size == 0) return;
@@ -517,7 +529,7 @@ static int js_add_program(Suite *s, const char *variant, const char *name,
 static int js_add_helper(Suite *s, const char *name, int group, uint64_t off,
                          uint64_t size, unsigned mode, const char *sha_hex) {
     Program *p;
-    if (!js_is_safe_name(name) || group < 0) return -1;
+    if (!js_is_safe_relpath(name) || group < 0) return -1;
     s->helpers = (Program *)js_realloc(s->helpers, (s->nhelpers + 1) * sizeof(Program));
     p = &s->helpers[s->nhelpers++];
     memset(p, 0, sizeof(*p));
@@ -728,6 +740,13 @@ static Program *js_find_program(Suite *s, Variant *v, const char *name) {
     return NULL;
 }
 
+
+static Program *js_find_helper(Suite *s, const char *name) {
+    size_t i;
+    for (i = 0; i < s->nhelpers; ++i)
+        if (js_streq(s->helpers[i].name, name)) return &s->helpers[i];
+    return NULL;
+}
 
 static Program *js_default_program(Suite *s, Variant *v) {
     size_t i;
@@ -1308,7 +1327,7 @@ static int js_run_windows(const char *path, char **args, const void *stdin_data,
 
 static int js_run_mpi(Suite *s, const char *suite_path, Variant *v, Program *p,
                       const char *np, const char *hosts, const char *hostfile,
-                      const char *launcher, const char *helper_dir,
+                      const char *launcher, const char *helper_dir, const char *scheduler,
                       int print_only, char **child, int nchild) {
     char *dir = NULL;
     char mpiexec_buf[PATH_MAX];
@@ -1349,13 +1368,85 @@ static int js_run_mpi(Suite *s, const char *suite_path, Variant *v, Program *p,
         else
             js_die(5, "no embedded mpiexec and no system mpiexec/mpirun found");
     }
+    /* Scheduler adapters.  Hydra has native ssh/slurm/lsf/sge launchers;
+       PBS/Torque expose PBS_NODEFILE, Flux and Slurm are better launched by
+       their own native commands.  Condor parallel jobs are site-specific, so
+       refuse to pretend a generic launch works. */
+    {
+        const char *sched = (scheduler && *scheduler) ? scheduler : "auto";
+        if (js_streq(sched, "auto")) {
+            if (getenv("SLURM_JOB_ID")) sched = "slurm";
+            else if (getenv("FLUX_URI")) sched = "flux";
+            else if (getenv("PBS_JOBID") || getenv("PBS_ENVIRONMENT")) sched = "pbs";
+            else if (getenv("LSB_JOBID")) sched = "lsf";
+            else if (getenv("SGE_JOB_ID")) sched = "sge";
+            else if (getenv("CONDOR_CONFIG")) sched = "condor";
+            else sched = "fork";
+        }
+        if (js_streq(sched, "condor")) {
+            js_die(5, "HTCondor parallel jobs require a site-specific parallel universe; "
+                      "submit the suite through condor_submit, or pass --launcher ssh "
+                      "with a host file provided by your site");
+        }
+        if (js_streq(sched, "flux")) {
+            if (js_which_path("flux", mpiexec_buf, sizeof(mpiexec_buf)) != 0)
+                js_die(5, "--scheduler flux requested but 'flux' is not in PATH");
+            mpiexec = mpiexec_buf;
+            launcher = "flux";
+        } else if (js_streq(sched, "slurm")) {
+            if (js_which_path("srun", mpiexec_buf, sizeof(mpiexec_buf)) == 0) {
+                mpiexec = mpiexec_buf;
+                launcher = "srun";
+            } else {
+                launcher = "slurm";
+            }
+        } else if (js_streq(sched, "lsf")) {
+            launcher = "lsf";
+        } else if (js_streq(sched, "sge")) {
+            launcher = "sge";
+        } else if (js_streq(sched, "pbs") || js_streq(sched, "torque") || js_streq(sched, "pbspro") || js_streq(sched, "openpbs")) {
+            const char *nodefile = getenv("PBS_NODEFILE");
+            if ((!hostfile || !*hostfile) && nodefile && *nodefile) {
+                char *generated = js_path_join(dir ? dir : ".", "pbs_hostfile");
+                FILE *nf = js_fopen(nodefile, "r");
+                FILE *of = generated ? js_fopen(generated, "w") : NULL;
+                char line[1024];
+                if (nf && of) {
+                    while (fgets(line, sizeof(line), nf)) fputs(line, of);
+                    fclose(of);
+                    hostfile = generated;
+                }
+                if (nf) fclose(nf);
+            }
+            launcher = "ssh";
+        } else if (js_streq(sched, "ssh")) {
+            launcher = "ssh";
+        } else if (js_streq(sched, "rsh")) {
+            launcher = "rsh";
+        } else if (js_streq(sched, "manual")) {
+            launcher = "manual";
+        } else if (js_streq(sched, "fork") || js_streq(sched, "local")) {
+            launcher = "fork";
+        } else if (!js_streq(sched, "none")) {
+            js_die(2, "unknown scheduler '%s' (use auto, fork, ssh, slurm, pbs, lsf, sge, flux, condor)", sched);
+        }
+    }
     args = (char **)js_calloc((size_t)nchild + 32, sizeof(char *));
     args[k++] = (char *)mpiexec;
-    args[k++] = (char *)"-np";
-    args[k++] = (char *)(np && *np ? np : "1");
-    if (hostfile && *hostfile) { args[k++] = (char *)"-f"; args[k++] = (char *)hostfile; }
-    if (hosts && *hosts) { args[k++] = (char *)"-hosts"; args[k++] = (char *)hosts; }
-    if (launcher && *launcher) { args[k++] = (char *)"-launcher"; args[k++] = (char *)launcher; }
+    if (launcher && js_streq(launcher, "flux")) {
+        args[k++] = (char *)"run";
+        args[k++] = (char *)"-n";
+        args[k++] = (char *)(np && *np ? np : "1");
+    } else if (launcher && js_streq(launcher, "srun")) {
+        args[k++] = (char *)"-n";
+        args[k++] = (char *)(np && *np ? np : "1");
+    } else {
+        args[k++] = (char *)"-np";
+        args[k++] = (char *)(np && *np ? np : "1");
+        if (hostfile && *hostfile) { args[k++] = (char *)"-f"; args[k++] = (char *)hostfile; }
+        if (hosts && *hosts) { args[k++] = (char *)"-hosts"; args[k++] = (char *)hosts; }
+        if (launcher && *launcher) { args[k++] = (char *)"-launcher"; args[k++] = (char *)launcher; }
+    }
     args[k++] = (char *)suite_path;
     args[k++] = (char *)"--variant";
     args[k++] = v->name;
@@ -1380,6 +1471,50 @@ static int js_run_mpi(Suite *s, const char *suite_path, Variant *v, Program *p,
     js_die(5, "cannot execute %s: %s", mpiexec, strerror(errno));
 #endif
     return 1;
+}
+
+
+static int js_run_script(Suite *s, const char *name, char **child, int nchild, int print_only) {
+    char *dir = js_prepare_helpers(s, NULL);
+    Program *p = js_find_helper(s, name);
+    char *path;
+    char **args;
+    int i, k = 0;
+    if (!p) js_die(2, "no embedded script named '%s' (use --list-helpers)", name);
+    path = js_path_join(dir, name);
+    args = (char **)js_calloc((size_t)nchild + 2, sizeof(char *));
+    args[k++] = path;
+    for (i = 0; i < nchild; ++i) args[k++] = child[i];
+    args[k] = NULL;
+    js_setenv("JOREK_RUNTIME_DIR", dir, 1);
+    if (print_only) {
+        for (i = 0; i < k; ++i) printf("%s%s", i ? " " : "", args[i]);
+        printf("\n");
+        return 0;
+    }
+#ifdef _WIN32
+    {
+        const char *suffix = strrchr(path, '.');
+        if (suffix && (_stricmp(suffix, ".sh") == 0)) {
+            char **wrapped = (char **)js_calloc((size_t)k + 3, sizeof(char *));
+            wrapped[0] = (char *)"bash";
+            wrapped[1] = path;
+            for (i = 1; i < k; ++i) wrapped[i + 1] = args[i];
+            wrapped[k + 1] = NULL;
+            return js_run_windows("bash", wrapped, NULL, 0, 1);
+        }
+        return js_run_windows(path, args, NULL, 0, 1);
+    }
+#else
+    execv(path, args);
+    js_die(5, "cannot execute script %s: %s", path, strerror(errno));
+#endif
+    return 1;
+}
+
+static void js_list_helpers(Suite *s) {
+    size_t i;
+    for (i = 0; i < s->nhelpers; ++i) printf("%s\n", s->helpers[i].name);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1544,6 +1679,7 @@ static void js_usage(const char *prog) {
 "  --variant NAME          Select an embedded variant by exact name.\n"
 "  --model N               Select the variant for physics model N (e.g. 303 or model303).\n"
 "  --features LIST         Require comma-separated features (hdf5,fftw,mumps,...).\n"
+"  --solver NAME           Require a solver backend (mumps, pastix6, strumpack, ...).\n"
 "  --params LIST           Require comma-separated hard-coded parameters\n"
 "                          (e.g. n_tor=3,n_plane=4,n_order=3).\n"
 "  --program NAME          Select an embedded executable (default: jorek2_main).\n"
@@ -1574,7 +1710,8 @@ static void js_usage(const char *prog) {
 "  --np N, -n N            Number of MPI ranks (default 1).\n"
 "  --hosts LIST            Comma-separated Hydra host list.\n"
 "  --hostfile FILE         Hydra host file.\n"
-"  --launcher NAME         Hydra launcher: fork, ssh, slurm, srun, ...\n"
+"  --launcher NAME         Hydra launcher: fork, ssh, slurm, lsf, sge, ...\n"
+"  --scheduler NAME        auto, fork, ssh, rsh, slurm, pbs, torque, lsf, sge, flux, manual.\n"
 "  --helper-dir DIR        Use a shared directory containing extracted MPI helpers.\n"
 "  --wait                  Wait for the child and forward its exit status.\n"
 "  --quiet                 Suppress informational messages.\n"
@@ -1658,12 +1795,13 @@ static char *js_read_stdin(size_t *len) {
 int main(int argc, char **argv) {
     Suite suite;
     const char *self = NULL;
-    const char *opt_variant = NULL, *opt_model = NULL, *opt_features = NULL;
+    const char *opt_variant = NULL, *opt_model = NULL, *opt_features = NULL, *opt_solver = NULL;
     const char *opt_params = NULL, *opt_program = NULL;
     const char *opt_extract = NULL, *opt_extract_one = NULL, *opt_cache = NULL;
     const char *opt_np = "1", *opt_hosts = NULL, *opt_hostfile = NULL;
     const char *opt_launcher = NULL, *opt_helper_dir = NULL, *opt_extract_helpers = NULL;
-    int opt_mpi = 0;
+    const char *opt_script = NULL, *opt_scheduler = NULL;
+    int opt_mpi = 0, opt_list_helpers = 0;
     int opt_list = 0, opt_list_programs = 0, opt_list_features = 0, opt_info = 0;
     int opt_json = 0, opt_extract_only = 0, opt_no_cache = 0, opt_ephemeral = 0;
     int opt_wait = 0, opt_print_command = 0, opt_auto = -1, opt_help = 0;
@@ -1714,7 +1852,10 @@ int main(int argc, char **argv) {
         else if (js_streq(a, "--hostfile")) { if (++i >= argc) js_die(2, "--hostfile requires an argument"); opt_hostfile = argv[i]; }
         else if (js_streq(a, "--launcher")) { if (++i >= argc) js_die(2, "--launcher requires an argument"); opt_launcher = argv[i]; }
         else if (js_streq(a, "--helper-dir")) { if (++i >= argc) js_die(2, "--helper-dir requires a directory"); opt_helper_dir = argv[i]; }
-        else if (js_streq(a, "--extract-helpers")) { if (++i >= argc) js_die(2, "--extract-helpers requires a directory"); opt_extract_helpers = argv[i]; }
+        else if (js_streq(a, "--extract-helpers") || js_streq(a, "--extract-runtime")) { if (++i >= argc) js_die(2, "--extract-helpers requires a directory"); opt_extract_helpers = argv[i]; }
+        else if (js_streq(a, "--script")) { if (++i >= argc) js_die(2, "--script requires a name"); opt_script = argv[i]; }
+        else if (js_streq(a, "--scheduler")) { if (++i >= argc) js_die(2, "--scheduler requires a name"); opt_scheduler = argv[i]; }
+        else if (js_streq(a, "--list-helpers") || js_streq(a, "--list-scripts")) opt_list_helpers = 1;
         else if (js_streq(a, "--print-command")) opt_print_command = 1;
         else if (js_streq(a, "--auto")) opt_auto = 1;
         else if (js_streq(a, "--no-auto")) opt_auto = 0;
@@ -1723,6 +1864,7 @@ int main(int argc, char **argv) {
         else if (js_streq(a, "--variant")) { if (++i >= argc) js_die(2, "--variant requires an argument"); opt_variant = argv[i]; }
         else if (js_streq(a, "--model")) { if (++i >= argc) js_die(2, "--model requires an argument"); opt_model = argv[i]; }
         else if (js_streq(a, "--features")) { if (++i >= argc) js_die(2, "--features requires an argument"); opt_features = argv[i]; }
+        else if (js_streq(a, "--solver")) { if (++i >= argc) js_die(2, "--solver requires an argument"); opt_solver = argv[i]; }
         else if (js_streq(a, "--params")) { if (++i >= argc) js_die(2, "--params requires an argument"); opt_params = argv[i]; }
         else if (js_streq(a, "--program")) { if (++i >= argc) js_die(2, "--program requires an argument"); opt_program = argv[i]; }
         else if (js_streq(a, "--extract")) { if (++i >= argc) js_die(2, "--extract requires a directory"); opt_extract = argv[i]; }
@@ -1737,10 +1879,29 @@ int main(int argc, char **argv) {
     if (!self) self = js_self_path(argv[0]);
     js_load_suite(self, &suite);
 
+    if (opt_list_helpers) { js_list_helpers(&suite); return 0; }
     if (opt_extract_helpers) {
         char *dir = js_prepare_helpers(&suite, opt_extract_helpers);
         printf("%s\n", dir);
         return 0;
+    }
+    if (opt_script) {
+        int nchild = argc - arg_start;
+        char **script_args = (char **)js_calloc((size_t)nchild + 1, sizeof(char *));
+        int ci;
+        for (ci = 0; ci < nchild; ++ci) script_args[ci] = argv[arg_start + ci];
+        script_args[nchild] = NULL;
+        return js_run_script(&suite, opt_script, script_args, nchild, opt_print_command);
+    }
+    {
+        static char feature_buf[1024];
+        if (opt_solver && *opt_solver) {
+            if (opt_features && *opt_features)
+                snprintf(feature_buf, sizeof(feature_buf), "%s,solver=%s", opt_features, opt_solver);
+            else
+                snprintf(feature_buf, sizeof(feature_buf), "solver=%s", opt_solver);
+            opt_features = feature_buf;
+        }
     }
     if (opt_list) { js_print_variants(&suite, opt_json); return 0; }
     if (opt_info) { js_print_info(&suite); return 0; }
@@ -1806,7 +1967,8 @@ int main(int argc, char **argv) {
         for (ci = 0; ci < nchild; ++ci) mpi_child[ci] = argv[arg_start + ci];
         mpi_child[nchild] = NULL;
         return js_run_mpi(&suite, self, variant, program, opt_np, opt_hosts, opt_hostfile,
-                          opt_launcher, opt_helper_dir, opt_print_command, mpi_child, nchild);
+                          opt_launcher, opt_helper_dir, opt_scheduler, opt_print_command,
+                          mpi_child, nchild);
     }
     if (opt_extract || opt_extract_one) {
         const char *dir = opt_extract ? opt_extract : opt_extract_one;

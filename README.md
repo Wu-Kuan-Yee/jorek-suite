@@ -220,6 +220,9 @@ model inference from a JOREK namelist.
 * [Variant and feature matrix](docs/VARIANTS.md)
 * [Platform notes](docs/PLATFORMS.md)
 * [MPI and clusters](docs/MPI.md)
+* [Job scheduler adapters](docs/SCHEDULERS.md)
+* [Solver backends](docs/SOLVERS.md)
+* [Embedded runtime scripts](docs/RUNTIME_SCRIPTS.md)
 * [Single-file format](docs/SUITE_FORMAT.md)
 * [Security](docs/SECURITY.md)
 

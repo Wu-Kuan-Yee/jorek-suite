@@ -70,6 +70,16 @@ def _safe_name(name: str) -> bool:
     return all(ch in allowed for ch in name)
 
 
+def _safe_relpath(name: str) -> bool:
+    """Allow a relative path for a runtime script/helper, never traversal."""
+    if not name or name.startswith(("/", "\\")):
+        return False
+    parts = name.replace("\\", "/").split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return False
+    return all(_safe_name(part) for part in parts)
+
+
 def _sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
@@ -184,11 +194,11 @@ class SuiteBuilder:
 
     def add_helper(self, name: str, path: Path, mode: int = 0o755) -> Program:
         """Embed an auxiliary executable (for example mpiexec.hydra)."""
-        if not _safe_name(name):
-            raise SuiteError("unsafe helper name: %r" % (name,))
+        if not _safe_relpath(name):
+            raise SuiteError("unsafe helper path: %r" % (name,))
         path = Path(path)
-        if not path.is_file() or path.stat().st_size == 0:
-            raise SuiteError("helper payload is missing or empty: %s" % path)
+        if not path.is_file():
+            raise SuiteError("helper payload is missing: %s" % path)
         program = Program(variant="__helpers__", name=name, path=path, mode=mode)
         self.helpers.append(program)
         return program

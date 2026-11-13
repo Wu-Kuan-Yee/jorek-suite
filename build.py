@@ -487,6 +487,61 @@ def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, L
     return exe, [obj, puff_obj]
 
 
+def _runtime_payloads(root: Path) -> List[Tuple[str, Path]]:
+    """Collect JOREK's user-facing runtime scripts and scheduler templates.
+
+    Build-only helpers (config.sh, makedepend, obj_deps, compile/launch test
+    drivers, equation code generation) are intentionally excluded: the suite
+    is a runtime distribution, not the JOREK build tree.
+    """
+    root = Path(root)
+    exclude_dirs = {
+        "util/equation_codegen", "util/data_extractor", "util/__pycache__",
+    }
+    exclude_names = {
+        "config.sh", "makedepend", "obj_deps", "compile_tests.sh",
+        "compile_run_unit_tests.py", "launch_tests.sh",
+        "generate_codes_for_norder_gt_7.py", "install.sh",
+    }
+    result: List[Tuple[str, Path]] = []
+    for top in ("util", "run_jorek"):
+        base = root / top
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root).as_posix()
+            if any(rel == d or rel.startswith(d + "/") for d in exclude_dirs):
+                continue
+            if path.name in exclude_names or path.suffix == ".pyc":
+                continue
+            if path.suffix.lower() in (".o", ".a", ".so", ".dylib", ".dll", ".exe"):
+                continue
+            result.append((rel, path))
+    # Runtime scheduler examples and job templates.
+    for pattern in ("namelist/**/*.job", "reg_tests/job_scripts/**/*.job",
+                    "reg_tests/job_scripts/**/*.sh", "particles/**/*.sh"):
+        for path in sorted(root.glob(pattern)):
+            if path.is_file():
+                result.append((path.relative_to(root).as_posix(), path))
+    # Python post-processing helpers that live outside util/.
+    for pattern in ("particles/postprocessors/utils/*.py", "particles/utils/*.py",
+                    "diagnostics/catalyst/*.py", "communication/IMAS/*.py"):
+        for path in sorted(root.glob(pattern)):
+            if path.is_file():
+                result.append((path.relative_to(root).as_posix(), path))
+    # De-duplicate while preserving deterministic order.
+    seen = set()
+    unique = []
+    for rel, path in result:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        unique.append((rel, path))
+    return unique
+
+
 def _mpi_helper_payloads(args, platform: PlatformInfo) -> List[Tuple[str, Path]]:
     """Collect the Hydra launcher binaries and their private libraries.
 
@@ -643,6 +698,8 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
     helpers = _mpi_helper_payloads(args, platform)
     for helper_name, helper_path in helpers:
         builder.add_helper(helper_name, helper_path)
+    for rel, path in _runtime_payloads(Path(args.root)):
+        builder.add_helper(rel, path)
     output.parent.mkdir(parents=True, exist_ok=True)
     if platform.is_macos:
         cc = os.environ.get("CC") or which("cc") or "cc"
