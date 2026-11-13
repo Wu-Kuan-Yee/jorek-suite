@@ -43,6 +43,7 @@ if [ "$FROM_SOURCE" = 1 ] && [ -z "$PREFIX" ]; then
     bootstrap --with-deps
   CORE="$WORK/deps"
   SOLVERS="$WORK/solvers"
+  if [ -d "$CORE/bin" ]; then export PATH="$CORE/bin:$PATH"; fi
   echo "== building PaStiX 5/6 and STRUMPACK into $SOLVERS"
   PREFIX="$SOLVERS" CORE_PREFIX="$CORE" WORK="$WORK/solver-src" JOBS="$JOBS" \
     "$HERE/scripts/build_solvers_linux.sh"
