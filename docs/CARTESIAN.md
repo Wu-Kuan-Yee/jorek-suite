@@ -61,7 +61,7 @@ unsupported points are skipped or reported:
 
 ## Disk
 
-The reference build’s 21 maximal variants (two solver sets, 447 programs) is
+The reference build’s 21 models × two solver sets (447 programs) is
 3.12 GiB compressed.  A full feature Cartesian product easily exceeds this by
 orders of magnitude.  Use `--output` on a large filesystem, keep the per-variant
 object trees (`--keep-source`) only if you need incremental rebuilds, and
