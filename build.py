@@ -487,6 +487,21 @@ def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, L
     return exe, [obj, puff_obj]
 
 
+def _compile_runtime_tool(args, platform: PlatformInfo, work: Path) -> Path:
+    """Compile the native replacement for the common JOREK runtime scripts."""
+    cxx = os.environ.get("CXX") or _host_tool("c++") or _host_tool("g++") or _host_tool("clang++")
+    if not cxx:
+        raise BuildError("a C++ compiler is required to build jorek-tool")
+    source = HERE / "src" / "jorek_tool.cpp"
+    output = Path(work) / "jorek-tool" / ("jorek-tool" + platform.exe_suffix)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    flags = ["-O2", "-std=c++17", "-Wall", "-Wextra"]
+    if platform.is_linux or platform.is_bsd:
+        flags += ["-static-libstdc++", "-static-libgcc"]
+    run([cxx] + flags + [str(source), "-o", str(output)])
+    return output
+
+
 def _runtime_payloads(root: Path) -> List[Tuple[str, Path]]:
     """Collect JOREK's user-facing runtime scripts and scheduler templates.
 
@@ -700,6 +715,8 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
         builder.add_helper(helper_name, helper_path)
     for rel, path in _runtime_payloads(Path(args.root)):
         builder.add_helper(rel, path)
+    tool = _compile_runtime_tool(args, platform, Path(args.work))
+    builder.add_helper("bin/jorek-tool" + platform.exe_suffix, tool)
     output.parent.mkdir(parents=True, exist_ok=True)
     if platform.is_macos:
         cc = os.environ.get("CC") or which("cc") or "cc"

@@ -1858,6 +1858,7 @@ int main(int argc, char **argv) {
         else if (js_streq(a, "--helper-dir")) { if (++i >= argc) js_die(2, "--helper-dir requires a directory"); opt_helper_dir = argv[i]; }
         else if (js_streq(a, "--extract-helpers") || js_streq(a, "--extract-runtime")) { if (++i >= argc) js_die(2, "--extract-helpers requires a directory"); opt_extract_helpers = argv[i]; }
         else if (js_streq(a, "--script")) { if (++i >= argc) js_die(2, "--script requires a name"); opt_script = argv[i]; }
+        else if (js_streq(a, "--tool")) { opt_script = "bin/jorek-tool"; }
         else if (js_streq(a, "--scheduler")) { if (++i >= argc) js_die(2, "--scheduler requires a name"); opt_scheduler = argv[i]; }
         else if (js_streq(a, "--list-helpers") || js_streq(a, "--list-scripts")) opt_list_helpers = 1;
         else if (js_streq(a, "--print-command")) opt_print_command = 1;

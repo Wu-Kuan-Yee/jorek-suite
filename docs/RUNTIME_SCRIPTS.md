@@ -47,6 +47,32 @@ the selected file with the arguments after `--`.  Scripts that read files from
 the current directory still do so; run the command from your simulation
 directory.
 
+## Native `jorek-tool`
+
+The suite also contains a C++17 helper, `bin/jorek-tool`, which replaces the
+most common text/restart utilities without any interpreter:
+
+```sh
+jorek-suite --tool log-info jorek.log
+jorek-suite --tool live-list macroscopic_vars.dat
+jorek-suite --tool live-extract energies energies.dat
+jorek-suite --tool plot-live energies,n_tor -o live.svg
+jorek-suite --tool restarts -only 100-500 -s
+jorek-suite --tool rst-type .
+```
+
+It covers:
+
+* log analysis (`analyze_logfile.sh`);
+* restart file discovery/step selection (`select_restart_files.sh`);
+* restart type detection (`detect_rst_type.sh`);
+* live-data listing/extraction (`extract_live_data.sh`);
+* dependency-free SVG plotting of live-data columns.
+
+The remaining scripts are still embedded for specialized tasks (ParaView,
+IMAS, R, gnuplot, particle post-processing).  The native tool is the
+zero-interpreter path for routine simulation/post-processing work.
+
 ## Interpreter dependencies
 
 The **JOREK solver itself is native** and needs no interpreter.  A runtime
