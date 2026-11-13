@@ -14,6 +14,7 @@ Run ``python3 build.py --help`` for the full command reference and
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import platform
@@ -38,6 +39,7 @@ if str(SRC) not in sys.path:
 import common
 import deps
 import jorek
+import solvers
 import suite
 from common import BuildError, Downloader, PlatformInfo, ensure_dir, human_bytes, read_json, run, which, write_json, write_text
 
@@ -1021,6 +1023,136 @@ def cmd_dist(args) -> int:
     return 0
 
 
+def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[Path],
+                          output: Path) -> Path:
+    """Merge build.py variant JSON manifests into one native suite."""
+    launcher, objects = _compile_launcher(args, platform, Path(args.work))
+    builder = suite.SuiteBuilder(
+        launcher=launcher, suite_version=VERSION,
+        jorek_version=common.git_describe(Path(args.root)),
+        compression_level=args.compression,
+    )
+    first = True
+    total_programs = 0
+    for directory in variant_dirs:
+        for manifest in sorted(Path(directory).glob("*.json")):
+            data = read_json(manifest, None)
+            if not data:
+                continue
+            variant = builder.add_variant(
+                data["name"], data["model"], data["features"], data["params"],
+                make_default=first)
+            first = False
+            for name, path in sorted(data.get("programs", {}).items()):
+                candidate = Path(path)
+                if candidate.is_file():
+                    builder.add_program(variant, name, candidate)
+                    total_programs += 1
+    for helper_name, helper_path in _mpi_helper_payloads(args, platform):
+        builder.add_helper(helper_name, helper_path)
+    for rel, path in _runtime_payloads(Path(args.root)):
+        builder.add_helper(rel, path)
+    builder.add_helper("bin/jorek-tool" + platform.exe_suffix,
+                       _compile_runtime_tool(args, platform, Path(args.work)))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if platform.is_macos:
+        cc = os.environ.get("CC") or which("cc") or "cc"
+        builder.build_macho_section(output, [cc], objects)
+    else:
+        builder.build(output)
+    ok, offenders = jorek.verify_static(output, platform)
+    if not ok and not getattr(args, "allow_shared", False):
+        raise BuildError("suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
+    print("Merged %d variants, %d programs into %s (%s)" % (
+        len(builder.variants), total_programs, output, human_bytes(output.stat().st_size)))
+    return output
+
+
+def cmd_full(args) -> int:
+    """Build the complete reference suite: all-solver + PaStiX5 variants."""
+    banner(args)
+    platform = _platform()
+    if not (platform.is_linux or platform.is_macos or platform.is_bsd):
+        raise BuildError("the full solver builder is currently supported on Linux, macOS and the BSDs")
+    work = Path(args.work)
+    ensure_dir(work)
+    core_prefix = work / "deps"
+    solver_prefix = Path(args.solver_prefix) if args.solver_prefix else work / "solvers"
+
+    if args.dep_prefix:
+        core_prefix = Path(args.dep_prefix[0])
+    else:
+        # Build the core static stack with MUMPS.  The solver stack is built
+        # by solvers.py so its upstream quirks stay auditable in one place.
+        core_args = copy.copy(args)
+        core_args.solver = "mumps"
+        core_args.profile = "full"
+        core_args.deps = "source"
+        _ensure_source_deps(core_args)
+
+    if not args.no_build_solvers and not args.dep_prefix:
+        cc, cxx, fc, mpifc = _find_compilers(args, platform)
+        downloader = Downloader(work / "downloads", offline=args.offline,
+                                verify=not args.no_checksum)
+        sb = solvers.SolverBuild(
+            prefix=solver_prefix, core_prefix=core_prefix, work=work / "solver-build",
+            jobs=args.jobs, platform=platform, downloader=downloader,
+            cc=cc, cxx=cxx, fc=fc,
+            mpicc=which("mpicc", [str(core_prefix / "bin")]) or cc,
+            mpicxx=which("mpicxx", [str(core_prefix / "bin")]) or cxx,
+            mpifc=mpifc, log_dir=work / "logs",
+        )
+        sb.build()
+
+    prefixes = [solver_prefix, core_prefix]
+    for item in (args.dep_prefix or []):
+        path = Path(item)
+        if path not in prefixes:
+            prefixes.append(path)
+    mpi_prefix = Path(args.mpi_prefix) if args.mpi_prefix else None
+    if not mpi_prefix and (core_prefix / "bin" / "mpifort").exists():
+        mpi_prefix = core_prefix
+
+    all_args = copy.copy(args)
+    if not hasattr(all_args, "model"):
+        all_args.model = None
+    all_args.deps = "none"
+    all_args.solver = "all"
+    all_args.model = args.model
+    all_args.matrix = "one" if args.model else "maximal"
+    all_args.programs = "most"
+    all_args.dep_prefix = [str(p) for p in prefixes]
+    all_args.mpi_prefix = str(mpi_prefix) if mpi_prefix else None
+    all_args.output = str(work / "dist" / "jorek-suite-solvers")
+    all_args.keep_going = True
+    cc, cxx, fc, mpifc = _find_compilers(all_args, platform)
+    toolchain = (cc, cxx, fc, mpifc)
+    built = _collect_variants(all_args, platform, toolchain)
+    variants_dir = work / "variants"
+    ensure_dir(variants_dir)
+    for result in built:
+        write_json(variants_dir / (result.spec.name + ".json"), result.to_json())
+    build_suite(all_args, platform, built)
+
+    p5_args = copy.copy(all_args)
+    p5_args.solver = "pastix5"
+    p5_args.model = args.model
+    p5_args.matrix = "one" if args.model else "maximal"
+    p5_args.programs = "main"
+    p5_prefix = solver_prefix / "pastix5"
+    p5_args.dep_prefix = [str(p5_prefix)] + [str(p) for p in prefixes]
+    p5_args.output = str(work / "dist" / "jorek-suite-pastix5")
+    p5_built = _collect_variants(p5_args, platform, toolchain)
+    for result in p5_built:
+        write_json(variants_dir / (result.spec.name + ".json"), result.to_json())
+
+    final = Path(args.output) if args.output else work / "dist" / "jorek-suite"
+    _merge_suite_manifests(args, platform, [variants_dir], final)
+    print("")
+    print("Full single-file suite: %s" % final)
+    return 0
+
+
 def cmd_verify(args) -> int:
     platform = _platform()
     target = Path(args.target) if args.target else (Path(args.work) / "dist" / ("jorek-suite" + platform.exe_suffix))
@@ -1211,6 +1343,13 @@ def make_parser() -> argparse.ArgumentParser:
     _add_build_options(p)
     p.set_defaults(func=cmd_dist)
 
+    p = sub.add_parser("full", help="one-command full build: core deps, all solvers, all variants, one suite")
+    p.add_argument("--model", default=None, help="build only this model (default: all)")
+    p.add_argument("--solver-prefix", default=None, help="prefix for PaStiX/STRUMPACK (default: WORK/solvers)")
+    p.add_argument("--no-build-solvers", action="store_true", help="use an existing solver prefix")
+    p.add_argument("--output", default=None, help="final single-file output")
+    p.add_argument("--compression", type=int, default=9, help="DEFLATE level (0..9)")
+    p.set_defaults(func=cmd_full)
     p = sub.add_parser("verify", help="verify static linkage and code signature of a suite")
     p.add_argument("target", nargs="?", help="suite path (default: build/dist/jorek-suite)")
     p.set_defaults(func=cmd_verify)
@@ -1304,7 +1443,7 @@ def _postprocess_args(args) -> None:
     if args.command == "deps":
         args.deps_action = args.action
     # JOREK program names are resolved lazily by cmd_dist/build.
-    if args.command in ("build", "dist", "matrix"):
+    if args.command in ("build", "dist", "matrix", "full"):
         if args.command == "matrix" and not hasattr(args, "set_param"):
             args.set_param = []
         args._program_names = ["jorek2_main"]
@@ -1312,6 +1451,11 @@ def _postprocess_args(args) -> None:
             args._program_names = ["jorek2_main"]
         elif getattr(args, "programs", "main") == "most":
             args._program_names = ["jorek2_main"]
+        if args.command == "full":
+            for name, value in (("enable", []), ("disable", []), ("debug", False),
+                                ("set_param", []), ("param_grid", [])):
+                if not hasattr(args, name):
+                    setattr(args, name, value)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:

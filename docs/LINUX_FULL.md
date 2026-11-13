@@ -1,31 +1,33 @@
-# One-command Linux build
+# One-command Linux/macOS full build
 
-The supported entry point is:
+The entry point is a Python subcommand, not a Bash script:
 
 ```sh
-./scripts/build-full-linux.sh \
+python3 build.py full \
   --root ../JOREK \
   --work /big/jorek-build \
-  --jobs 32 \
-  --from-source
+  --jobs 32
 ```
 
-This builds:
+`build.py` is the cross-platform implementation; the same command works on
+Linux and macOS (and the POSIX backend generally).  It:
 
-1. a static core dependency prefix (GCC from source only if no Fortran
-   compiler is available; MPICH, OpenBLAS, ScaLAPACK, FFTW, parallel HDF5,
-   METIS/GKlib, MUMPS, Boost);
-2. static PaStiX 5, PaStiX 6 and STRUMPACK;
-3. 21 `solver=all` model variants (MUMPS + PaStiX6 + STRUMPACK) with the
-   `most` diagnostic set;
-4. 21 `pastix5` model variants;
-5. one merged file:
+1. builds the static core stack (MPICH, OpenBLAS, ScaLAPACK, FFTW, parallel
+   HDF5, METIS/GKlib, MUMPS, Boost); a missing Fortran compiler is bootstrapped
+   from GCC source;
+2. builds static PaStiX 6, STRUMPACK and PaStiX 5 with `src/solvers.py`;
+3. builds 21 `solver=all` model variants with the `most` diagnostics;
+4. builds 21 `pastix5` model variants;
+5. merges everything into one native suite using
+   `build.py`'s own suite merger (no external shell script).
+
+Output:
 
 ```text
 /big/jorek-build/dist/jorek-suite
 ```
 
-Run it with:
+Use it:
 
 ```sh
 /big/jorek-build/dist/jorek-suite --info
@@ -34,22 +36,35 @@ Run it with:
 /big/jorek-build/dist/jorek-suite --mpi -np 8 --scheduler slurm --solver all --model 750
 ```
 
+## Existing static prefix
+
+If the site already has a complete static prefix:
+
+```sh
+python3 build.py full \
+  --root ../JOREK --work /big/jorek-build --jobs 32 \
+  --dep-prefix /opt/jorek-static \
+  --no-build-solvers \
+  --solver-prefix /opt/jorek-static
+```
+
+The prefix must contain MUMPS, OpenBLAS, ScaLAPACK, FFTW, HDF5, PaStiX 5/6
+and STRUMPACK.  The PaStiX 5 archive is expected at
+`$solver_prefix/pastix5/lib/libpastix.a`.
+
 ## Requirements
 
-* Linux x86-64 or arm64
+* Linux x86-64/arm64 or macOS
 * Python 3.8+
-* a host C and C++ compiler (GCC or Clang); the script bootstraps GCC/Fortran
-  if `gfortran` is absent
-* `cmake`, `make`, `curl`, `tar`; `build.py bootstrap` builds CMake/make if
-  they are missing from the host, but the initial bootstrap itself needs a
-  working C/C++ compiler
-* network access to GitHub, GitLab and the GNU/Boost/HDF5 mirrors
-* disk: plan for 30–60 GiB; a full `--programs all` Cartesian build needs much
-  more
-* RAM: 8 GiB minimum; 32 GiB recommended for parallel linking
+* a host C and C++ compiler; `gfortran` is bootstrapped if absent
+* `cmake`, `make`, `curl`, `tar` (the builder can bootstrap CMake/make, but a
+  base compiler is required)
+* network access for the source archives
+* disk: 30–60 GiB for the reference suite; much more for the full feature
+  Cartesian product
+* RAM: 8 GiB minimum, 32 GiB recommended for parallel linking
 
-If the host is a minimal container, install the C/C++ toolchain first.  For
-Debian/Ubuntu:
+Debian/Ubuntu base packages:
 
 ```sh
 sudo apt-get update
@@ -57,63 +72,39 @@ sudo apt-get install -y build-essential gfortran cmake curl tar python3 \
   bison flex perl m4 pkg-config
 ```
 
-The builder can bootstrap missing pieces, but a base compiler is the stated
-contract.
+## Notes
 
-## Using an existing static prefix
+* `--strict` is not needed here; `full` continues over model failures and
+  reports them.  Use `--keep-going` explicitly only for lower-level commands.
+* Logs are under `$WORK/logs/`; downloaded archives under
+  `$WORK/downloads/`.
+* PaStiX 5 and 6 are compile-time exclusive in JOREK, so they are separate
+  variants in the same file rather than one binary.
+* WSMP/HIPS are proprietary and are not fetched.  IMAS/Catalyst are optional
+  external layers.
+* The full feature Cartesian product is a separate planning problem:
+  `python3 tools/build_cartesian.py ...` (see `CARTESIAN.md`).
 
-If your site already provides a static prefix containing MPICH, OpenBLAS,
-ScaLAPACK, FFTW, HDF5, MUMPS, PaStiX 5/6 and STRUMPACK:
-
-```sh
-./scripts/build-full-linux.sh \
-  --root ../JOREK --work /big/jorek-build --jobs 32 \
-  --prefix /opt/jorek-static
-```
-
-The prefix must contain `libpastix.a` (PaStiX 6) and
-`$prefix/pastix5/lib/libpastix.a` for the separate PaStiX 5 variants.  Use
-`--strict` to stop at the first model failure instead of continuing.
-
-## What can fail
-
-This is a real source build, not a prebuilt binary:
-
-* solver source archives and their submodules change; the script pins the
-  versions used by the reference build, but upstream removals can break it;
-* PaStiX 5 is old C code and needs `-Wno-implicit-function-declaration` on
-  modern compilers; the script applies that;
-* the Linux static libc (`libc.a`) must be installed for full `-static`;
-  otherwise use `--no-full-static` (not a fully static distribution);
-* proprietary WSMP/HIPS are not fetched;
-* IMAS and ParaView Catalyst are not part of this one-command build.
-
-Logs are under `$WORK/logs/`; dependency sources and logs are under
-`$WORK/downloads/` and `$WORK/solver-src/`.
-
-## Manual equivalent
-
-The phases are ordinary commands, so they can be run separately:
+## Manual phases
 
 ```sh
 python3 build.py --root ../JOREK --work /big/jorek-build --jobs 32 \
   --deps source --profile full --solver mumps bootstrap --with-deps
 
-PREFIX=/big/jorek-build/solvers \
-CORE_PREFIX=/big/jorek-build/deps \
-WORK=/big/jorek-build/solver-src JOBS=32 \
-  ./scripts/build_solvers_linux.sh
-
 python3 build.py --root ../JOREK --work /big/jorek-build --jobs 32 \
   --deps none --dep-prefix /big/jorek-build/solvers \
-  --dep-prefix /big/jorek-build/deps --mpi-prefix /big/jorek-build/deps \
+  --dep-prefix /big/jorek-build/deps \
+  --mpi-prefix /big/jorek-build/deps \
   dist --matrix maximal --solver all --programs most \
   --output /big/jorek-build/dist/jorek-suite-solvers
 
-# then the pastix5 build and tools/merge_suites.py as in the script
-```
+python3 build.py --root ../JOREK --work /big/jorek-build --jobs 32 \
+  --deps none --dep-prefix /big/jorek-build/solvers/pastix5 \
+  --dep-prefix /big/jorek-build/solvers \
+  --dep-prefix /big/jorek-build/deps \
+  build --matrix maximal --solver pastix5 --programs main
 
-For the full feature/solver Cartesian product, use
-[tools/build_cartesian.sh](../tools/build_cartesian.sh); a clean one-command
-build of **all** feature combinations is a storage/time decision, not a
-different build mechanism.
+python3 tools/merge_suites.py --root ../JOREK --work /big/jorek-build/merge \
+  --variant-dir /big/jorek-build/variants \
+  --output /big/jorek-build/dist/jorek-suite
+```

@@ -37,12 +37,12 @@ feature subsets and reaches TiB scale.
 
 ## Generator script
 
-`tools/build_cartesian.sh` is a deliberately conservative generator.  It
+`tools/build_cartesian.py` is a deliberately conservative generator.  It
 prints the commands by default; `--execute` actually runs them:
 
 ```sh
-tools/build_cartesian.sh --dry-run --features hdf5,fftw,block,direct,quadtree
-tools/build_cartesian.sh --execute --features hdf5,fftw,block,direct \
+tools/build_cartesian.py --dry-run --features hdf5,fftw,block,direct,quadtree
+tools/build_cartesian.py --execute --features hdf5,fftw,block,direct \
   --solvers mumps,pastix6,strumpack --jobs 32 --work /big/jorek-cartesian
 ```
 

@@ -5,15 +5,17 @@
 The intended fully-static path is:
 
 ```sh
-./scripts/build-full-linux.sh --root ../JOREK --work /big/jorek-build --jobs 32 --from-source
+python3 build.py full --root ../JOREK --work /big/jorek-build --jobs 32
 ```
 
-The wrapper bootstraps the static prefix, builds PaStiX 5/6 and STRUMPACK,
-builds the all-solver and PaStiX5 variants, and merges them into one file.
-For a prefix that is already prepared:
+The Python subcommand bootstraps the static prefix, builds PaStiX 5/6 and
+STRUMPACK, builds the all-solver and PaStiX5 variants, and merges them into one
+file.  For a prefix that is already prepared:
 
 ```sh
-./scripts/build-full-linux.sh --root ../JOREK --work /big/jorek-build --prefix /opt/jorek-static
+python3 build.py full --root ../JOREK --work /big/jorek-build \
+  --dep-prefix /opt/jorek-static --no-build-solvers \
+  --solver-prefix /opt/jorek-static
 ```
 
 `bootstrap` builds GNU make (if needed), then GMP/MPFR/MPC/ISL and GCC with

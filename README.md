@@ -29,8 +29,7 @@ operating-system libraries that are unavoidable on that platform.
 ## Linux: one-command full build
 
 ```sh
-./scripts/build-full-linux.sh --root ../JOREK --work /big/jorek-build \
-  --jobs 32 --from-source
+python3 build.py full --root ../JOREK --work /big/jorek-build --jobs 32
 ```
 
 This produces a single `jorek-suite` with MUMPS, PaStiX 5, PaStiX 6 and
