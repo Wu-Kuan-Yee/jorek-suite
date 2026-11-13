@@ -25,6 +25,11 @@ protocol.  The launcher therefore provides adapters.
 | IBM Spectrum LSF | `--scheduler lsf` | Hydra `-launcher lsf` |
 | Grid Engine / SGE | `--scheduler sge` | Hydra `-launcher sge` |
 | Flux | `--scheduler flux` | native `flux run -n N` |
+| IBM LoadLeveler | `--scheduler ll` | Hydra `-launcher ll` |
+| Cobalt | `--scheduler cobalt` | Hydra `-launcher cobalt` |
+| IBM Spectrum MPI / Summit | `--scheduler jsrun` | native `jsrun -n N` |
+| Cray APRun | `--scheduler aprun` | native `aprun -n N` |
+| IBM POE | `--scheduler poe` | native `poe -procs N` |
 | HTCondor | — | **not automatically supported**; parallel-universe configuration is site-specific. Submit the suite through `condor_submit -interactive`/a site MPI wrapper, or use `--launcher ssh` with a host file. |
 | Others | `--scheduler ssh` + `--hostfile` | works when the site provides an SSH-reachable host list and shared paths |
 

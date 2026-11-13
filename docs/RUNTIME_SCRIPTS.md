@@ -21,7 +21,7 @@ Included categories:
 The reference suite reports:
 
 ```text
-helpers: 174   # 6 MPI helpers + 168 runtime files
+helpers: 175   # 6 MPI helpers + 168 runtime files + native jorek-tool
 ```
 
 ## Extract

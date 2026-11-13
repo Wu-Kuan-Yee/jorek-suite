@@ -1404,6 +1404,14 @@ static int js_run_mpi(Suite *s, const char *suite_path, Variant *v, Program *p,
             launcher = "lsf";
         } else if (js_streq(sched, "sge")) {
             launcher = "sge";
+        } else if (js_streq(sched, "ll") || js_streq(sched, "loadleveler") ||
+                   js_streq(sched, "cobalt")) {
+            launcher = js_streq(sched, "cobalt") ? "cobalt" : "ll";
+        } else if (js_streq(sched, "jsrun") || js_streq(sched, "aprun") || js_streq(sched, "poe")) {
+            if (js_which_path(sched, mpiexec_buf, sizeof(mpiexec_buf)) != 0)
+                js_die(5, "--scheduler %s requested but the launcher is not in PATH", sched);
+            mpiexec = mpiexec_buf;
+            launcher = sched;
         } else if (js_streq(sched, "pbs") || js_streq(sched, "torque") || js_streq(sched, "pbspro") || js_streq(sched, "openpbs")) {
             const char *nodefile = getenv("PBS_NODEFILE");
             if ((!hostfile || !*hostfile) && nodefile && *nodefile) {
@@ -1439,6 +1447,15 @@ static int js_run_mpi(Suite *s, const char *suite_path, Variant *v, Program *p,
         args[k++] = (char *)(np && *np ? np : "1");
     } else if (launcher && js_streq(launcher, "srun")) {
         args[k++] = (char *)"-n";
+        args[k++] = (char *)(np && *np ? np : "1");
+    } else if (launcher && js_streq(launcher, "jsrun")) {
+        args[k++] = (char *)"-n";
+        args[k++] = (char *)(np && *np ? np : "1");
+    } else if (launcher && js_streq(launcher, "aprun")) {
+        args[k++] = (char *)"-n";
+        args[k++] = (char *)(np && *np ? np : "1");
+    } else if (launcher && js_streq(launcher, "poe")) {
+        args[k++] = (char *)"-procs";
         args[k++] = (char *)(np && *np ? np : "1");
     } else {
         args[k++] = (char *)"-np";
@@ -1715,7 +1732,8 @@ static void js_usage(const char *prog) {
 "  --hosts LIST            Comma-separated Hydra host list.\n"
 "  --hostfile FILE         Hydra host file.\n"
 "  --launcher NAME         Hydra launcher: fork, ssh, slurm, lsf, sge, ...\n"
-"  --scheduler NAME        auto, fork, ssh, rsh, slurm, pbs, torque, lsf, sge, flux, manual.\n"
+"  --scheduler NAME        auto, fork, ssh, rsh, slurm, pbs, torque, lsf, sge,\n"
+"                          ll/loadleveler, cobalt, flux, jsrun, aprun, poe, manual.\n"
 "  --helper-dir DIR        Use a shared directory containing extracted MPI helpers.\n"
 "  --wait                  Wait for the child and forward its exit status.\n"
 "  --quiet                 Suppress informational messages.\n"
