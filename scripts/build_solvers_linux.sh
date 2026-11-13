@@ -53,11 +53,13 @@ fi
 
 # A merged METIS+GKlib archive is needed by the old PaStiX 5 find module.
 if [ ! -f "$PREFIX/lib/libmetis-merged.a" ]; then
-  rm -rf metis-merge; mkdir metis-merge; cd metis-merge
-  ar x "$PREFIX/lib/libmetis.a"
-  ar x "$PREFIX/lib/libGKlib.a"
-  for f in *.o; do mv "$f" "m_$f"; done
-  ar rcs "$PREFIX/lib/libmetis-merged.a" *.o
+  rm -rf metis-merge; mkdir -p metis-merge/metis metis-merge/gklib; cd metis-merge
+  (cd metis && ar x "$PREFIX/lib/libmetis.a")
+  (cd gklib && ar x "$PREFIX/lib/libGKlib.a")
+  for f in metis/*.o gklib/*.o; do
+    cp "$f" "m_$(basename "$f")"
+  done
+  ar rcs "$PREFIX/lib/libmetis-merged.a" m_*.o
   cp "$PREFIX/lib/libmetis.a" "$PREFIX/lib/libmetis-split.a"
   cp "$PREFIX/lib/libmetis-merged.a" "$PREFIX/lib/libmetis.a"
   cd "$WORK"
