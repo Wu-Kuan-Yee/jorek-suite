@@ -26,6 +26,16 @@ operating-system libraries that are unavoidable on that platform.
 └── examples/
 ```
 
+## Linux: one-command full build
+
+```sh
+./scripts/build-full-linux.sh --root ../JOREK --work /big/jorek-build \
+  --jobs 32 --from-source
+```
+
+This produces a single `jorek-suite` with MUMPS, PaStiX 5, PaStiX 6 and
+STRUMPACK variants.  See [LINUX_FULL.md](docs/LINUX_FULL.md).
+
 ## Quick start
 
 ```sh
