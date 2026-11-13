@@ -37,7 +37,7 @@ pre-populated cache.
 | ScaLAPACK | 2.2.0 | BSD-3-Clause | distributed dense algebra |
 | FFTW | 3.3.10 | GPL-2.0-or-later | toroidal FFTs |
 | HDF5 | 1.14.6 | BSD-3-Clause | parallel restart/output |
-| METIS | 5.1.0 | Apache-2.0 | fill-reducing ordering |
+| METIS | 5.2.1 | Apache-2.0 | fill-reducing ordering |
 | ParMETIS | 4.0.3 | ParMETIS terms | distributed ordering |
 | SCOTCH | 6.1.2 | CeCILL-C | ordering/partitioning |
 | MUMPS | 5.7.3 | CeCILL-C | sparse direct solver |

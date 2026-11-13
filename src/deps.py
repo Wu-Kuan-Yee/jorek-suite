@@ -318,7 +318,7 @@ register(
         configure_args=("--enable-shared=no", "--enable-static=yes", "--enable-fortran",
                         "--enable-hl", "--enable-parallel", "--disable-tools", "--disable-tests",
                         "--disable-doxygen", "--disable-deprecated-symbols")),
-    dep("metis", "5.1.0", "https://github.com/KarypisLab/METIS/archive/refs/tags/v5.1.0.tar.gz",
+    dep("metis", "5.2.1", "https://github.com/KarypisLab/METIS/archive/refs/tags/v5.2.1.tar.gz",
         license="Apache-2.0", homepage="https://github.com/KarypisLab/METIS",
         static_libs=("libmetis.a",), includes=("metis.h",), builder="metis"),
     dep("parmetis", "4.0.3", "https://github.com/KarypisLab/ParMETIS/archive/refs/tags/v4.0.3.tar.gz",
