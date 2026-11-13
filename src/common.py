@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import posixpath
 import tarfile
 import tempfile
 import time
@@ -447,8 +448,15 @@ def extract_archive(archive: Path, destination: Path, strip_components: int = 0)
                         raise BuildError("unsafe path in archive %s: %s" % (archive, member.name))
                     if member.issym() or member.islnk():
                         target = member.linkname.replace("\\", "/")
-                        if target.startswith("/") or ".." in Path(target).parts:
-                            raise BuildError("unsafe link in archive %s: %s" % (archive, member.name))
+                        # A relative link is safe when it resolves inside the
+                        # extraction root.  MPICH ships links such as
+                        # psm3/shared -> ../../src, which are legitimate.
+                        base = posixpath.dirname(name) if member.issym() else ""
+                        resolved = posixpath.normpath(posixpath.join(base, target))
+                        if (target.startswith("/") or resolved == ".." or
+                                resolved.startswith("../") or resolved.startswith("/")):
+                            raise BuildError("unsafe link in archive %s: %s -> %s" % (
+                                archive, member.name, member.linkname))
                     members.append(member)
                 if strip_components:
                     members = [_strip_member(m, strip_components) for m in members]
