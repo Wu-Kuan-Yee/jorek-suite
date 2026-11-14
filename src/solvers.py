@@ -303,9 +303,18 @@ class SolverBuild:
             "-DHWLOC_DIR=%s" % self.prefix,
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix5")
-        self.cmake_build(build, "pastix5", target="generate_headers")
         self.cmake_build(build, "pastix5", target="pastix")
-        self.cmake_build(build, "pastix5", install=True)
+        # Do not run the PaStiX install target: it pulls the matrix drivers,
+        # which require SPM headers that the 5.x release does not ship.  JOREK
+        # only needs the library and the Fortran interface header.
+        ensure_dir(prefix / "lib")
+        ensure_dir(prefix / "include")
+        shutil.copy2(build / "libpastix.a", prefix / "lib" / "libpastix.a")
+        murge = build / "libpastix_murge.a"
+        if murge.exists():
+            shutil.copy2(murge, prefix / "lib" / "libpastix_murge.a")
+        shutil.copy2(root / "common" / "src" / "pastix_fortran.h",
+                     prefix / "include" / "pastix_fortran.h")
 
     def build(self) -> None:
         self.hwloc()

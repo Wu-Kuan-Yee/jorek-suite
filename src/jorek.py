@@ -953,7 +953,7 @@ class MakeBuilder:
                 libs.append(str(layout.lib(name)))
             except BuildError:
                 pass
-        inc = layout.include("pastix.h")
+        inc = layout.include("pastix_fortran.h") or layout.include("pastix.h")
         murge = []
         try:
             murge.append(str(layout.lib("libpastix_murge.a")))
