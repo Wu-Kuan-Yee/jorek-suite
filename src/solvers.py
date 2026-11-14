@@ -230,7 +230,31 @@ class SolverBuild:
             "-DHWLOC_DIR=%s" % self.prefix,
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix6")
-        self.cmake_build(build, "pastix6", install=True)
+        self.cmake_build(build, "pastix6", target="pastix")
+        # The upstream install target also builds examples, which pull in
+        # optional SPM test drivers.  Install the library and public headers
+        # needed by JOREK directly.
+        ensure_dir(self.prefix / "lib")
+        ensure_dir(self.prefix / "include")
+        for name in ("libpastix.a", "libspm.a", "libpastix_kernels.a"):
+            path = build / name
+            if path.exists():
+                shutil.copy2(path, self.prefix / "lib" / name)
+        shutil.copy2(src / "include" / "pastix.h", self.prefix / "include" / "pastix.h")
+        config = build / "include" / "pastix" / "config.h"
+        if config.exists():
+            ensure_dir(self.prefix / "include" / "pastix")
+            shutil.copy2(config, self.prefix / "include" / "pastix" / "config.h")
+        shutil.copy2(src / "spm" / "include" / "spm.h", self.prefix / "include" / "spm.h")
+        spm_inc = self.prefix / "include" / "spm"
+        if spm_inc.exists():
+            shutil.rmtree(spm_inc)
+        shutil.copytree(src / "spm" / "include" / "spm", spm_inc)
+        generated = build / "spm" / "include" / "spm"
+        if generated.exists():
+            for header in generated.iterdir():
+                if header.is_file():
+                    shutil.copy2(header, spm_inc / header.name)
 
     # -- STRUMPACK ---------------------------------------------------------
     def strumpack(self) -> None:
