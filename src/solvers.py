@@ -230,7 +230,8 @@ class SolverBuild:
             "-DHWLOC_LIBRARIES=%s;-lm" % (self.prefix / "lib" / "libhwloc.a"),
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix6")
-        self.cmake_build(build, "pastix6", target="pastix")
+        for target in ("spm", "pastix_kernels", "pastix"):
+            self.cmake_build(build, "pastix6", target=target)
         # The upstream install target also builds examples, which pull in
         # optional SPM test drivers.  Install the library and public headers
         # needed by JOREK directly.
@@ -241,6 +242,9 @@ class SolverBuild:
             if path.exists():
                 shutil.copy2(path, self.prefix / "lib" / name)
         shutil.copy2(src / "include" / "pastix.h", self.prefix / "include" / "pastix.h")
+        pastix_inc = self.prefix / "include" / "pastix"
+        if (src / "include" / "pastix").exists():
+            shutil.copytree(src / "include" / "pastix", pastix_inc, dirs_exist_ok=True)
         config = build / "include" / "pastix" / "config.h"
         if config.exists():
             ensure_dir(self.prefix / "include" / "pastix")
