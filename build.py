@@ -338,6 +338,41 @@ def _parse_assignments(values: Sequence[str], integer: bool = False) -> Dict[str
     return result
 
 
+CAPACITY_PARAMS = ("n_nodes_max", "n_elements_max", "n_boundary_max", "n_pieces_max")
+
+
+def _sorted_param_values(name: str, maximum: int) -> List[int]:
+    if maximum < 1:
+        raise BuildError("--param-max %s=%d must be positive" % (name, maximum))
+    if name == "n_tor":
+        # JOREK rejects even n_tor at startup.
+        return list(range(1, maximum + 1, 2))
+    if name in CAPACITY_PARAMS:
+        # A capacity is an upper bound: one build at the maximum covers all
+        # smaller actual problem sizes.  Building 1..maximum would create
+        # thousands of pointless binaries.
+        return [maximum]
+    return list(range(1, maximum + 1))
+
+
+def _param_max_specs(args) -> List[tuple]:
+    specs = []
+    for item in getattr(args, "param_max", []) or []:
+        if "=" not in item:
+            raise BuildError("--param-max expects NAME=MAX, got %r" % item)
+        name, value = item.split("=", 1)
+        name = name.strip()
+        if name not in jorek.HARDCODED_PARAMS:
+            raise BuildError("unknown hard-coded parameter %s (known: %s)" % (
+                name, ", ".join(jorek.HARDCODED_PARAMS)))
+        try:
+            maximum = int(value)
+        except ValueError:
+            raise BuildError("--param-max value must be an integer: %r" % item)
+        specs.append((name, maximum))
+    return specs
+
+
 def _variant_params(args, model_info: jorek.ModelInfo) -> Dict[str, int]:
     params = {k: v for k, v in model_info.params.items() if k in jorek.HARDCODED_PARAMS}
     params.update(_parse_assignments(args.set_param or [], integer=True))
@@ -345,30 +380,39 @@ def _variant_params(args, model_info: jorek.ModelInfo) -> Dict[str, int]:
 
 
 def _param_grid(args, base: Dict[str, int]) -> List[Dict[str, int]]:
-    if not args.param_grid:
-        return [base]
-    keys = []
-    values = []
-    for item in args.param_grid:
+    specs: List[tuple] = []
+    for item in getattr(args, "param_grid", []) or []:
         if "=" not in item:
             raise BuildError("--param-grid expects NAME=VALUE[,VALUE...]")
         key, csv = item.split("=", 1)
+        key = key.strip()
         vals = []
         for value in csv.split(","):
             try:
                 vals.append(int(value))
             except ValueError:
                 raise BuildError("parameter grid value must be an integer: %r" % value)
-        keys.append(key.strip())
-        values.append(vals)
+        specs.append((key, vals))
+    for key, maximum in _param_max_specs(args):
+        if any(existing == key for existing, _ in specs):
+            raise BuildError("%s specified by both --param-grid and --param-max" % key)
+        specs.append((key, _sorted_param_values(key, maximum)))
+    if not specs:
+        return [base]
     import itertools
     result = []
-    for combo in itertools.product(*values):
+    for combo in itertools.product(*[vals for _, vals in specs]):
         item = dict(base)
-        item.update(dict(zip(keys, combo)))
+        item.update(dict(zip([key for key, _ in specs], combo)))
+        # Skip combinations JOREK itself rejects: n_plane must be at least
+        # 2*(n_tor-1) to avoid toroidal aliasing.
+        if "n_tor" in item and "n_plane" in item:
+            if item["n_plane"] < 2 * (item["n_tor"] - 1):
+                continue
         result.append(item)
+    if not result:
+        raise BuildError("parameter grid contains no valid combinations")
     return result
-
 
 def _variant_name(spec: jorek.VariantSpec) -> str:
     name = spec.safe_name()
@@ -1083,21 +1127,35 @@ def cmd_matrix(args) -> int:
     models = jorek.discover_models(Path(args.root))
     features = jorek.FeatureSet()
     _apply_feature_args(features, args)
-    if args.matrix == "maximal":
-        specs = []
-        for model in sorted(models):
-            info = models[model]
-            # Model 183 hits an upstream algexpr2fort bounds bug when both
-            # extensions are enabled; the R-tree/default variant is valid.
-            toggles = {t: True for t in info.toggles if t.lower() != "with_refluid"}
+    specs = []
+    for model in sorted(models):
+        info = models[model]
+        base = _variant_params(args, info)
+        grids = _param_grid(args, base)
+        if args.matrix == "complete" and info.toggles:
+            import itertools
+            toggles_list = [t for t in info.toggles if t.lower() != "with_refluid"]
+            combos = list(itertools.product((False, True), repeat=len(toggles_list)))
+        elif args.matrix == "maximal" and info.toggles:
+            toggles_list = [t for t in info.toggles if t.lower() != "with_refluid"]
+            combos = [tuple(True for _ in toggles_list)]
             if model == "183":
-                toggles = {}
-            specs.append(jorek.make_variant(model, models, features, toggles=toggles,
-                                            programs=tuple(args._program_names)))
-    elif args.matrix == "complete":
-        specs = jorek.complete_variants(models, features, programs=tuple(args._program_names))
-    else:
-        specs = [jorek.make_variant(m, models, features, programs=tuple(args._program_names)) for m in sorted(models)]
+                combos = [None]
+        else:
+            toggles_list = []
+            combos = [None]
+        for params in grids:
+            for combo in combos:
+                toggles = (dict(zip(toggles_list, combo))
+                           if combo is not None else None)
+                spec = jorek.make_variant(
+                    model, models, features, params=params, toggles=toggles,
+                    programs=tuple(args._program_names))
+                specs.append(spec)
+    if getattr(args, "model", None):
+        specs = [spec for spec in specs if spec.model == args.model]
+        if not specs:
+            raise BuildError("no planned variants for model %s" % args.model)
     if args.json:
         print(json.dumps([{
             "name": _variant_name(s),
@@ -1592,6 +1650,7 @@ def _add_build_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", default=None, help="JOREK physics model (default 303)")
     parser.add_argument("--set", dest="set_param", action="append", default=[], metavar="NAME=VALUE", help="override a hard-coded parameter")
     parser.add_argument("--param-grid", action="append", default=[], metavar="NAME=V1,V2", help="build a Cartesian parameter grid")
+    parser.add_argument("--param-max", action="append", default=[], metavar="NAME=MAX", help="build values up to MAX; odd n_tor and one capacity build")
     parser.add_argument("--programs", choices=("main", "most", "all", "list"), default="main", help="program set per variant")
     parser.add_argument("--enable", action="append", default=[], help="enable a compile-time feature (repeatable)")
     parser.add_argument("--disable", action="append", default=[], help="disable a compile-time feature (repeatable)")
@@ -1632,6 +1691,7 @@ def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
         ("--source-dir", dict(default=argparse.SUPPRESS)),
         ("--url", dict(action="append", default=argparse.SUPPRESS)),
         ("--mirror", dict(action="append", default=argparse.SUPPRESS)),
+        ("--param-max", dict(action="append", default=argparse.SUPPRESS)),
         ("--profile", dict(choices=("minimal", "standard", "full", "complete"), default=argparse.SUPPRESS)),
         ("--everything", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--solver", dict(choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default=argparse.SUPPRESS)),
@@ -1677,7 +1737,7 @@ def _postprocess_args(args) -> None:
             args._program_names = ["jorek2_main"]
         if args.command == "full":
             for name, value in (("enable", []), ("disable", []), ("debug", False),
-                                ("set_param", []), ("param_grid", [])):
+                                ("set_param", []), ("param_grid", []), ("param_max", [])):
                 if not hasattr(args, name):
                     setattr(args, name, value)
 

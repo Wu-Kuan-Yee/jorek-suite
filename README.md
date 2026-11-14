@@ -289,3 +289,37 @@ python3 build.py --everything --dry-run build --deps none --solver all
 `full --everything` also builds the PaStiX 5 pass.  The resulting suite can be
 much larger than the default 42-variant suite.
 
+### Build all values up to a maximum
+
+`--param-max NAME=MAX` builds the Cartesian product of values up to `MAX`:
+
+```sh
+python3 build.py matrix \
+  --matrix models --model 303 \
+  --param-max n_tor=5 \
+  --param-max n_order=4 \
+  --param-max n_plane=10
+```
+
+Rules:
+
+* `n_tor` uses only odd values (`1,3,5,...`), because JOREK rejects even
+  toroidal mode counts.
+* `n_plane` combinations below `2*(n_tor-1)` are skipped to avoid aliasing.
+* `n_nodes_max`, `n_elements_max`, `n_boundary_max`, `n_pieces_max` are
+  capacities, not independent problem sizes: `--param-max` builds **one**
+  binary at the maximum capacity, since that binary also covers smaller
+  actual grids.
+* Every other parameter uses `1..MAX`.
+* `--param-grid` and `--param-max` cannot both name the same parameter.
+
+For a quick preview, always use `matrix` first:
+
+```sh
+python3 build.py matrix --everything --param-max n_tor=5 --param-max n_order=4
+```
+
+This produces all model-toggle combinations multiplied by the parameter
+combinations; the suite size grows accordingly.
+
+
