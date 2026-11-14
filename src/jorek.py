@@ -708,6 +708,14 @@ class MakeBuilder:
         self.log_dir = log_dir
         self.extra_libs = list(extra_libs)
         self.full_static = full_static
+        if full_static and not layout.platform.is_macos:
+            # -static already statically links libgfortran/libgcc/libstdc++.
+            # The -static-lib* driver flags inject -Bdynamic afterwards and
+            # break the final implicit -lm/-lc resolution.
+            self.extra_libs = [
+                item for item in self.extra_libs
+                if not item.startswith("-static-lib")
+            ]
         self.fc_family = self._compiler_family(fc)
 
     @staticmethod
