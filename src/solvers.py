@@ -44,6 +44,8 @@ class SolverBuild:
         self.mpicxx = mpicxx
         self.mpifc = mpifc
         self.log_dir = ensure_dir(log_dir)
+        self.source_dirs = source_dirs or {}
+        self.url_overrides = url_overrides or {}
         cmake_path = shutil.which("cmake", path=str(self.core / "bin") + os.pathsep + os.environ.get("PATH", ""))
         self.cmake = cmake_path or "cmake"
         self.ar = shutil.which("ar") or "ar"
