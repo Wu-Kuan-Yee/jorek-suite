@@ -1242,6 +1242,7 @@ def cmd_full(args) -> int:
         cc, cxx, fc, mpifc = _find_compilers(args, platform)
         downloader = Downloader(work / "downloads", offline=args.offline,
                                 verify=not args.no_checksum)
+        source_dirs, url_overrides = _source_options(args)
         sb = solvers.SolverBuild(
             prefix=solver_prefix, core_prefix=core_prefix, work=work / "solver-build",
             jobs=args.jobs, platform=platform, downloader=downloader,
@@ -1249,6 +1250,7 @@ def cmd_full(args) -> int:
             mpicc=which("mpicc", [str(core_prefix / "bin")]) or cc,
             mpicxx=which("mpicxx", [str(core_prefix / "bin")]) or cxx,
             mpifc=mpifc, log_dir=work / "logs",
+            source_dirs=source_dirs, url_overrides=url_overrides,
         )
         sb.build()
 

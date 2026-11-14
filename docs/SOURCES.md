@@ -80,7 +80,15 @@ a complete static toolchain.
 
 ## Solver stack
 
-`src/solvers.py` builds PaStiX 5/6, STRUMPACK, METIS/GKlib and hwloc with
-pinned upstream URLs.  The core `--url`/`--mirror` overrides above apply to
-the `deps.py` dependency graph; the solver stack currently has its own pinned
-sources.
+`src/solvers.py` builds PaStiX 5/6, STRUMPACK, METIS/GKlib and hwloc.  The
+same `--source` and `--url`/`--mirror` options are accepted for these names:
+
+```text
+gklib  metis  pastix6  spm  morse  hwloc  strumpack  pastix5
+```
+
+Example:
+
+```sh
+python3 build.py full   --source pastix6=/data/src/pastix-v6.3.2   --url pastix5=https://mirror.example/pastix_5.2.3.tar.bz2
+```

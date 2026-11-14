@@ -29,7 +29,8 @@ class SolverBuild:
     def __init__(self, prefix: Path, core_prefix: Path, work: Path, jobs: int,
                  platform: PlatformInfo, downloader: Downloader,
                  cc: str, cxx: str, fc: str, mpicc: str, mpicxx: str, mpifc: str,
-                 log_dir: Path):
+                 log_dir: Path, source_dirs: Optional[dict] = None,
+                 url_overrides: Optional[dict] = None):
         self.prefix = Path(prefix)
         self.core = Path(core_prefix)
         self.work = Path(work)
@@ -55,7 +56,16 @@ class SolverBuild:
         return self.downloader.fetch(url, filename)
 
     def source(self, url: str, filename: str, directory: str) -> Path:
-        archive = self.fetch(url, filename)
+        supplied = self.source_dirs.get(directory)
+        if supplied is not None:
+            supplied = Path(supplied).expanduser().resolve()
+            if not supplied.is_dir():
+                raise BuildError("source directory for %s is not a directory: %s" % (
+                    directory, supplied))
+            print("  %-18s using source tree %s" % (directory, supplied))
+            return supplied
+        urls = list(self.url_overrides.get(directory, [])) + [url]
+        archive = self.downloader.fetch(urls, filename)
         dest = ensure_dir(self.work / "src" / directory)
         root = extract_archive(archive, dest)
         return root
