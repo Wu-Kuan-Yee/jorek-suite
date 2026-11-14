@@ -96,20 +96,17 @@ class SolverBuild:
         src = self.source(
             "https://download.open-mpi.org/release/hwloc/v2.11/hwloc-2.11.2.tar.gz",
             "hwloc-2.11.2.tar.gz", "hwloc")
-        build = self.work / "build" / "hwloc"
-        self.cmake_configure(src, build, [
-            "-DCMAKE_INSTALL_PREFIX=%s" % self.prefix,
-            "-DCMAKE_BUILD_TYPE=Release",
-            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
-            "-DHWLOC_BUILD_STATIC=ON",
-            "-DHWLOC_BUILD_SHARED=OFF",
-            "-DHWLOC_BUILD_UTILS=OFF",
-            "-DHWLOC_BUILD_TESTS=OFF",
-            "-DHWLOC_ENABLE_CXX=OFF",
-            "-DHWLOC_ENABLE_LIBXML2=OFF",
-            "-DHWLOC_BUILD_DOXYGEN=OFF",
-        ], "hwloc")
-        self.cmake_build(build, "hwloc", install=True)
+        # The upstream release is an autotools tree; its CMake files live only
+        # under contrib/windows-cmake.
+        run([str(src / "configure"),
+             "--prefix=%s" % self.prefix,
+             "--disable-shared", "--enable-static",
+             "--disable-libxml2", "--disable-cairo",
+             "--disable-pci", "--disable-io"],
+            cwd=src, env=self.env, log=self.log("hwloc"))
+        run(["make", "-j%d" % self.jobs], cwd=src, env=self.env,
+            log=self.log("hwloc"))
+        run(["make", "install"], cwd=src, env=self.env, log=self.log("hwloc"))
 
     # -- GKlib / METIS -----------------------------------------------------
     def gklib_metis(self) -> None:
