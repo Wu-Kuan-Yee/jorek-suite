@@ -432,7 +432,13 @@ def build_one(args, spec: jorek.VariantSpec, platform: PlatformInfo, toolchain, 
             if candidate.exists() and candidate.is_file():
                 programs.setdefault(name, candidate)
     if not programs and proc.returncode != 0:
-        raise BuildError("no JOREK executables were produced; see %s" % log)
+        tail = ""
+        try:
+            lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+            tail = "\n".join(lines[-30:])
+        except OSError:
+            pass
+        raise BuildError("no JOREK executables were produced; see %s\n%s" % (log, tail))
     if platform.is_macos:
         for path in programs.values():
             _ad_hoc_sign_path(path)
