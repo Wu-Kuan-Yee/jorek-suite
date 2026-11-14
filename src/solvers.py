@@ -114,7 +114,7 @@ class SolverBuild:
              "--prefix=%s" % self.prefix,
              "--disable-shared", "--enable-static",
              "--disable-libxml2", "--disable-cairo",
-             "--disable-pci", "--disable-io"],
+             "--disable-pci", "--disable-io", "--disable-udev"],
             cwd=src, env=self.env, log=self.log("hwloc"))
         run(["make", "-j%d" % self.jobs], cwd=src, env=self.env,
             log=self.log("hwloc"))
