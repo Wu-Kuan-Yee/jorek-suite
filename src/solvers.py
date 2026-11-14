@@ -162,6 +162,15 @@ class SolverBuild:
                 "https://gitlab.inria.fr/solverstack/morse_cmake/-/archive/master/morse_cmake-master.tar.gz",
                 "morse-master.tar.gz", "morse")
             shutil.copytree(morse_src, morse, dirs_exist_ok=True)
+        # PaStiX 6.3.2's no-hwloc fallback calls an undeclared
+        # ``pastix_warning`` helper.  The public helper is
+        # ``pastix_print_warning`` from common/out.h.
+        nohwloc = src / "common" / "isched_nohwloc.c"
+        if nohwloc.exists():
+            text = nohwloc.read_text(encoding="utf-8", errors="replace")
+            if "pastix_warning(" in text:
+                nohwloc.write_text(text.replace("pastix_warning(", "pastix_print_warning("),
+                                   encoding="utf-8")
         build = self.work / "build" / "pastix6"
         self.cmake_configure(src, build, [
             "-DCMAKE_INSTALL_PREFIX=%s" % self.prefix,
