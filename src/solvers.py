@@ -303,7 +303,9 @@ class SolverBuild:
             "-DHWLOC_DIR=%s" % self.prefix,
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix5")
-        self.cmake_build(build, "pastix5", target="pastix", install=True)
+        self.cmake_build(build, "pastix5", target="generate_headers")
+        self.cmake_build(build, "pastix5", target="pastix")
+        self.cmake_build(build, "pastix5", install=True)
 
     def build(self) -> None:
         self.hwloc()
