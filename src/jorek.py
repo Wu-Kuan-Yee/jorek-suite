@@ -898,7 +898,12 @@ class MakeBuilder:
         if layout.platform.is_macos:
             lines.append("LIBS += -lxml2 -llzma -framework IOKit -framework CoreFoundation -framework OpenCL")
         if self.full_static and not layout.platform.is_macos:
-            lines.append("LIBS += -static")
+            # The link rule is $(FC) $(FLAGS) ... $(LIBS), with the compiler's
+            # implicit -lm before LIBS.  Put -static in FLAGS so it also covers
+            # the compiler's own libc/libm references; putting it at the end of
+            # LIBS makes the linker resolve -lm dynamically first and then fail
+            # with "attempted static link of dynamic object".
+            lines.append("FLAGS += -static")
         if layout.platform.is_windows:
             lines.append("LIBS += -static-libgcc -static-libstdc++")
         lines.append("LIBS += %s -lstdc++" % ("-qopenmp" if self.fc_family == "intel" else "-fopenmp"))
