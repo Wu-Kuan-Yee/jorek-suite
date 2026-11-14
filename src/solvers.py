@@ -358,8 +358,16 @@ class SolverBuild:
         murge = build / "libpastix_murge.a"
         if murge.exists():
             shutil.copy2(murge, prefix / "lib" / "libpastix_murge.a")
-        shutil.copy2(root / "common" / "src" / "pastix_fortran.h",
-                     prefix / "include" / "pastix_fortran.h")
+        header_top = build / "sopalin" / "src" / "pastix_fortran.h.top"
+        header_inc = root / "common" / "src" / "pastix_fortran.inc"
+        if header_top.exists() and header_inc.exists():
+            (prefix / "include" / "pastix_fortran.h").write_text(
+                header_top.read_text(encoding="utf-8", errors="replace")
+                + header_inc.read_text(encoding="utf-8", errors="replace"),
+                encoding="utf-8")
+        else:
+            shutil.copy2(root / "common" / "src" / "pastix_fortran.h",
+                         prefix / "include" / "pastix_fortran.h")
 
     def build(self) -> None:
         self.hwloc()
