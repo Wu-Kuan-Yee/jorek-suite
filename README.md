@@ -238,6 +238,7 @@ model inference from a JOREK namelist.
 * [Job scheduler adapters](docs/SCHEDULERS.md)
 * [Solver backends](docs/SOLVERS.md)
 * [Source acquisition policy](docs/SOURCES.md)
+* [Hard-coded parameter constraints](docs/PARAMETERS.md)
 * [Complete matrix shorthand](#complete-matrix-shorthand)
 * [Building the full Cartesian matrix](docs/CARTESIAN.md)
 * [Embedded runtime scripts and native jorek-tool](docs/RUNTIME_SCRIPTS.md)

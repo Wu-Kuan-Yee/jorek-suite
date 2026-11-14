@@ -342,11 +342,14 @@ CAPACITY_PARAMS = ("n_nodes_max", "n_elements_max", "n_boundary_max", "n_pieces_
 
 
 def _sorted_param_values(name: str, maximum: int) -> List[int]:
-    if maximum < 1:
+    if maximum < 0 or (maximum == 0 and name != "l_pol_domm"):
         raise BuildError("--param-max %s=%d must be positive" % (name, maximum))
-    if name == "n_tor":
-        # JOREK rejects even n_tor at startup.
+    if name in ("n_tor", "n_coord_tor", "n_order"):
+        # JOREK validates all three as odd integers.
         return list(range(1, maximum + 1, 2))
+    if name == "l_pol_domm":
+        # The Dommaschk expansion starts at poloidal mode 0.
+        return list(range(0, maximum + 1))
     if name in CAPACITY_PARAMS:
         # A capacity is an upper bound: one build at the maximum covers all
         # smaller actual problem sizes.  Building 1..maximum would create
