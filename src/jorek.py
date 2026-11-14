@@ -458,6 +458,13 @@ def _apply_source_compatibility_fixes(source: Path, spec: VariantSpec) -> None:
             "pastix_task_solve(pastix_data, nrhs, x, spm->n);",
             "pastix_task_solve(pastix_data, spm->n, nrhs, x, spm->n);")
         write_text(path, text)
+    if spec.features.solver in ("pastix5", "all"):
+        path = source / "solvers" / "mod_pastix.f90"
+        text = read_text(path)
+        old = '#elif USE_PASTIX\n#include "pastix_fortran.h"\n\n  use mod_integer_types\n'
+        new = '#elif USE_PASTIX\n  use mod_integer_types\n#include "pastix_fortran.h"\n'
+        if old in text:
+            write_text(path, text.replace(old, new, 1))
     if spec.features.solver in ("strumpack", "all"):
         path = source / "solvers" / "spk.cpp"
         text = read_text(path)
