@@ -192,6 +192,35 @@ def _source_context(args) -> dict:
             "source_dir": Path(args.source_dir).expanduser() if getattr(args, "source_dir", None) else None}
 
 
+def _static_libc_available(args) -> bool:
+    cc = args.cc or _host_tool("gcc") or _host_tool("cc")
+    if not cc:
+        return False
+    for lib in ("libc.a", "libm.a", "libmvec.a"):
+        try:
+            proc = subprocess.run([cc, "-print-file-name=%s" % lib],
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                  text=True, check=False)
+        except OSError:
+            return False
+        path = Path(proc.stdout.strip())
+        if not path.is_absolute() or not path.exists():
+            return False
+    return True
+
+
+def _resolve_static_libc(args, platform: PlatformInfo) -> None:
+    if (not platform.is_linux or args.no_full_static
+            or getattr(args, "require_full_static", False)):
+        return
+    if not _static_libc_available(args):
+        print("WARNING: this Linux host does not provide a complete static glibc")
+        print("         (libc.a, libm.a and libmvec.a).  Falling back to dynamic")
+        print("         glibc; all third-party libraries remain static.")
+        print("         Use --require-full-static to make this an error.")
+        args.no_full_static = True
+
+
 def _wait_for_deps_policy(args) -> None:
     """Resolve --deps auto/system before building."""
     if args.deps in ("source", "none"):
@@ -1088,6 +1117,7 @@ def cmd_build(args) -> int:
     banner(args)
     _ensure_jorek_source(args)
     platform = _platform()
+    _resolve_static_libc(args, platform)
     _wait_for_deps_policy(args)
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
@@ -1140,6 +1170,7 @@ def cmd_dist(args) -> int:
     banner(args)
     _ensure_jorek_source(args)
     platform = _platform()
+    _resolve_static_libc(args, platform)
     _wait_for_deps_policy(args)
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
@@ -1211,6 +1242,7 @@ def cmd_full(args) -> int:
     banner(args)
     _ensure_jorek_source(args)
     platform = _platform()
+    _resolve_static_libc(args, platform)
     _wait_for_deps_policy(args)
     if not (platform.is_linux or platform.is_macos or platform.is_bsd):
         raise BuildError("the full solver builder is currently supported on Linux, macOS and the BSDs")
@@ -1446,6 +1478,7 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-verify", action="store_true", help="skip static dependency verification")
     parser.add_argument("--allow-shared", action="store_true", help="allow third-party shared libraries (not recommended)")
     parser.add_argument("--no-full-static", action="store_true", help="do not pass -static on Linux/BSD/Windows")
+    parser.add_argument("--require-full-static", action="store_true", help="fail instead of falling back when static libc is missing")
     parser.add_argument("--keep-going", action="store_true", help="continue after a JOREK target fails")
     parser.add_argument("--keep-source", action="store_true", help="keep staged source trees")
     parser.add_argument("--toolchain-prefix", default=os.environ.get("JOREK_TOOLCHAIN_PREFIX"), help="prefix containing bootstrap compilers")
@@ -1571,6 +1604,7 @@ def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
         ("--no-verify", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--allow-shared", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--no-full-static", dict(action="store_true", default=argparse.SUPPRESS)),
+        ("--require-full-static", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--keep-going", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--keep-source", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--toolchain-prefix", dict(default=argparse.SUPPRESS)),
