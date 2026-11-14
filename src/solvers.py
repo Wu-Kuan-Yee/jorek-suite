@@ -84,7 +84,32 @@ class SolverBuild:
         env.setdefault("CC", self.cc)
         env.setdefault("CXX", self.cxx)
         env.setdefault("FC", self.fc)
+        pkg = str(self.prefix / "lib" / "pkgconfig")
+        existing = env.get("PKG_CONFIG_PATH", "")
+        env["PKG_CONFIG_PATH"] = pkg + (os.pathsep + existing if existing else "")
         return env
+
+    # -- hwloc -------------------------------------------------------------
+    def hwloc(self) -> None:
+        if (self.prefix / "lib" / "libhwloc.a").exists():
+            return
+        src = self.source(
+            "https://download.open-mpi.org/release/hwloc/v2.11/hwloc-2.11.2.tar.gz",
+            "hwloc-2.11.2.tar.gz", "hwloc")
+        build = self.work / "build" / "hwloc"
+        self.cmake_configure(src, build, [
+            "-DCMAKE_INSTALL_PREFIX=%s" % self.prefix,
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+            "-DHWLOC_BUILD_STATIC=ON",
+            "-DHWLOC_BUILD_SHARED=OFF",
+            "-DHWLOC_BUILD_UTILS=OFF",
+            "-DHWLOC_BUILD_TESTS=OFF",
+            "-DHWLOC_ENABLE_CXX=OFF",
+            "-DHWLOC_ENABLE_LIBXML2=OFF",
+            "-DHWLOC_BUILD_DOXYGEN=OFF",
+        ], "hwloc")
+        self.cmake_build(build, "hwloc", install=True)
 
     # -- GKlib / METIS -----------------------------------------------------
     def gklib_metis(self) -> None:
@@ -192,6 +217,7 @@ class SolverBuild:
             "-DCMAKE_Fortran_COMPILER=%s" % self.mpifc,
             "-DMETIS_LIBRARIES=%s" % (self.prefix / "lib" / "libmetis.a"),
             "-DMETIS_INCLUDE_DIRS=%s" % (self.prefix / "include"),
+            "-DHWLOC_DIR=%s" % self.prefix,
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix6")
         self.cmake_build(build, "pastix6", install=True)
@@ -276,11 +302,13 @@ class SolverBuild:
             "-DCMAKE_Fortran_COMPILER=%s" % self.mpifc,
             "-DMETIS_LIBRARIES=%s" % (self.prefix / "lib" / "libmetis.a"),
             "-DMETIS_INCLUDE_DIRS=%s" % (self.prefix / "include"),
+            "-DHWLOC_DIR=%s" % self.prefix,
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix5")
         self.cmake_build(build, "pastix5", target="pastix", install=True)
 
     def build(self) -> None:
+        self.hwloc()
         self.gklib_metis()
         self.pastix6()
         self.strumpack()
