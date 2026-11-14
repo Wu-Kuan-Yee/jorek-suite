@@ -926,11 +926,84 @@ static void js_print_programs(Suite *s, Variant *v, int json) {
         printf("]}\n");
         return;
     }
-    printf("Programs%s%s:\n", v ? " for variant " : "", v ? v->name : "");
-    for (i = 0; i < s->nprograms; ++i) {
-        Program *p = &s->programs[i];
-        if (v && !js_streq(p->variant, v->name)) continue;
-        printf("  %-40s %10llu bytes\n", p->name, (unsigned long long)p->size);
+    if (v) {
+        printf("Programs for variant %s:\n", v->name);
+        for (i = 0; i < s->nprograms; ++i) {
+            Program *p = &s->programs[i];
+            if (!js_streq(p->variant, v->name)) continue;
+            printf("  %-40s %10llu bytes\n", p->name, (unsigned long long)p->size);
+        }
+        return;
+    }
+    for (i = 0; i < s->nvariants; ++i) {
+        Variant *vv = &s->variants[i];
+        size_t j;
+        if (i) printf("\n");
+        printf("Programs for variant %s:\n", vv->name);
+        for (j = 0; j < s->nprograms; ++j) {
+            Program *p = &s->programs[j];
+            if (!js_streq(p->variant, vv->name)) continue;
+            printf("  %-40s %10llu bytes\n", p->name, (unsigned long long)p->size);
+        }
+    }
+}
+
+static void js_print_feature_list(const char *features) {
+    const char *p = features;
+    while (p && *p) {
+        const char *c = strchr(p, ',');
+        size_t n = c ? (size_t)(c - p) : strlen(p);
+        if (n) printf("%.*s\n", (int)n, p);
+        if (!c) break;
+        p = c + 1;
+    }
+}
+
+static void js_print_feature_list_json(const char *features) {
+    const char *p = features;
+    int first = 1;
+    printf("[");
+    while (p && *p) {
+        const char *c = strchr(p, ',');
+        size_t n = c ? (size_t)(c - p) : strlen(p);
+        if (n) {
+            printf("%s\"%.*s\"", first ? "" : ", ", (int)n, p);
+            first = 0;
+        }
+        if (!c) break;
+        p = c + 1;
+    }
+    printf("]");
+}
+
+static void js_print_features(Suite *s, Variant *v, int json) {
+    size_t i;
+    if (json) {
+        printf("{\"features\":[");
+        if (v) {
+            js_print_feature_list_json(v->features);
+        } else {
+            int firstv = 1;
+            for (i = 0; i < s->nvariants; ++i) {
+                printf("%s{\"variant\":\"%s\",\"features\":", firstv ? "" : ", ",
+                       s->variants[i].name);
+                js_print_feature_list_json(s->variants[i].features);
+                printf("}");
+                firstv = 0;
+            }
+        }
+        printf("]}\n");
+        return;
+    }
+    if (v) {
+        printf("Features for variant %s:\n", v->name);
+        js_print_feature_list(v->features);
+        return;
+    }
+    for (i = 0; i < s->nvariants; ++i) {
+        if (i) printf("\n");
+        printf("Features for variant %s:\n", s->variants[i].name);
+        js_print_feature_list(s->variants[i].features);
     }
 }
 
@@ -1929,18 +2002,12 @@ int main(int argc, char **argv) {
     if (opt_list) { js_print_variants(&suite, opt_json); return 0; }
     if (opt_info) { js_print_info(&suite); return 0; }
     if (opt_list_features) {
-        /* Union of features, printed one per line. */
-        size_t vi;
-        for (vi = 0; vi < suite.nvariants; ++vi) {
-            const char *p = suite.variants[vi].features;
-            while (p && *p) {
-                const char *c = strchr(p, ',');
-                size_t n = c ? (size_t)(c - p) : strlen(p);
-                if (n) printf("%.*s\n", (int)n, p);
-                if (!c) break;
-                p = c + 1;
-            }
+        Variant *v = NULL;
+        if (opt_variant || opt_model || opt_features || opt_params) {
+            v = js_select_variant(&suite, opt_variant, opt_model, opt_features, opt_params, NULL, 1, &why);
+            if (!v) js_die(2, "%s", why ? why : "no matching variant");
         }
+        js_print_features(&suite, v, opt_json);
         return 0;
     }
     if (opt_list_programs) {

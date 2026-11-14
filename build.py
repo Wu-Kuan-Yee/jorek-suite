@@ -1107,9 +1107,17 @@ def cmd_matrix(args) -> int:
             "params": s.param_tokens(),
         } for s in specs], indent=2))
         return 0
-    print("%-62s %-6s %-9s %s" % ("VARIANT", "MODEL", "SOLVER", "PROGRAMS"))
-    for spec in specs:
-        print("%-62s %-6s %-9s %s" % (_variant_name(spec), spec.model, spec.features.solver, ",".join(spec.programs)))
+    if args.details:
+        print("%-54s %-6s %-10s %-9s %s" % ("VARIANT", "MODEL", "SOLVER", "PROGRAMS", "FEATURES / PARAMETERS"))
+        for spec in specs:
+            detail = ",".join(spec.features.feature_tokens()) + " | " + ",".join(spec.param_tokens())
+            print("%-54s %-6s %-10s %-9s %s" % (
+                _variant_name(spec), spec.model, spec.features.solver,
+                getattr(args, "programs", "main"), detail))
+    else:
+        print("%-62s %-6s %-9s %s" % ("VARIANT", "MODEL", "SOLVER", "PROGRAMS"))
+        for spec in specs:
+            print("%-62s %-6s %-9s %s" % (_variant_name(spec), spec.model, spec.features.solver, getattr(args, "programs", "main")))
     print("")
     print("Total: %d variants" % len(specs))
     return 0
@@ -1268,7 +1276,7 @@ def cmd_full(args) -> int:
         # by solvers.py so its upstream quirks stay auditable in one place.
         core_args = copy.copy(args)
         core_args.solver = "mumps"
-        core_args.profile = "full"
+        core_args.profile = getattr(args, "profile", "full")
         core_args.deps = "source"
         _ensure_source_deps(core_args)
 
@@ -1303,8 +1311,9 @@ def cmd_full(args) -> int:
     all_args.deps = "none"
     all_args.solver = "all"
     all_args.model = args.model
-    all_args.matrix = "one" if args.model else "maximal"
-    all_args.programs = "most"
+    preset_matrix = getattr(args, "matrix", None)
+    all_args.matrix = preset_matrix or ("one" if args.model else "maximal")
+    all_args.programs = getattr(args, "programs", None) or "most"
     all_args.dep_prefix = [str(p) for p in prefixes]
     all_args.mpi_prefix = str(mpi_prefix) if mpi_prefix else None
     all_args.output = str(work / "dist" / "jorek-suite-solvers")
@@ -1321,8 +1330,8 @@ def cmd_full(args) -> int:
     p5_args = copy.copy(all_args)
     p5_args.solver = "pastix5"
     p5_args.model = args.model
-    p5_args.matrix = "one" if args.model else "maximal"
-    p5_args.programs = "main"
+    p5_args.matrix = all_args.matrix
+    p5_args.programs = getattr(args, "programs", None) or "main"
     p5_prefix = solver_prefix / "pastix5"
     p5_args.dep_prefix = [str(p5_prefix)] + [str(p) for p in prefixes]
     p5_args.output = str(work / "dist" / "jorek-suite-pastix5")
@@ -1495,6 +1504,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mirror", action="append", default=[], metavar="NAME=URL", help="additional source URL for a dependency (repeatable)")
     parser.add_argument("--deps", choices=("source", "auto", "system", "none"), default="auto", help="dependency policy: source, system, auto (default), or none")
     parser.add_argument("--profile", choices=("minimal", "standard", "full", "complete"), default="full", help="dependency/solver profile")
+    parser.add_argument("--everything", action="store_true",
+                        help="preset: complete model-toggle matrix, all solvers, all programs, complete dependencies; numeric parameter grids still need --param-grid")
     parser.add_argument("--solver", choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default="mumps", help="direct solver backend")
     parser.add_argument("--ima-root", "--imas-root", dest="imas_root", default=os.environ.get("JOREK_IMAS_ROOT"), help="IMAS installation prefix")
     parser.add_argument("--catalyst-root", default=os.environ.get("JOREK_CATALYST_ROOT"), help="ParaView Catalyst installation prefix")
@@ -1521,6 +1532,7 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", help="restrict to one model (models matrix only)")
     p.add_argument("--programs", choices=("main", "most", "all"), default="main")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--details", action="store_true", help="include features and hard-coded parameters")
     p.add_argument("--enable", action="append", default=[], help="enable feature (repeatable)")
     p.add_argument("--disable", action="append", default=[], help="disable feature (repeatable)")
     p.add_argument("--debug", action="store_true")
@@ -1621,6 +1633,7 @@ def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
         ("--url", dict(action="append", default=argparse.SUPPRESS)),
         ("--mirror", dict(action="append", default=argparse.SUPPRESS)),
         ("--profile", dict(choices=("minimal", "standard", "full", "complete"), default=argparse.SUPPRESS)),
+        ("--everything", dict(action="store_true", default=argparse.SUPPRESS)),
         ("--solver", dict(choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default=argparse.SUPPRESS)),
         ("--ima-root", "--imas-root", dict(dest="imas_root", default=argparse.SUPPRESS)),
         ("--catalyst-root", dict(default=argparse.SUPPRESS)),
@@ -1634,6 +1647,19 @@ def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
         if any(opt in parser._option_string_actions for opt in option_strings):
             continue
         parser.add_argument(*option_strings, **kwargs)
+
+
+def _apply_everything(args) -> None:
+    if not getattr(args, "everything", False):
+        return
+    # A single switch for the largest useful build.  Numeric parameter
+    # combinations still need an explicit --param-grid: there is no finite
+    # universal range for n_tor, n_order, grid capacities, etc.
+    args.matrix = "complete"
+    args.solver = "all"
+    args.programs = "all"
+    args.profile = "complete"
+    args.deps = "auto"
 
 
 def _postprocess_args(args) -> None:
@@ -1662,6 +1688,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Shared options may be specified before or after the subcommand.  Merge
     # the subparser defaults with the global values where appropriate.
     try:
+        _apply_everything(args)
         _postprocess_args(args)
         if getattr(args, "verbose", False):
             os.environ["JOREK_QUIET"] = ""

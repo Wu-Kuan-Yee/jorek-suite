@@ -238,6 +238,7 @@ model inference from a JOREK namelist.
 * [Job scheduler adapters](docs/SCHEDULERS.md)
 * [Solver backends](docs/SOLVERS.md)
 * [Source acquisition policy](docs/SOURCES.md)
+* [Complete matrix shorthand](#complete-matrix-shorthand)
 * [Building the full Cartesian matrix](docs/CARTESIAN.md)
 * [Embedded runtime scripts and native jorek-tool](docs/RUNTIME_SCRIPTS.md)
 * [Single-file format](docs/SUITE_FORMAT.md)
@@ -248,3 +249,43 @@ model inference from a JOREK namelist.
 The build orchestration and launcher are LGPL-3.0-or-later, matching JOREK.
 See `LICENSE` and `NOTICE`.  Third-party components keep their own licences;
 `docs/DEPENDENCIES.md` lists them.
+
+## Complete matrix shorthand
+
+`--everything` expands to the largest useful build:
+
+```sh
+python3 build.py --everything full
+```
+
+It sets:
+
+```text
+--matrix complete
+--solver all
+--programs all
+--profile complete
+--deps auto
+```
+
+This expands every model-family toggle (for example `with_TiTe`,
+`with_vpar`, `with_rho`, `with_neutrals`, `with_impurities`).  Numeric
+hard-coded parameters still need an explicit grid, because there is no finite
+universal range for `n_tor`, `n_order`, grid capacities, and similar values:
+
+```sh
+python3 build.py --everything full \
+  --param-grid n_tor=1,3,5 \
+  --param-grid n_order=3,4
+```
+
+Use the planner before committing to a very large build:
+
+```sh
+python3 build.py matrix --everything --details
+python3 build.py --everything --dry-run build --deps none --solver all
+```
+
+`full --everything` also builds the PaStiX 5 pass.  The resulting suite can be
+much larger than the default 42-variant suite.
+
