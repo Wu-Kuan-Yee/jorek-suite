@@ -423,6 +423,22 @@ class Downloader:
                         print("    %.1f%% (%s / %s)" % (100.0 * done / total_i, human_bytes(done), human_bytes(total_i)))
                         last_print = now
             os.replace(tmp, destination)
+        except Exception as primary:  # noqa: BLE001 - fall back to curl
+            curl = shutil.which("curl")
+            if curl:
+                print("  urllib failed (%s); retrying with curl --http1.1" % primary)
+                try:
+                    subprocess.run(
+                        [curl, "-L", "--http1.1", "--retry", "5", "--retry-delay", "2",
+                         "-o", str(tmp), url],
+                        check=True,
+                    )
+                    if tmp.exists() and tmp.stat().st_size > 0:
+                        os.replace(tmp, destination)
+                        return
+                except (OSError, subprocess.CalledProcessError) as fallback:
+                    print("  curl fallback failed: %s" % fallback)
+            raise
         finally:
             if tmp.exists():
                 tmp.unlink()
