@@ -210,7 +210,6 @@ class SolverBuild:
             "-DCMAKE_INSTALL_PREFIX=%s" % self.prefix,
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
-            "-DCMAKE_EXE_LINKER_FLAGS=-lm",
             "-DBUILD_SHARED_LIBS=OFF",
             "-DPASTIX_WITH_MPI=ON",
             "-DPASTIX_WITH_FORTRAN=OFF",
@@ -228,6 +227,7 @@ class SolverBuild:
             "-DMETIS_LIBRARIES=%s;-lm" % (self.prefix / "lib" / "libmetis.a"),
             "-DMETIS_INCLUDE_DIRS=%s" % (self.prefix / "include"),
             "-DHWLOC_DIR=%s" % self.prefix,
+            "-DHWLOC_LIBRARIES=%s;-lm" % (self.prefix / "lib" / "libhwloc.a"),
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix6")
         self.cmake_build(build, "pastix6", target="pastix")
@@ -323,7 +323,6 @@ class SolverBuild:
             "-DCMAKE_INSTALL_PREFIX=%s" % prefix,
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
-            "-DCMAKE_EXE_LINKER_FLAGS=-lm",
             "-DBUILD_SHARED_LIBS=OFF",
             "-DPASTIX_WITH_MPI=ON",
             "-DPASTIX_WITH_MULTITHREAD=ON",
@@ -339,6 +338,7 @@ class SolverBuild:
             "-DMETIS_LIBRARIES=%s;-lm" % (self.prefix / "lib" / "libmetis.a"),
             "-DMETIS_INCLUDE_DIRS=%s" % (self.prefix / "include"),
             "-DHWLOC_DIR=%s" % self.prefix,
+            "-DHWLOC_LIBRARIES=%s;-lm" % (self.prefix / "lib" / "libhwloc.a"),
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "pastix5")
         self.cmake_build(build, "pastix5", target="pastix")
