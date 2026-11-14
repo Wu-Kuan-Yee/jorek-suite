@@ -636,6 +636,8 @@ def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, L
         flags.append("-D_POSIX_C_SOURCE=200809L")
     if platform.is_windows:
         flags.append("-D_CRT_SECURE_NO_WARNINGS")
+    if platform.is_linux or platform.is_bsd or platform.is_windows:
+        flags.append("-static")
     obj = objdir / ("jorek_suite" + platform.exe_suffix + ".o")
     puff_obj = objdir / ("puff" + platform.exe_suffix + ".o")
     include = HERE / "src"
@@ -657,8 +659,8 @@ def _compile_runtime_tool(args, platform: PlatformInfo, work: Path) -> Path:
     output = Path(work) / "jorek-tool" / ("jorek-tool" + platform.exe_suffix)
     output.parent.mkdir(parents=True, exist_ok=True)
     flags = ["-O2", "-std=c++17", "-Wall", "-Wextra"]
-    if platform.is_linux or platform.is_bsd:
-        flags += ["-static-libstdc++", "-static-libgcc"]
+    if platform.is_linux or platform.is_bsd or platform.is_windows:
+        flags.append("-static")
     run([cxx] + flags + [str(source), "-o", str(output)])
     return output
 
