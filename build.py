@@ -149,6 +149,76 @@ def _toolchain_prefix(args) -> List[Path]:
     return [p for p in values if str(p)]
 
 
+def _source_options(args):
+    source_dirs = {}
+    for item in getattr(args, "source", []) or []:
+        if "=" not in item:
+            raise BuildError("--source expects NAME=DIR, got %r" % item)
+        name, value = item.split("=", 1)
+        source_dirs[name.strip()] = Path(value).expanduser()
+    urls = {}
+    for option in ("url", "mirror"):
+        for item in getattr(args, option, []) or []:
+            if "=" not in item:
+                raise BuildError("--%s expects NAME=URL, got %r" % (option, item))
+            name, value = item.split("=", 1)
+            urls.setdefault(name.strip(), []).append(value.strip())
+    return source_dirs, urls
+
+
+def _system_static_prefixes(args) -> List[Path]:
+    prefixes = [Path(p).expanduser() for p in (args.dep_prefix or [])]
+    built = Path(args.work).expanduser() / "deps"
+    if built.exists() and built not in prefixes:
+        prefixes.insert(0, built)
+    for candidate in ("/usr/local", "/usr"):
+        path = Path(candidate)
+        if path.exists() and path not in prefixes:
+            prefixes.append(path)
+    return prefixes
+
+
+def _static_available(prefixes: Sequence[Path], lib: str) -> bool:
+    for prefix in prefixes:
+        for sub in ("lib", "lib64", "lib/x86_64-linux-gnu", "lib/aarch64-linux-gnu"):
+            if (prefix / sub / lib).exists():
+                return True
+    return False
+
+
+def _source_context(args) -> dict:
+    source_dirs, urls = _source_options(args)
+    return {"source_dirs": source_dirs, "url_overrides": urls,
+            "source_dir": Path(args.source_dir).expanduser() if getattr(args, "source_dir", None) else None}
+
+
+def _wait_for_deps_policy(args) -> None:
+    """Resolve --deps auto/system before building."""
+    if args.deps in ("source", "none"):
+        return
+    names = deps.core_dependencies(args.profile, args.solver)
+    required = []
+    for name in names:
+        item = deps.DEPENDENCIES.get(name)
+        if item:
+            required.extend(item.static_libs)
+    prefixes = _system_static_prefixes(args)
+    missing = [lib for lib in required if not _static_available(prefixes, lib)]
+    if args.deps == "system":
+        if missing:
+            raise BuildError("--deps system is missing static libraries: %s" % ", ".join(missing))
+        args.dep_prefix = [str(p) for p in prefixes]
+        return
+    # auto
+    if not missing:
+        print("Using system static dependencies under %s" % ", ".join(str(p) for p in prefixes))
+        args.deps = "system"
+        args.dep_prefix = [str(p) for p in prefixes]
+    else:
+        print("System static dependencies incomplete (%s); building from source" % ", ".join(missing[:4]))
+        args.deps = "source"
+
+
 def _find_compilers(args, platform: PlatformInfo) -> Tuple[str, str, str, str]:
     """Return (cc, cxx, fc, mpifc)."""
     search = [str(Path(args.work) / "deps" / "bin")] + [str(Path(p) / "bin") for p in (args.dep_prefix or [])]
@@ -872,6 +942,7 @@ def cmd_deps(args) -> int:
         make=_host_tool("gmake") or _host_tool("make") or "make",
         cmake=which("cmake") or ("/opt/homebrew/bin/cmake" if os.path.exists("/opt/homebrew/bin/cmake") else None),
         force=args.force,
+        **_source_context(args),
     )
     manager = deps.DepManager(ctx)
     if args.deps_action == "list":
@@ -942,6 +1013,7 @@ def cmd_bootstrap(args) -> int:
         fc=host_fc or host_cc,
         make=_host_tool("gmake") or _host_tool("make") or "make",
         force=args.force,
+        **_source_context(args),
     )
     manager = deps.DepManager(ctx)
     if not _host_tool("make"):
@@ -1016,6 +1088,7 @@ def cmd_build(args) -> int:
     banner(args)
     _ensure_jorek_source(args)
     platform = _platform()
+    _wait_for_deps_policy(args)
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
     cc, cxx, fc, mpifc = _find_compilers(args, platform)
@@ -1056,6 +1129,7 @@ def _ensure_source_deps(args) -> None:
         fc=args.fc or _host_tool("gfortran") or "gfortran",
         make=_host_tool("gmake") or _host_tool("make") or "make",
         force=args.force,
+        **_source_context(args),
     )
     print("Ensuring source dependencies: %s" % ", ".join(names))
     deps.DepManager(ctx).build(names)
@@ -1066,6 +1140,7 @@ def cmd_dist(args) -> int:
     banner(args)
     _ensure_jorek_source(args)
     platform = _platform()
+    _wait_for_deps_policy(args)
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
     cc, cxx, fc, mpifc = _find_compilers(args, platform)
@@ -1136,6 +1211,7 @@ def cmd_full(args) -> int:
     banner(args)
     _ensure_jorek_source(args)
     platform = _platform()
+    _wait_for_deps_policy(args)
     if not (platform.is_linux or platform.is_macos or platform.is_bsd):
         raise BuildError("the full solver builder is currently supported on Linux, macOS and the BSDs")
     if args.dry_run:
@@ -1151,6 +1227,8 @@ def cmd_full(args) -> int:
 
     if args.dep_prefix:
         core_prefix = Path(args.dep_prefix[0])
+    elif args.deps == "system":
+        core_prefix = Path(args.dep_prefix[0]) if args.dep_prefix else Path("/usr")
     else:
         # Build the core static stack with MUMPS.  The solver stack is built
         # by solvers.py so its upstream quirks stay auditable in one place.
@@ -1374,7 +1452,11 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fc", default=os.environ.get("JOREK_FC"), help="Fortran compiler")
     parser.add_argument("--mpi-prefix", default=os.environ.get("JOREK_MPI_PREFIX"), help="MPI installation prefix")
     parser.add_argument("--dep-prefix", action="append", default=[], help="additional static dependency prefix (repeatable)")
-    parser.add_argument("--deps", choices=("source", "none"), default="source", help="build dependencies from source (default) or use --dep-prefix")
+    parser.add_argument("--source", action="append", default=[], metavar="NAME=DIR", help="use this extracted source tree for a dependency")
+    parser.add_argument("--source-dir", default=None, metavar="DIR", help="directory containing <name>-<version> source trees")
+    parser.add_argument("--url", action="append", default=[], metavar="NAME=URL", help="override the primary source URL for a dependency")
+    parser.add_argument("--mirror", action="append", default=[], metavar="NAME=URL", help="additional source URL for a dependency (repeatable)")
+    parser.add_argument("--deps", choices=("source", "auto", "system", "none"), default="auto", help="dependency policy: source, system, auto (default), or none")
     parser.add_argument("--profile", choices=("minimal", "standard", "full", "complete"), default="full", help="dependency/solver profile")
     parser.add_argument("--solver", choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default="mumps", help="direct solver backend")
     parser.add_argument("--ima-root", "--imas-root", dest="imas_root", default=os.environ.get("JOREK_IMAS_ROOT"), help="IMAS installation prefix")
@@ -1495,7 +1577,11 @@ def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
         ("--fc", dict(default=argparse.SUPPRESS)),
         ("--mpi-prefix", dict(default=argparse.SUPPRESS)),
         ("--dep-prefix", dict(action="append", default=argparse.SUPPRESS)),
-        ("--deps", dict(choices=("source", "none"), default=argparse.SUPPRESS)),
+        ("--deps", dict(choices=("source", "auto", "system", "none"), default=argparse.SUPPRESS)),
+        ("--source", dict(action="append", default=argparse.SUPPRESS)),
+        ("--source-dir", dict(default=argparse.SUPPRESS)),
+        ("--url", dict(action="append", default=argparse.SUPPRESS)),
+        ("--mirror", dict(action="append", default=argparse.SUPPRESS)),
         ("--profile", dict(choices=("minimal", "standard", "full", "complete"), default=argparse.SUPPRESS)),
         ("--solver", dict(choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default=argparse.SUPPRESS)),
         ("--ima-root", "--imas-root", dict(dest="imas_root", default=argparse.SUPPRESS)),

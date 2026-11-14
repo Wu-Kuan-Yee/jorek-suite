@@ -421,6 +421,8 @@ class BuildContext:
     force: bool = False
     offline: bool = False
     source_dir: Optional[Path] = None
+    source_dirs: Dict[str, Path] = field(default_factory=dict)
+    url_overrides: Dict[str, List[str]] = field(default_factory=dict)
     extra_path: Tuple[str, ...] = ()
     extra_env: Dict[str, str] = field(default_factory=dict)
     stamps: Dict[str, dict] = field(default_factory=dict)
@@ -531,7 +533,26 @@ def _find_in_prefix(prefix: Path, name: str) -> Optional[Path]:
 # ---------------------------------------------------------------------------
 # Builder implementations
 # ---------------------------------------------------------------------------
+def _provided_source(ctx: BuildContext, dep: Dependency) -> Optional[Path]:
+    supplied = ctx.source_dirs.get(dep.name)
+    if supplied is None and ctx.source_dir:
+        for candidate in (ctx.source_dir / ("%s-%s" % (dep.name, dep.version)),
+                          ctx.source_dir / dep.name):
+            if candidate.exists():
+                supplied = candidate
+                break
+    if supplied is not None:
+        supplied = Path(supplied).expanduser().resolve()
+        if not supplied.is_dir():
+            raise BuildError("source directory for %s is not a directory: %s" % (dep.name, supplied))
+        print("  %-18s using source tree %s" % (dep.name, supplied))
+    return supplied
+
+
 def _extract_root(ctx: BuildContext, dep: Dependency, archive: Path) -> Path:
+    supplied = _provided_source(ctx, dep)
+    if supplied is not None:
+        return supplied
     destination = ensure_dir(ctx.work / "src" / ("%s-%s" % (dep.name, dep.version)))
     # Always extract to a clean directory to keep patches deterministic.
     if destination.exists():
@@ -1107,8 +1128,11 @@ class DepManager:
         builder = BUILDERS.get(item.builder)
         if not builder:
             raise BuildError("no builder registered for %s (%s)" % (item.name, item.builder))
-        archive = ctx.downloader.fetch(item.url, "%s-%s-%s" % (item.name, item.version, os.path.basename(item.url.split("?")[0])), item.sha256)
-        src = _extract_root(ctx, item, archive)
+        urls = list(ctx.url_overrides.get(item.name, [])) + [item.url]
+        src = _provided_source(ctx, item)
+        if src is None:
+            archive = ctx.downloader.fetch(urls, "%s-%s-%s" % (item.name, item.version, os.path.basename(item.url.split("?")[0])), item.sha256)
+            src = _extract_root(ctx, item, archive)
         try:
             builder(ctx, item, src)
         except BuildError:

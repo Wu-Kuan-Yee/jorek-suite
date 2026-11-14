@@ -354,7 +354,16 @@ class Downloader:
             self.lock[name] = sha
             write_json(self.lock_path, self.lock)
 
-    def fetch(self, url: str, filename: str, sha256: Optional[str] = None) -> Path:
+    def fetch(self, url, filename: str, sha256: Optional[str] = None) -> Path:
+        if not isinstance(url, str):
+            errors = []
+            for candidate in url:
+                try:
+                    return self.fetch(candidate, filename, sha256)
+                except BuildError as exc:
+                    errors.append("%s: %s" % (candidate, exc))
+            raise BuildError("all source URLs failed for %s:\n  %s" % (
+                filename, "\n  ".join(errors)))
         filename = os.path.basename(filename) or "download"
         destination = self.cache_dir / filename
         expected = normalize_sha256(sha256)
