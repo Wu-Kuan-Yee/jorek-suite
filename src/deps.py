@@ -723,6 +723,8 @@ def build_gcc(ctx: BuildContext, dep: Dependency, src: Path) -> None:
 
 def build_mpich(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     env = ctx.build_env(dep)
+    if ctx.platform.is_linux or ctx.platform.is_bsd:
+        env["LDFLAGS"] = (env.get("LDFLAGS", "") + " -static").strip()
     device = "ch3:sock" if ctx.platform.is_macos else "ch3:nemesis"
     args = [
         str(src / "configure"),
