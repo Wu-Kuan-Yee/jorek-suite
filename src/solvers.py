@@ -237,8 +237,11 @@ class SolverBuild:
         # needed by JOREK directly.
         ensure_dir(self.prefix / "lib")
         ensure_dir(self.prefix / "include")
-        for name in ("libpastix.a", "libspm.a", "libpastix_kernels.a"):
-            path = build / name
+        for rel, name in (
+                ("libpastix.a", "libpastix.a"),
+                ("kernels/libpastix_kernels.a", "libpastix_kernels.a"),
+                ("spm/src/libspm.a", "libspm.a")):
+            path = build / rel
             if path.exists():
                 shutil.copy2(path, self.prefix / "lib" / name)
         shutil.copy2(src / "include" / "pastix.h", self.prefix / "include" / "pastix.h")
