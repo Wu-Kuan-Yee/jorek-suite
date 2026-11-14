@@ -276,12 +276,13 @@ class SolverBuild:
         src = self.source(
             "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
             "pastix-5.2.3.tar.bz2", "pastix5")
-        stub = src / "sopalin" / "src" / "murge_fortran.c"
+        root = src / "src" if (src / "src" / "CMakeLists.txt").exists() else src
+        stub = root / "sopalin" / "src" / "murge_fortran.c"
         if not stub.exists():
+            ensure_dir(stub.parent)
             write_text(stub, "int pastix_murge_dummy;\n")
         build = self.work / "build" / "pastix5"
-        self.cmake_configure(src / "src" if (src / "src" / "CMakeLists.txt").exists() else src,
-                             build, [
+        self.cmake_configure(root, build, [
             "-DCMAKE_INSTALL_PREFIX=%s" % prefix,
             "-DCMAKE_BUILD_TYPE=Release",
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
