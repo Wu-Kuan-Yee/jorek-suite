@@ -363,6 +363,10 @@ class SolverBuild:
         if header_top.exists() and header_inc.exists():
             (prefix / "include" / "pastix_fortran.h").write_text(
                 header_top.read_text(encoding="utf-8", errors="replace")
+                + "#define MURGE_COEF_KIND 8\n"
+                + "#define MURGE_REAL_KIND 8\n"
+                + "#define MURGE_INTS_KIND 4\n"
+                + "#define MURGE_INTL_KIND 8\n"
                 + header_inc.read_text(encoding="utf-8", errors="replace"),
                 encoding="utf-8")
         else:
