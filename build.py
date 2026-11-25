@@ -623,7 +623,7 @@ def _collect_variants(args, platform: PlatformInfo, toolchain) -> List[BuiltVari
         models_to_build = sorted(models)
     else:
         models_to_build = [args.model or "303"]
-    if args.model and args.matrix in ("one", "models"):
+    if args.model and args.matrix in ("one", "models", "maximal", "complete"):
         models_to_build = [args.model]
     specs: List[jorek.VariantSpec] = []
     for model in models_to_build:
@@ -693,7 +693,11 @@ def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, L
     if platform.is_macos:
         return obj, [obj, puff_obj]
     exe = objdir / ("jorek-suite" + platform.exe_suffix)
-    run([cc, str(obj), str(puff_obj), "-o", str(exe)] + (["-mconsole"] if platform.is_windows else []))
+    link_flags: List[str] = []
+    if platform.is_linux or platform.is_bsd or platform.is_windows:
+        link_flags.append("-static")
+    run([cc] + link_flags + [str(obj), str(puff_obj), "-o", str(exe)] +
+        (["-mconsole"] if platform.is_windows else []))
     return exe, [obj, puff_obj]
 
 

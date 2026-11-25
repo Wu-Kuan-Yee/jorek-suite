@@ -934,11 +934,15 @@ def build_scotch(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     text = re.sub(r"(?m)^prefix\s*=.*$", "prefix = %s" % ctx.prefix, text)
     text = re.sub(r"(?m)^CCS\s*=.*$", "CCS = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
     text = re.sub(r"(?m)^CCP\s*=.*$", "CCP = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CFLAGS\s*=.*$", "CFLAGS = -O2 -fPIC", text)
+    text = re.sub(r"(?m)^CC\s*=.*$", "CC = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
+    text = re.sub(r"(?m)^CCD\s*=.*$", "CCD = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
+    text = re.sub(r"(?m)^CFLAGS\s*=.*$", "CFLAGS = -O2 -fPIC -std=gnu17 -I%s/include" % ctx.prefix, text)
     write_text(src / "src" / "Makefile.inc", text)
     env = ctx.build_env(dep)
-    run([ctx.make, "-C", "src", "-j%d" % max(1, ctx.jobs), "esmumps", "ptesmumps"],
-        cwd=src, env=env, log=ctx.log_path(dep.name))
+    run([ctx.make, "-C", "src", "-j1", "esmumps"], cwd=src, env=env,
+        log=ctx.log_path(dep.name))
+    run([ctx.make, "-C", "src", "-j1", "ptesmumps"], cwd=src, env=env,
+        log=ctx.log_path(dep.name))
     run([ctx.make, "-C", "src", "install"], cwd=src, env=env, log=ctx.log_path(dep.name), check=False)
     _install_fallback(ctx, dep, src)
 

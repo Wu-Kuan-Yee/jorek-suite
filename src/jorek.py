@@ -851,6 +851,10 @@ class MakeBuilder:
         blas = layout.lib("libopenblas.a")
         lines.append("LIBLAPACK = %s" % blas)
         lines.append("LIBBLAS =")
+        try:
+            lines.append("LIBDIERCKX = %s" % layout.lib("libdierckx.a"))
+        except BuildError:
+            lines.append("LIBDIERCKX =")
         # Solver-specific block
         if solver in ("mumps", "all"):
             lines.extend(self._mumps_block())
@@ -912,6 +916,12 @@ class MakeBuilder:
                 pass
         if layout.platform.is_macos:
             lines.append("LIBS += -lxml2 -llzma -framework IOKit -framework CoreFoundation -framework OpenCL")
+        # PaStiX 6 bundles a private SCOTCH copy whose graph.c exports the same
+        # symbols as the standalone SCOTCH used by MUMPS.  Both definitions are
+        # equivalent; permit the duplicate when several direct solvers are
+        # linked into one executable.
+        if solver == "all":
+            lines.append("LIBS += -Wl,--allow-multiple-definition")
         if self.full_static and not layout.platform.is_macos:
             # The link rule is $(FC) $(FLAGS) ... $(LIBS), with the compiler's
             # implicit -lm before LIBS.  Put -static in FLAGS so it also covers
@@ -928,18 +938,22 @@ class MakeBuilder:
     def _mumps_block(self) -> List[str]:
         layout = self.layout
         libs = layout.static_libs(("libdmumps.a", "libmumps_common.a", "libpord.a", "libscalapack.a"))
+        # MUMPS archives reference METIS/SCOTCH symbols.  They must appear
+        # after libdmumps.a/libmumps_common.a on the link line, otherwise a
+        # static link leaves those symbols unresolved.
+        ordering_libs = []
+        for name in ("libmetis.a", "libGKlib.a", "libscotch.a", "libscotcherr.a", "libesmumps.a"):
+            try:
+                ordering_libs.append(str(layout.lib(name)))
+            except BuildError:
+                pass
         lines = [
-            "LIB_MUMPS = %s" % " ".join(libs[:2]),
+            "LIB_MUMPS = %s" % " ".join(libs[:2] + ordering_libs),
             "ORDLIB = %s" % libs[2],
             "SCALAP = %s" % libs[3],
             "BLACS =",
             "INC_MUMPS = %s" % layout.mumps_include(),
         ]
-        for name in ("libmetis.a", "libscotch.a", "libscotcherr.a", "libesmumps.a"):
-            try:
-                lines.append("LIBS += %s" % layout.lib(name))
-            except BuildError:
-                pass
         return lines
 
     def _pastix6_block(self) -> List[str]:
