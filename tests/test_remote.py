@@ -358,7 +358,16 @@ class RemoteCommandTests(unittest.TestCase):
                     print(json.dumps({"portable_on_build_host": True}))
                 """)
             (source / "build.py").write_text(script, encoding="utf-8")
-            subprocess.run(["git", "-C", str(source), "add", "build.py"], check=True)
+            (source / "src").mkdir(parents=True, exist_ok=True)
+            (source / "src" / "deps.py").write_text(
+                "from types import SimpleNamespace\n"
+                "DEPENDENCIES = {'pastix6': SimpleNamespace("
+                "source_kind='git', git_ref='v6.3.2', git_submodules=True)}\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(source), "add", "build.py", "src/deps.py"],
+                check=True)
             subprocess.run(["git", "-C", str(source), "commit", "-m", "fixture"],
                            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             commit = subprocess.run(
@@ -383,7 +392,12 @@ class RemoteCommandTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertIn("@@JOREK_BUILD_EVENT@@", result.stdout)
             self.assertIn('"id":"remote:repository"', result.stdout)
+            self.assertIn('"id":"remote:source-audit"', result.stdout)
             self.assertIn('"id":"remote:build"', result.stdout)
+            self.assertIn("Pinned jorek-suite commit: " + commit, result.stdout)
+            self.assertIn(
+                "PaStiX 6.3.2 recipe: source_kind=git, git_ref=v6.3.2, "
+                "recursive_submodules=True", result.stdout)
             self.assertIn('"id":"remote:verify"', result.stdout)
             event_prefix = "@@JOREK_BUILD_EVENT@@"
             events = [
@@ -466,7 +480,16 @@ class RemoteCommandTests(unittest.TestCase):
                     print(json.dumps({"portable_on_build_host": True}))
                 """)
             (source / "build.py").write_text(script, encoding="utf-8")
-            subprocess.run(["git", "-C", str(source), "add", "build.py"], check=True)
+            (source / "src").mkdir(parents=True, exist_ok=True)
+            (source / "src" / "deps.py").write_text(
+                "from types import SimpleNamespace\n"
+                "DEPENDENCIES = {'pastix6': SimpleNamespace("
+                "source_kind='git', git_ref='v6.3.2', git_submodules=True)}\n",
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "-C", str(source), "add", "build.py", "src/deps.py"],
+                check=True)
             subprocess.run(["git", "-C", str(source), "commit", "-m", "fixture"],
                            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             commit = subprocess.run(
