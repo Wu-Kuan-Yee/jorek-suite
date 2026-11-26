@@ -92,7 +92,12 @@ class StageLogDialog(QDialog):
         old_vertical = vertical.value()
         old_horizontal = horizontal.value()
         follow_vertical = old_vertical >= vertical.maximum() - 1
-        follow_horizontal = old_horizontal >= horizontal.maximum() - 1
+        # A newly opened log has no horizontal range yet; keep it at the
+        # natural left edge when long lines first arrive. Follow right only
+        # after the reader has actually scrolled to the right edge.
+        follow_horizontal = (
+            horizontal.maximum() > 0 and
+            old_horizontal >= horizontal.maximum() - 1)
 
         # Insert through an independent document cursor.  Setting the widget's
         # visible cursor to End or calling ensureCursorVisible() would steal the
