@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from deps import DEPENDENCIES, validate_source_recipe
+from deps import DEPENDENCIES, merge_static_archives, validate_source_recipe
 
 from common import (
     BuildError,
@@ -338,25 +338,16 @@ class SolverBuild:
         if not merged.exists() or not marker.exists():
             split = self.prefix / "lib" / "libmetis-split.a"
             if not split.exists():
-                split = self.prefix / "lib" / "libmetis.a"
-                shutil.copy2(split, self.prefix / "lib" / "libmetis-split.a")
+                shutil.copy2(
+                    self.prefix / "lib" / "libmetis.a", split)
             gklib = self.prefix / "lib" / "libGKlib.a"
-            if self.platform.is_macos and self.libtool:
-                run([self.libtool, "-static", "-o", str(merged), str(split), str(gklib)],
-                    log=self.log("metis-merge"))
-            else:
-                tmp = ensure_dir(self.work / "metis-merge")
-                m = ensure_dir(tmp / "metis")
-                g = ensure_dir(tmp / "gklib")
-                run([self.ar, "x", str(split)], cwd=m, log=self.log("metis-merge"))
-                run([self.ar, "x", str(gklib)], cwd=g, log=self.log("metis-merge"))
-                objects = []
-                for directory, tag in ((m, "metis_"), (g, "gklib_")):
-                    for obj in directory.glob("*.o"):
-                        target = tmp / (tag + obj.name)
-                        shutil.copy2(obj, target)
-                        objects.append(str(target))
-                run([self.ar, "rcs", str(merged)] + objects, log=self.log("metis-merge"))
+            merge_static_archives(
+                self.ar,
+                self.work / "metis-merge",
+                (("metis", split), ("gklib", gklib)),
+                merged,
+                log=self.log("metis-merge"),
+            )
             write_text(marker, "ok\n")
             shutil.copy2(merged, self.prefix / "lib" / "libmetis.a")
 
