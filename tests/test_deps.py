@@ -167,22 +167,22 @@ class GitSourceTests(unittest.TestCase):
         source = self.root / "strumpack-source"
         source.mkdir()
         mpi_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  target_link_libraries(strumpack PUBLIC\\n"
-            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
-            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  target_link_libraries(strumpack PUBLIC\n"
+            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+            "endif()\n"
         )
         scalapack_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  if(SCALAPACK_FOUND)\\n"
-            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
-            "  endif()\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  if(SCALAPACK_FOUND)\n"
+            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+            "  endif()\n"
+            "endif()\n"
         )
         cmake_lists = source / "CMakeLists.txt"
         cmake_lists.write_text(
-            mpi_block + "\\nif(OpenMP_FOUND)\\nendif()\\n\\n" + scalapack_block,
+            mpi_block + "\nif(OpenMP_FOUND)\nendif()\n\n" + scalapack_block,
             encoding="utf-8",
         )
 
@@ -203,7 +203,7 @@ class GitSourceTests(unittest.TestCase):
         source = self.root / "strumpack-unknown-source"
         source.mkdir()
         (source / "CMakeLists.txt").write_text(
-            "project(STRUMPACK VERSION 7.2.0)\\n", encoding="utf-8")
+            "project(STRUMPACK VERSION 7.2.0)\n", encoding="utf-8")
         with self.assertRaisesRegex(BuildError, "cannot safely patch STRUMPACK"):
             deps.patch_strumpack_static_link_order(source)
 
@@ -220,21 +220,21 @@ class GitSourceTests(unittest.TestCase):
         source = self.root / "strumpack-source"
         source.mkdir()
         mpi_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  target_link_libraries(strumpack PUBLIC\\n"
-            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
-            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  target_link_libraries(strumpack PUBLIC\n"
+            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+            "endif()\n"
         )
         scalapack_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  if(SCALAPACK_FOUND)\\n"
-            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
-            "  endif()\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  if(SCALAPACK_FOUND)\n"
+            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+            "  endif()\n"
+            "endif()\n"
         )
         (source / "CMakeLists.txt").write_text(
-            mpi_block + "\\nif(OpenMP_FOUND)\\nendif()\\n\\n" + scalapack_block,
+            mpi_block + "\nif(OpenMP_FOUND)\nendif()\n\n" + scalapack_block,
             encoding="utf-8",
         )
         libdir = self.context.prefix / "lib"
@@ -244,13 +244,13 @@ class GitSourceTests(unittest.TestCase):
         for name in ("libopenblas.a", "libscalapack.a", "libmetis.a"):
             (libdir / name).write_bytes(b"static archive fixture")
         (includedir / "metis.h").write_text(
-            "#define IDXTYPEWIDTH 32\\n", encoding="utf-8")
+            "#define IDXTYPEWIDTH 32\n", encoding="utf-8")
         package_dir = libdir / "cmake" / "STRUMPACK"
         package_dir.mkdir(parents=True)
         (package_dir / "strumpack-config.cmake").write_text(
-            "# package config fixture\\n", encoding="utf-8")
+            "# package config fixture\n", encoding="utf-8")
         (package_dir / "strumpack-targets.cmake").write_text(
-            "# exported targets fixture\\n", encoding="utf-8")
+            "# exported targets fixture\n", encoding="utf-8")
 
         calls = []
 
