@@ -170,6 +170,7 @@ class StageLogDialogTests(unittest.TestCase):
                 "INFO ready\nWARNING first\nERROR second\nWARNING third\n",
                 encoding="utf-8")
             dialog = StageLogDialog("search stage", str(path), running=False)
+            dialog.regex_check.setChecked(True)
             dialog.search_edit.setText(r"WARNING|ERROR")
             self.app.processEvents()
             self.assertEqual(len(dialog.matches), 3)
