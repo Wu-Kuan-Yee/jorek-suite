@@ -1783,12 +1783,23 @@ class MainWindow(QMainWindow):
             return
 
         log_dir = self.config_path.parent / "logs"
-        preserve_stages = kind in ("remote-download", "remote-cleanup")
+        preserve_stages = kind in (
+            "remote-download", "remote-cleanup", "remote-attach")
+        reuse_remote_log = (
+            kind == "remote-attach" and self.remote_task_log_path is not None)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.task_log_path = log_dir / ("%s-%s.log" % (stamp, kind))
-            self.task_log = self.task_log_path.open("w", encoding="utf-8", errors="replace")
+            if reuse_remote_log:
+                self.task_log_path = self.remote_task_log_path
+                self.task_log = self.task_log_path.open(
+                    "a", encoding="utf-8", errors="replace")
+            else:
+                self.task_log_path = log_dir / ("%s-%s.log" % (stamp, kind))
+                self.task_log = self.task_log_path.open(
+                    "w", encoding="utf-8", errors="replace")
+                if kind == "remote-attach":
+                    self.remote_task_log_path = self.task_log_path
             if not preserve_stages:
                 self._close_stage_log_handles()
                 self.stage_records = {}
@@ -1796,23 +1807,33 @@ class MainWindow(QMainWindow):
                 self.stage_table.setRowCount(0)
                 self.task_stage_log_dir = log_dir / ("%s-%s-stages" % (stamp, kind))
                 self.task_stage_log_dir.mkdir(parents=True, exist_ok=True)
+            elif self.task_stage_log_dir is None:
+                self.task_stage_log_dir = log_dir / ("%s-%s-stages" % (stamp, kind))
+                self.task_stage_log_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             QMessageBox.critical(self, APP_TITLE, "Cannot create task log:\n%s" % exc)
             return
 
-        self.task_output = ""
+        if kind != "remote-attach":
+            self.task_output = ""
         self.task_kind = kind
-        self.task_started_at = datetime.now(timezone.utc)
+        self.task_started_at = (
+            self.remote_task_started_at or datetime.now(timezone.utc)
+            if kind == "remote-attach" else datetime.now(timezone.utc))
         self.current_command = [str(program)] + list(args)
         self.process_output_buffer = ""
-        self._cancel_requested = False
+        if kind != "remote-attach":
+            self._cancel_requested = False
         if not preserve_stages:
             self._stage_view_auto_selected = False
         self.log_view.clear()
         self.log_view.appendPlainText("$ " + " ".join(
             shlex.quote(part) for part in self.current_command))
-        self.task_label.setText("Running: " + kind)
-        if kind in ("build", "dependencies", "bootstrap", "remote-build"):
+        self.task_label.setText(
+            "Reconnecting to remote task" if kind == "remote-attach" and self.remote_log_offset
+            else "Connecting to remote task" if kind == "remote-attach"
+            else "Running: " + kind)
+        if kind in ("build", "dependencies", "bootstrap", "remote-start", "remote-attach"):
             self.tabs.setCurrentWidget(self.build_page)
         self.log_path_label.setText(str(self.task_log_path))
         self.statusBar().showMessage("Running %s…" % kind)
@@ -1834,6 +1855,9 @@ class MainWindow(QMainWindow):
             self.process.setProgram(sys.executable)
             self.process.setArguments(["-c", runner, str(program)] + list(args))
         self.process.start()
+        if kind == "remote-attach":
+            self.remote_reconnect_timer.stop()
+            self.remote_heartbeat_timer.start()
 
     def _append_overview_output(self, text: str) -> None:
         if not text:
