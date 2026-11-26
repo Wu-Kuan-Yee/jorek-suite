@@ -50,7 +50,7 @@ def emit_build_event(event: str, **payload) -> None:
         return
     message = {"event": str(event)}
     message.update(payload)
-    sys.stdout.write(BUILD_EVENT_PREFIX + json.dumps(
+    sys.stdout.write("\n" + BUILD_EVENT_PREFIX + json.dumps(
         message, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
 
