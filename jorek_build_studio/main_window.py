@@ -1574,6 +1574,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.setRange(0, 0)
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
+        environment.insert("PYTHONIOENCODING", "utf-8")
         if kind in ("build", "dependencies", "bootstrap"):
             environment.insert("JOREK_BUILD_STUDIO_EVENTS", "1")
         self.process.setProcessEnvironment(environment)
