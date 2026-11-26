@@ -146,7 +146,7 @@ class GitSourceTests(unittest.TestCase):
                     "# pinned fixture\\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, 0, b"", b"")
 
-        with patch.object(deps, "which", return_value="git"), \\
+        with patch.object(deps, "which", return_value="git"), \
                 patch.object(deps, "run", side_effect=fake_run):
             source = deps._clone_git_source(
                 self.context, dependency, ["https://example.invalid/repo.git"])
@@ -175,7 +175,7 @@ class GitSourceTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, b"", b"")
 
         mpicc = str(self.context.prefix / "bin" / "mpicc")
-        with patch.object(deps, "which", return_value=mpicc), \\
+        with patch.object(deps, "which", return_value=mpicc), \
                 patch.object(deps, "run", side_effect=fake_run):
             deps.build_parmetis(self.context, dependency, source)
 
