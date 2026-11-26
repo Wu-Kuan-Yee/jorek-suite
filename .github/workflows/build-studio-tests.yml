@@ -46,7 +46,7 @@ jobs:
       - name: Install the built wheel
         run: python -c "import glob, subprocess, sys; files = glob.glob('dist/*.whl'); assert files; subprocess.check_call([sys.executable, '-m', 'pip', 'install', *files])"
       - name: Smoke-test installed wheel entry point
-        run: python -m jorek_build_studio --smoke-test
+        run: python -I -m jorek_build_studio --smoke-test
 
   python-compat:
     strategy:
