@@ -60,8 +60,6 @@ class StageLogDialog(QDialog):
                 self.timer.start()
         else:
             self.refresh()
-            self.status_label.setText("Log complete")
-            self.timer.stop()
 
     def refresh(self) -> None:
         try:
