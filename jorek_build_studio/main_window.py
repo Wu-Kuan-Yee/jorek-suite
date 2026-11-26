@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import codecs
 import hashlib
 import json
 import os
@@ -12,6 +14,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
@@ -40,6 +43,11 @@ from .remote import (
     RemoteProfileError, build_remote_command, connection_test_command,
     parse_remote_overrides, remote_artifact_path, remote_repo_path,
     scp_arguments, ssh_arguments, validate_connection_profile, validate_profile,
+)
+from .remote_supervisor import (
+    DEFAULT_HEARTBEAT_TIMEOUT, HEARTBEAT_INTERVAL,
+    REMOTE_DATA_PREFIX, REMOTE_STARTED_PREFIX, REMOTE_TASK_PREFIX,
+    remote_task_attach_command, remote_task_cancel_command,
 )
 
 
@@ -105,6 +113,23 @@ class MainWindow(QMainWindow):
         self.current_phase = ""
         self._cancel_requested = False
         self._stage_view_auto_selected = False
+        self.remote_task_id = ""
+        self.remote_task_profile: Optional[Dict[str, Any]] = None
+        self.remote_task_terminal = False
+        self.remote_task_result: Dict[str, Any] = {}
+        self.remote_task_started_at: Optional[datetime] = None
+        self.remote_task_metadata_file: Optional[Path] = None
+        self.remote_task_log_path: Optional[Path] = None
+        self.remote_log_offset = 0
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.remote_stream_buffer = ""
+        self.remote_reconnect_delay = 5
+        self.remote_reconnect_timer = QTimer(self)
+        self.remote_reconnect_timer.setSingleShot(True)
+        self.remote_reconnect_timer.timeout.connect(self._reconnect_remote_task)
+        self.remote_heartbeat_timer = QTimer(self)
+        self.remote_heartbeat_timer.setInterval(HEARTBEAT_INTERVAL * 1000)
+        self.remote_heartbeat_timer.timeout.connect(self._send_remote_heartbeat)
         self.stage_elapsed_timer = QTimer(self)
         self.stage_elapsed_timer.setInterval(1000)
         self.stage_elapsed_timer.timeout.connect(self._refresh_running_stage_rows)
@@ -124,6 +149,7 @@ class MainWindow(QMainWindow):
         self.refresh_catalog(show_message=False)
         self.refresh_history()
         self._load_remote_profiles()
+        QTimer.singleShot(0, self._offer_remote_task_recovery)
 
     # ------------------------------------------------------------------
     # UI construction
