@@ -989,12 +989,19 @@ def build_scotch(ctx: BuildContext, dep: Dependency, src: Path) -> None:
             break
     chosen = chosen or candidates[0]
     text = read_text(chosen)
-    text = re.sub(r"(?m)^prefix\s*=.*$", "prefix = %s" % ctx.prefix, text)
-    text = re.sub(r"(?m)^CCS\s*=.*$", "CCS = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CCP\s*=.*$", "CCP = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CC\s*=.*$", "CC = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CCD\s*=.*$", "CCD = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CFLAGS\s*=.*$", "CFLAGS = -O2 -fPIC -std=gnu17 -I%s/include" % ctx.prefix, text)
+    compiler = which("mpicc", ctx.path) or ctx.cc
+
+    def set_assignment(source: str, name: str, value: str) -> str:
+        pattern = r"(?m)^\s*%s\s*=.*$" % re.escape(name)
+        return re.sub(
+            pattern, lambda _match: "%s = %s" % (name, value), source)
+
+    # Use callable replacements so Windows paths containing backslashes are
+    # not interpreted as regular-expression replacement escapes.
+    for variable in ("CCS", "CCP", "CC", "CCD"):
+        text = set_assignment(text, variable, compiler)
+    text = set_assignment(
+        text, "CFLAGS", "-O2 -fPIC -std=gnu17 -I%s/include" % ctx.prefix)
     write_text(src / "src" / "Makefile.inc", text)
     env = ctx.build_env(dep)
     run([ctx.make, "-C", "src", "-j1", "esmumps"], cwd=src, env=env,
