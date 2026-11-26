@@ -135,6 +135,17 @@ class StageLogDialogTests(unittest.TestCase):
             self.assertFalse(dialog.editor.line_numbers_visible)
             dialog.line_numbers.setChecked(True)
             self.assertTrue(dialog.editor.line_numbers_visible)
+            self.assertTrue(dialog.follow_check.isChecked())
+            dialog.follow_check.setChecked(False)
+            self.assertFalse(dialog.follow_check.isChecked())
+            dialog.wrap_check.setChecked(True)
+            self.assertEqual(
+                dialog.editor.lineWrapMode(),
+                dialog.editor.LineWrapMode.WidgetWidth)
+            dialog.wrap_check.setChecked(False)
+            self.assertEqual(
+                dialog.editor.lineWrapMode(),
+                dialog.editor.LineWrapMode.NoWrap)
             dialog.close()
 
     def test_log_statistics_report_bytes_chars_lines_words_and_max_line(self):
