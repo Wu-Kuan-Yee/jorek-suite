@@ -1411,11 +1411,17 @@ def _preflight_check_static_libraries(
                 missing.append("%s: %s" % (name, library))
         for header in item.includes:
             found = False
+            relative = Path(header)
+            if relative.is_absolute() or ".." in relative.parts:
+                missing.append("%s: unsafe header path %s" % (name, header))
+                continue
             for prefix in prefixes:
-                candidate = prefix / "include" / header
-                if candidate.is_file() or (
-                        (prefix / "include").is_dir() and
-                        any((prefix / "include").rglob(header))):
+                candidates = (prefix / relative, prefix / "include" / relative)
+                if any(candidate.is_file() for candidate in candidates):
+                    found = True
+                    break
+                include = prefix / "include"
+                if include.is_dir() and any(include.rglob(relative.name)):
                     found = True
                     break
             if not found:
