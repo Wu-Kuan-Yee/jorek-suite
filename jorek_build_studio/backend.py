@@ -16,6 +16,11 @@ class BackendError(RuntimeError):
     pass
 
 
+def external_exec_runner() -> str:
+    """Return a POSIX QProcess trampoline that execs argv[0] with the full argv."""
+    return "import os,sys; getattr(os,'setsid',lambda:None)(); os.execvp(sys.argv[0], sys.argv)"
+
+
 def default_build_script() -> Path:
     return Path(__file__).resolve().parent.parent / "build.py"
 

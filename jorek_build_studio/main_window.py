@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from .backend import (
-    BackendError, cli_help, default_build_script, doctor_arguments,
+    BackendError, cli_help, default_build_script, doctor_arguments, external_exec_runner,
     inspect_checkout, parse_doctor_output, resolve_build_script,
 )
 from .config import (
@@ -1291,7 +1291,7 @@ class MainWindow(QMainWindow):
             self.process.setProgram(str(program))
             self.process.setArguments(list(args))
         else:
-            runner = "import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])"
+            runner = external_exec_runner()
             self.process.setProgram(sys.executable)
             self.process.setArguments(["-c", runner, str(program)] + list(args))
         self.process.start()

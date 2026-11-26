@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from jorek_build_studio.backend import inspect_checkout, parse_doctor_output
+from jorek_build_studio.backend import external_exec_runner, inspect_checkout, parse_doctor_output
 from jorek_build_studio.config import (
     build_arguments, load_config, normalize_config, save_config, validate_config,
 )
@@ -230,6 +230,17 @@ class BackendTests(unittest.TestCase):
                 jorek.which = original
             self.assertFalse(ok)
             self.assertTrue(any("could not verify" in item for item in details))
+
+    def test_external_process_runner_executes_the_program_at_argv_zero(self):
+        command = [
+            sys.executable, "-c", external_exec_runner(),
+            sys.executable, "-c", "print('external-runner-ok')",
+        ]
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, check=False, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("external-runner-ok", result.stdout)
 
     def test_doctor_json_parser(self):
         payload = {"platform": {"system": "Linux"}, "tools": {}}
