@@ -251,7 +251,7 @@ class MetisArchiveTests(unittest.TestCase):
             source = root / "metis-source"
             include = source / "include"
             include.mkdir(parents=True)
-            (include / "metis.h").write_text("/* METIS fixture */\\n", encoding="utf-8")
+            (include / "metis.h").write_text("/* METIS fixture */", encoding="utf-8")
             (include / "CMakeLists.txt").write_text("# fixture\\n", encoding="utf-8")
             libdir = context.prefix / "lib"
             libdir.mkdir(parents=True)
