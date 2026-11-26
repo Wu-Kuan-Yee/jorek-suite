@@ -13,6 +13,7 @@ from pathlib import Path
 from jorek_build_studio.remote import (
     RemoteProfileError,
     build_remote_command,
+    build_remote_task_command,
     connection_test_command,
     parse_remote_overrides,
     remote_artifact_path,
@@ -21,6 +22,15 @@ from jorek_build_studio.remote import (
     validate_connection_profile,
     validate_profile,
     _REMOTE_BUILD_STREAMER,
+)
+from jorek_build_studio.remote_supervisor import (
+    DEFAULT_HEARTBEAT_TIMEOUT,
+    REMOTE_SUPERVISOR_SCRIPT,
+    remote_task_attach_command,
+    remote_task_cancel_command,
+    remote_task_start_command,
+    remote_task_state_root,
+    validate_remote_task_id,
 )
 
 
@@ -39,6 +49,102 @@ PROFILE = {
     "host_key_policy": "yes",
     "ssh_options": ["Compression=yes"],
 }
+
+
+@unittest.skipIf(os.name == "nt", "remote supervisor requires POSIX process groups")
+class RemoteSupervisorTests(unittest.TestCase):
+    def _start(self, root: Path, task_id: str, command: str, timeout: int = 10):
+        state_root = root / "tasks"
+        payload = json.dumps({"command": command, "cwd": str(root)})
+        result = subprocess.run(
+            [sys.executable, "-u", "-c", REMOTE_SUPERVISOR_SCRIPT,
+             "start", str(state_root), task_id, str(timeout), payload],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, check=False, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("@@JOREK_REMOTE_STARTED@@", result.stdout)
+        return state_root
+
+    def _wait_for_terminal(self, state_path: Path, timeout: float = 18.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                state = {}
+            if state.get("status") in ("completed", "failed", "cancelled"):
+                return state
+            time.sleep(0.2)
+        self.fail("remote supervisor did not reach a terminal state")
+
+    def test_detached_supervisor_kills_process_group_after_heartbeat_timeout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            task_id = "a" * 32
+            command = shlex.join([
+                sys.executable, "-u", "-c",
+                "import time; print('long-task-started', flush=True); time.sleep(60)",
+            ])
+            state_root = self._start(root, task_id, command, timeout=10)
+            state_path = state_root / task_id / "state.json"
+            state = self._wait_for_terminal(state_path, timeout=18)
+            self.assertEqual(state.get("status"), "cancelled", state)
+            self.assertEqual(state.get("reason"), "heartbeat_timeout", state)
+            pgid = int(state.get("pgid") or 0)
+            self.assertGreater(pgid, 0)
+            with self.assertRaises(ProcessLookupError):
+                os.killpg(pgid, 0)
+
+    def test_attach_can_cancel_and_stream_the_remote_log(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            task_id = "b" * 32
+            command = shlex.join([
+                sys.executable, "-u", "-c",
+                "import time; print('remote-task-ready', flush=True); time.sleep(60)",
+            ])
+            state_root = self._start(root, task_id, command, timeout=10)
+            state_path = state_root / task_id / "state.json"
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if state.get("status") == "running":
+                    break
+                time.sleep(0.1)
+            else:
+                self.fail("remote task did not start")
+
+            attach = subprocess.Popen(
+                [sys.executable, "-u", "-c", REMOTE_SUPERVISOR_SCRIPT,
+                 "attach", str(state_root), task_id, "0"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            self.assertIsNotNone(attach.stdin)
+            self.assertIsNotNone(attach.stdout)
+            for _ in range(5):
+                attach.stdin.write(b"\n")
+                attach.stdin.flush()
+                time.sleep(0.1)
+            attach.stdin.write(b"CANCEL\n")
+            attach.stdin.flush()
+            state = self._wait_for_terminal(state_path, timeout=8)
+            self.assertEqual(state.get("status"), "cancelled", state)
+            output, _ = attach.communicate(timeout=5)
+            self.assertIn(b"@@JOREK_REMOTE_TASK@@", output)
+            frames = [
+                line for line in output.splitlines()
+                if line.startswith(b"@@JOREK_REMOTE_DATA@@")
+            ]
+            decoded = b""
+            for frame in frames:
+                _offset, encoded = frame.split(b":", 1)
+                decoded += __import__("base64").b64decode(encoded)
+            self.assertIn(b"remote-task-ready", decoded)
+
+    def test_supervisor_script_is_valid_python(self):
+        compile(REMOTE_SUPERVISOR_SCRIPT, "<remote-supervisor>", "exec")
 
 
 class RemoteBuildStreamerTests(unittest.TestCase):
@@ -137,6 +243,20 @@ class RemoteCommandTests(unittest.TestCase):
         jump_args = ssh_arguments(profile, "uname -s")
         self.assertIn("ProxyJump=jump@example.invalid", jump_args)
         self.assertEqual(args[-2:], ["builder@example.invalid", "uname -s"])
+
+    def test_supervised_remote_command_uses_task_id_and_120_second_lease(self):
+        task_id = "c" * 32
+        command = build_remote_task_command(
+            PROFILE, ["--work", PROFILE["remote_work"], "dist"],
+            ["--work", PROFILE["remote_work"], "verify", "--json"], task_id)
+        self.assertIn(task_id, command)
+        self.assertIn(str(DEFAULT_HEARTBEAT_TIMEOUT), command)
+        self.assertIn("remote_task", remote_task_state_root(PROFILE))
+        self.assertIn("@@JOREK_REMOTE_STARTED@@", command)
+        self.assertIn("remote_task", remote_task_attach_command(PROFILE, task_id, 123))
+        self.assertIn("cancel", remote_task_cancel_command(PROFILE, task_id))
+        with self.assertRaises(ValueError):
+            validate_remote_task_id("../other-task")
 
     def test_remote_build_command_quotes_paths_and_pins_commit(self):
         command = build_remote_command(
