@@ -1224,6 +1224,11 @@ def cmd_deps(args) -> int:
             for lib in item.static_libs:
                 if lib and not _find_lib(Path(ctx.prefix), lib):
                     missing.append(lib)
+            for header in item.includes:
+                if not (Path(ctx.prefix) / "include" / header).is_file():
+                    include = Path(ctx.prefix) / "include"
+                    if not include.is_dir() or not any(include.rglob(header)):
+                        missing.append("include/" + header)
             if missing:
                 print("%-18s missing: %s" % (name, ", ".join(missing)))
                 ok = False
@@ -1394,6 +1399,17 @@ def _preflight_check_static_libraries(
         for library in item.static_libs:
             if not _static_available(prefixes, library):
                 missing.append("%s: %s" % (name, library))
+        for header in item.includes:
+            found = False
+            for prefix in prefixes:
+                candidate = prefix / "include" / header
+                if candidate.is_file() or (
+                        (prefix / "include").is_dir() and
+                        any((prefix / "include").rglob(header))):
+                    found = True
+                    break
+            if not found:
+                missing.append("%s: include/%s" % (name, header))
     return missing
 
 
