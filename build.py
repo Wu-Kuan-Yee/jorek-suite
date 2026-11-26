@@ -1413,6 +1413,55 @@ def _preflight_check_static_libraries(
     return missing
 
 
+def _preflight_cached_git_source(name: str, recipe, path: Path) -> Optional[str]:
+    git = shutil.which("git")
+    if not git:
+        return "Git is unavailable"
+    if not (path / ".git").exists():
+        return "Git checkout is not cached"
+    head = subprocess.run(
+        [git, "-C", str(path), "rev-parse", "HEAD"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        check=False, timeout=15)
+    if head.returncode != 0:
+        return "cached Git checkout cannot resolve HEAD"
+    actual = head.stdout.strip()
+    git_ref = str(getattr(recipe, "git_ref", "") or "")
+    if git_ref:
+        expected = subprocess.run(
+            [git, "-C", str(path), "rev-parse", git_ref + "^{commit}"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=15)
+        if expected.returncode != 0 or expected.stdout.strip() != actual:
+            return "cached checkout does not match pinned ref %s" % git_ref
+    if getattr(recipe, "git_submodules", False):
+        status = subprocess.run(
+            [git, "-C", str(path), "submodule", "status", "--recursive"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace",
+            check=False, timeout=30)
+        incomplete = [
+            line for line in status.stdout.splitlines()
+            if line[:1] in ("-", "+", "U")
+        ]
+        if status.returncode != 0 or incomplete:
+            return "recursive submodules are uninitialized or mismatched"
+    missing = [
+        relative for relative in getattr(recipe, "required_paths", ())
+        if not (path / relative).exists()
+    ]
+    missing_any = [
+        " or ".join(alternatives)
+        for alternatives in getattr(recipe, "required_any_paths", ())
+        if not any((path / relative).exists() for relative in alternatives)
+    ]
+    if missing or missing_any:
+        return "required source paths are missing: %s" % ", ".join(missing + missing_any)
+    return None
+
+
 def _preflight_cache_check(
     order: Sequence[deps.Dependency], args, source_dirs: Dict[str, Path],
 ) -> List[str]:
@@ -1430,8 +1479,9 @@ def _preflight_cache_check(
         if item.source_kind == "git":
             candidate = Path(args.work).expanduser() / "src" / (
                 "%s-%s" % (item.name, item.version))
-            if not (candidate / ".git").is_dir():
-                missing.append("%s: Git checkout is not cached" % item.name)
+            issue = _preflight_cached_git_source(item.name, item, candidate)
+            if issue:
+                missing.append("%s: %s" % (item.name, issue))
         else:
             filename = "%s-%s-%s" % (
                 item.name, item.version,
