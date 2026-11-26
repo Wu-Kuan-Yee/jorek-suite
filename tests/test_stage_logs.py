@@ -141,7 +141,7 @@ class StageLogDialogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "stats.log"
             payload = "one two\nthree\n"
-            path.write_text(payload, encoding="utf-8")
+            path.write_bytes(payload.encode("utf-8"))
             dialog = StageLogDialog("stats stage", str(path), running=False)
             stats = dialog.stats_label.text()
             self.assertIn("Bytes: %s" % len(payload.encode("utf-8")), stats)
