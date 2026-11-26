@@ -1515,7 +1515,7 @@ def _preflight_cache_check(
             if issue:
                 missing.append("%s: %s" % (item.name, issue))
         else:
-            filename = "%s-%s-%s" % (
+            filename = item.filename or "%s-%s-%s" % (
                 item.name, item.version,
                 os.path.basename(item.url.split("?", 1)[0]))
             if not (cache / filename).is_file():
