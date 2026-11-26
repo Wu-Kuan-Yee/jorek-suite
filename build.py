@@ -318,6 +318,27 @@ def _apply_feature_args(features: jorek.FeatureSet, args) -> jorek.FeatureSet:
     return features
 
 
+def _parse_family_toggles(values: Sequence[str]) -> Dict[str, bool]:
+    result: Dict[str, bool] = {}
+    for item in values or []:
+        if "=" not in item:
+            raise BuildError("--family-toggle expects NAME=0|1, got %r" % item)
+        name, raw = item.split("=", 1)
+        name = name.strip()
+        value = raw.strip().lower()
+        if not name:
+            raise BuildError("--family-toggle has an empty name: %r" % item)
+        if name in result:
+            raise BuildError("--family-toggle specifies %s more than once" % name)
+        if value in ("1", "true", "yes", "on"):
+            result[name] = True
+        elif value in ("0", "false", "no", "off"):
+            result[name] = False
+        else:
+            raise BuildError("--family-toggle value must be 0 or 1: %r" % item)
+    return result
+
+
 def _parse_assignments(values: Sequence[str], integer: bool = False) -> Dict[str, object]:
     result = {}
     for item in values or []:
@@ -626,31 +647,54 @@ def _collect_variants(args, platform: PlatformInfo, toolchain) -> List[BuiltVari
     if args.model and args.matrix in ("one", "models", "maximal", "complete"):
         models_to_build = [args.model]
     specs: List[jorek.VariantSpec] = []
+    family_overrides = _parse_family_toggles(getattr(args, "family_toggle", []))
+    matched_family_overrides = set()
     for model in models_to_build:
         if model not in models:
             raise BuildError("unknown model %s (available: %s)" % (model, ", ".join(sorted(models))))
         info = models[model]
+        model_toggles = [t for t in info.toggles if t.lower() != "with_refluid"]
+        model_overrides = {name: value for name, value in family_overrides.items()
+                           if name in model_toggles}
+        matched_family_overrides.update(model_overrides)
+        unsupported = set(family_overrides) - set(model_toggles)
+        if getattr(args, "model", None) and unsupported:
+            raise BuildError("model %s does not support family extension(s): %s" %
+                             (model, ", ".join(sorted(unsupported))))
         base_params = _variant_params(args, info)
         grids = _param_grid(args, base_params)
-        if args.matrix == "complete" and info.toggles:
-            toggles = [t for t in info.toggles if t.lower() != "with_refluid"]
+        if args.matrix == "complete" and model_toggles:
             import itertools
-            combos = list(itertools.product((False, True), repeat=len(toggles)))
-        elif args.matrix == "maximal" and info.toggles:
-            toggles = [t for t in info.toggles if t.lower() != "with_refluid"]
-            combos = [tuple(True for _ in toggles)]
+            combos = list(itertools.product((False, True), repeat=len(model_toggles)))
+            combos = [combo for combo in combos
+                      if all(dict(zip(model_toggles, combo)).get(name) == value
+                             for name, value in model_overrides.items())]
+        elif args.matrix == "maximal" and model_toggles:
+            combo = [True for _ in model_toggles]
+            combos = [tuple(model_overrides.get(name, value)
+                            for name, value in zip(model_toggles, combo))]
             if model == "183":
                 combos = [None]
         else:
             combos = [None]
         for params in grids:
             for combo in combos:
-                toggles = dict(zip([t for t in info.toggles if t.lower() != "with_refluid"], combo)) if combo is not None else None
-                overrides = {k: v for k, v in params.items() if k not in info.params or info.params.get(k) != v}
+                if combo is None:
+                    toggles = None
+                    if model_overrides:
+                        toggles = {key: bool(info.defaults.get(key.lower(), False))
+                                   for key in info.toggles}
+                        toggles.update(model_overrides)
+                else:
+                    toggles = dict(zip(model_toggles, combo))
+                    toggles.update(model_overrides)
                 spec = jorek.make_variant(model, models, features, params=params, toggles=toggles,
                                           programs=tuple(args._program_names))
                 spec.name = _variant_name(spec)
                 specs.append(spec)
+    if family_overrides and not matched_family_overrides:
+        raise BuildError("none of the selected models supports family extension(s): %s" %
+                         ", ".join(sorted(family_overrides)))
     # De-duplicate by name.
     seen = set()
     unique = []
@@ -1137,34 +1181,54 @@ def cmd_matrix(args) -> int:
     features = jorek.FeatureSet()
     _apply_feature_args(features, args)
     specs = []
-    for model in sorted(models):
+    family_overrides = _parse_family_toggles(getattr(args, "family_toggle", []))
+    matched_family_overrides = set()
+    selected_models = [args.model] if getattr(args, "model", None) else sorted(models)
+    for model in selected_models:
+        if model not in models:
+            raise BuildError("unknown model %s (available: %s)" %
+                             (model, ", ".join(sorted(models))))
         info = models[model]
+        toggles_list = [t for t in info.toggles if t.lower() != "with_refluid"]
+        model_overrides = {name: value for name, value in family_overrides.items()
+                           if name in toggles_list}
+        matched_family_overrides.update(model_overrides)
+        unsupported = set(family_overrides) - set(toggles_list)
+        if getattr(args, "model", None) and unsupported:
+            raise BuildError("model %s does not support family extension(s): %s" %
+                             (model, ", ".join(sorted(unsupported))))
         base = _variant_params(args, info)
         grids = _param_grid(args, base)
-        if args.matrix == "complete" and info.toggles:
+        if args.matrix == "complete" and toggles_list:
             import itertools
-            toggles_list = [t for t in info.toggles if t.lower() != "with_refluid"]
             combos = list(itertools.product((False, True), repeat=len(toggles_list)))
-        elif args.matrix == "maximal" and info.toggles:
-            toggles_list = [t for t in info.toggles if t.lower() != "with_refluid"]
-            combos = [tuple(True for _ in toggles_list)]
+            combos = [combo for combo in combos
+                      if all(dict(zip(toggles_list, combo)).get(name) == value
+                             for name, value in model_overrides.items())]
+        elif args.matrix == "maximal" and toggles_list:
+            combos = [tuple(model_overrides.get(name, True) for name in toggles_list)]
             if model == "183":
                 combos = [None]
         else:
-            toggles_list = []
             combos = [None]
         for params in grids:
             for combo in combos:
-                toggles = (dict(zip(toggles_list, combo))
-                           if combo is not None else None)
+                if combo is None:
+                    toggles = None
+                    if model_overrides:
+                        toggles = {key: bool(info.defaults.get(key.lower(), False))
+                                   for key in info.toggles}
+                        toggles.update(model_overrides)
+                else:
+                    toggles = dict(zip(toggles_list, combo))
+                    toggles.update(model_overrides)
                 spec = jorek.make_variant(
                     model, models, features, params=params, toggles=toggles,
                     programs=tuple(args._program_names))
                 specs.append(spec)
-    if getattr(args, "model", None):
-        specs = [spec for spec in specs if spec.model == args.model]
-        if not specs:
-            raise BuildError("no planned variants for model %s" % args.model)
+    if family_overrides and not matched_family_overrides:
+        raise BuildError("none of the selected models supports family extension(s): %s" %
+                         ", ".join(sorted(family_overrides)))
     if args.json:
         print(json.dumps([{
             "name": _variant_name(s),
@@ -1451,7 +1515,6 @@ def cmd_run(args) -> int:
     if args.program:
         argv.extend(["--program", args.program])
     if args.stdin:
-        argv.extend(["--"] + list(args.args or []))
         with open(args.stdin, "rb") as handle:
             return subprocess.run(argv, stdin=handle).returncode
     return subprocess.run(argv).returncode
@@ -1692,6 +1755,8 @@ def make_parser() -> argparse.ArgumentParser:
         """)
     p.add_argument("--matrix", choices=("models", "complete", "maximal"), default="models",
                    help="variant set to plan (default: models)")
+    p.add_argument("--family-toggle", action="append", default=[], metavar="NAME=0|1",
+                   help="override one model-family extension; repeatable, e.g. with_TiTe=1")
     p.add_argument("--model", help="restrict the planned matrix to one model number, e.g. 303 or 600")
     p.add_argument("--programs", choices=("main", "most", "all"), default="main",
                    help="program set metadata to attach to planned variants (default: main)")
@@ -1827,6 +1892,8 @@ def _add_build_options(parser: argparse.ArgumentParser, *, suite_io: bool) -> No
     parser.add_argument("--model", default=None, help="JOREK model number to build; with --matrix one/models it is the only model, with complete/maximal it filters the expansion (default: 303)")
     parser.add_argument("--set", dest="set_param", action="append", default=[], metavar="NAME=VALUE",
                         help="override a hard-coded integer parameter for every planned variant; repeatable; use matrix --details to inspect names")
+    parser.add_argument("--family-toggle", action="append", default=[], metavar="NAME=0|1",
+                        help="override a model-family extension; repeatable, e.g. with_TiTe=1")
     parser.add_argument("--param-grid", action="append", default=[], metavar="NAME=V1,V2,...",
                         help="build an explicit Cartesian grid of values for a hard-coded parameter; repeatable; different parameter options are multiplied together; may not name the same parameter as --param-max")
     parser.add_argument("--param-max", action="append", default=[], metavar="NAME=MAX",
@@ -1883,6 +1950,7 @@ def _add_global_to_sub(parser: argparse.ArgumentParser, *, include_build_options
             ("--param-max", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=MAX", help="build every value up to MAX for one hard-coded parameter: n_tor/n_coord_tor/n_order odd 1..MAX, n_plane and other integers 1..MAX, capacities only MAX; repeated options form a Cartesian product; n_plane below 2*(n_tor-1) is skipped; cannot name the same parameter as --param-grid")),
             ("--param-grid", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=V1,V2,...", help="build an explicit Cartesian grid for a hard-coded parameter; repeatable and combined across parameters; cannot combine with --param-max for the same name")),
             ("--set", dict(dest="set_param", action="append", default=argparse.SUPPRESS, metavar="NAME=VALUE", help="override a hard-coded parameter for every planned variant")),
+            ("--family-toggle", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=0|1", help="override a model-family extension")),
             ("--matrix", dict(choices=("one", "models", "complete", "maximal"), default=argparse.SUPPRESS, help="variant set: one, models, complete, or maximal")),
             ("--programs", dict(choices=("main", "most", "all", "list"), default=argparse.SUPPRESS, help="program set: main, most, all, or list")),
             ("--enable", dict(action="append", default=argparse.SUPPRESS, metavar="FEATURE", help="enable a compile-time feature")),
@@ -1930,7 +1998,8 @@ def _postprocess_args(args) -> None:
             args._program_names = ["jorek2_main"]
         if args.command == "full":
             for name, value in (("enable", []), ("disable", []), ("debug", False),
-                                ("set_param", []), ("param_grid", []), ("param_max", [])):
+                                ("set_param", []), ("param_grid", []), ("param_max", []),
+                                ("family_toggle", [])):
                 if not hasattr(args, name):
                     setattr(args, name, value)
 

@@ -324,3 +324,23 @@ This produces all model-toggle combinations multiplied by the parameter
 combinations; the suite size grows accordingly.
 
 
+
+
+## Desktop GUI: JOREK Build Studio
+
+An optional minimal Qt frontend is available for the existing builder. The
+CLI remains the build engine; the GUI provides configuration, model/dependency
+inspection, model-family overrides, parameter-matrix preview, task logs and
+history, advanced dependency/source controls, suite verification and execution,
+a safe legacy-script importer, and contextual CLI help.
+
+Install and launch from the repository root:
+
+```sh
+python3 -m pip install -e '.[gui]'
+python3 -m jorek_build_studio
+```
+
+See [docs/BUILD_STUDIO.md](docs/BUILD_STUDIO.md) for setup and usage. The GUI
+does not make a target-independent binary: each OS, ABI, libc baseline, and
+CPU architecture requires its own build and runtime validation.
