@@ -451,7 +451,13 @@ class MainWindow(QMainWindow):
         form.addRow("Disconnect grace period", self.remote_heartbeat_timeout_spin)
         form.addRow("jorek-suite repository URL", self.remote_repo_url_edit)
         form.addRow("Repository branch", self.remote_branch_edit)
-        form.addRow("Pinned repository commit", self.remote_commit_edit)
+        commit_row = QWidget(group)
+        commit_layout = QHBoxLayout(commit_row)
+        commit_layout.setContentsMargins(0, 0, 0, 0)
+        commit_layout.addWidget(self.remote_commit_edit, 1)
+        commit_layout.addWidget(_button(
+            "Use local HEAD", self._set_remote_commit_to_local_head, commit_row))
+        form.addRow("Pinned repository commit", commit_row)
         form.addRow("Local artifact directory", _path_row(
             self.remote_artifact_dir_edit, lambda: self._browse_directory_for(
                 self.remote_artifact_dir_edit, "Select artifact directory"), group))
@@ -471,7 +477,10 @@ class MainWindow(QMainWindow):
             "catalyst_root and dep_prefixes. The GUI sends a heartbeat every 15 seconds; "
             "the configurable disconnect grace period defaults to 120 seconds. If the "
             "connection is not restored before it expires, the remote supervisor stops "
-            "the build process group.")
+            "the build process group. Remote builds use the exact pinned commit and do "
+            "not automatically follow later branch updates. After updating this local "
+            "checkout, use 'Use local HEAD' and save the profile. A remote source audit "
+            "checks the PaStiX recursive-submodule recipe before any expensive build starts.")
         note.setWordWrap(True)
         outer.addWidget(note)
 
@@ -511,6 +520,18 @@ class MainWindow(QMainWindow):
             return result.stdout.strip() if result.returncode == 0 else ""
         except (OSError, subprocess.TimeoutExpired):
             return ""
+
+    def _set_remote_commit_to_local_head(self) -> None:
+        commit = self._local_git_commit()
+        if not commit:
+            QMessageBox.warning(
+                self, APP_TITLE,
+                "Cannot determine the local jorek-suite Git commit. "
+                "Open Build Studio from a Git checkout or enter a full commit SHA manually.")
+            return
+        self.remote_commit_edit.setText(commit)
+        self.statusBar().showMessage(
+            "Remote build pinned to local HEAD %s" % commit[:12], 7000)
 
     def _remote_profile_from_widgets(self) -> Dict[str, Any]:
         return {
@@ -1183,8 +1204,9 @@ class MainWindow(QMainWindow):
         details_layout = QVBoxLayout(details_page)
         detail_actions = QHBoxLayout()
         detail_actions.addWidget(QLabel(
-            "Each dependency, JOREK variant and packaging stage has its own log. "
-            "Double-click a row to follow or reopen it."))
+            "Double-click a completed or running row to open its full log. "
+            "Status: ✓ completed  ● running  ○ waiting  ✕ failed. "
+            "Waiting stages are shown in grey and cannot be opened yet."))
         detail_actions.addStretch(1)
         detail_actions.addWidget(_button(
             "Open selected log", self._open_selected_stage_log, details_page))
