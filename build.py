@@ -1703,6 +1703,33 @@ def cmd_preflight(args) -> int:
             raise BuildError("\n".join(errors))
         if not (platform.is_linux or platform.is_macos or platform.is_bsd):
             raise BuildError("the selected solver source recipes are unsupported on this platform")
+        if getattr(args, "offline", False):
+            source_dirs, _urls = _source_options(args)
+            source_root = Path(args.source_dir).expanduser() if getattr(args, "source_dir", None) else None
+            cache = work / "downloads"
+            missing = []
+            for name, recipe in solvers.SOLVER_SOURCE_RECIPES.items():
+                supplied = source_dirs.get(name)
+                if supplied and supplied.is_dir():
+                    continue
+                if source_root and any(
+                        (source_root / candidate).is_dir()
+                        for candidate in ("%s-%s" % (name, recipe.version), name)):
+                    continue
+                if recipe.source_kind == "git":
+                    cached = work / "solver-build" / "src" / (
+                        "%s-%s" % (name, recipe.version))
+                    if not (cached / ".git").is_dir():
+                        missing.append("%s: Git checkout is not cached" % name)
+                else:
+                    basename = os.path.basename(recipe.url.split("?", 1)[0]) or "source"
+                    filename = getattr(
+                        recipe, "filename",
+                        "%s-%s-%s" % (name, recipe.version, basename))
+                    if not (cache / filename).is_file():
+                        missing.append("%s: %s" % (name, filename))
+            if missing:
+                raise BuildError("offline solver source cache is incomplete: %s" % ", ".join(missing))
         return [
             "Full solver source plan: %s" % ", ".join(sorted(solvers.SOLVER_SOURCE_RECIPES)),
             "All selected solver source recipes have validated acquisition metadata and required source paths.",
@@ -1809,10 +1836,30 @@ def cmd_preflight(args) -> int:
             if not cmake and not cmake_will_be_built:
                 raise BuildError("CMake is required by the selected build plan but was not found or scheduled to be built")
             details.append("CMake: %s" % (cmake or "scheduled from the selected dependency recipe"))
-        needs_git = build_solvers or (
+        source_dirs, _url_overrides = _source_options(args)
+        source_root = Path(args.source_dir).expanduser() if getattr(args, "source_dir", None) else None
+
+        def source_is_supplied(name, recipe):
+            if source_dirs.get(name) and source_dirs[name].is_dir():
+                return True
+            if source_root:
+                return any(
+                    (source_root / candidate).is_dir()
+                    for candidate in ("%s-%s" % (name, recipe.version), name))
+            return False
+
+        needs_git = (
+            getattr(args, "fetch_source", False) and not root
+        ) or (
             build_deps and any(
-                deps.DEPENDENCIES[name].source_kind == "git"
+                deps.DEPENDENCIES[name].source_kind == "git" and
+                not source_is_supplied(name, deps.DEPENDENCIES[name])
                 for name in selected_names)
+        ) or (
+            build_solvers and any(
+                recipe.source_kind == "git" and
+                not source_is_supplied(name, recipe)
+                for name, recipe in solvers.SOLVER_SOURCE_RECIPES.items())
         )
         if needs_git:
             git = shutil.which("git")
