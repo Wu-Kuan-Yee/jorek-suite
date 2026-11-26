@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         self.process_output_buffer = ""
         self.current_phase = ""
         self._cancel_requested = False
+        self._stage_view_auto_selected = False
         self.stage_elapsed_timer = QTimer(self)
         self.stage_elapsed_timer.setInterval(1000)
         self.stage_elapsed_timer.timeout.connect(self._refresh_running_stage_rows)
@@ -1539,6 +1540,8 @@ class MainWindow(QMainWindow):
         self.current_command = [str(program)] + list(args)
         self.process_output_buffer = ""
         self._cancel_requested = False
+        if not preserve_stages:
+            self._stage_view_auto_selected = False
         self.log_view.clear()
         self.log_view.appendPlainText("$ " + " ".join(
             shlex.quote(part) for part in self.current_command))
@@ -1689,7 +1692,9 @@ class MainWindow(QMainWindow):
             self._append_overview_output(
                 "\n[%s] %s — started\n" % (category, label))
             self.task_label.setText("Running: " + label)
-            self.build_views.setCurrentIndex(1)
+            if not self._stage_view_auto_selected:
+                self.build_views.setCurrentIndex(1)
+                self._stage_view_auto_selected = True
             return
 
         if event_type == "stage_finish":
@@ -1702,7 +1707,7 @@ class MainWindow(QMainWindow):
             record["error"] = str(event.get("error") or "")
             record["finished_at"] = datetime.now(timezone.utc)
             record["elapsed_seconds"] = max(
-                0.0, __import__("time").monotonic() -
+                0.0, time.monotonic() -
                 float(record.get("started_monotonic", __import__("time").monotonic())))
             handle = self.stage_log_handles.pop(stage_id, None)
             if handle:
@@ -2006,6 +2011,7 @@ class MainWindow(QMainWindow):
     def cancel_process(self) -> None:
         if self.process.state() == QProcess.ProcessState.NotRunning:
             return
+        self._cancel_requested = True
         self.task_label.setText("Stopping…")
         self.statusBar().showMessage("Sending terminate signal…")
         self._terminate_process_tree(force=False)
