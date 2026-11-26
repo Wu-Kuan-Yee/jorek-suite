@@ -163,18 +163,80 @@ class GitSourceTests(unittest.TestCase):
             checkout,
             ["git", "-C", str(destination), "checkout", "--detach", commit])
 
+    def test_strumpack_static_link_patch_moves_scalapack_before_mpi(self):
+        source = self.root / "strumpack-source"
+        source.mkdir()
+        mpi_block = (
+            "if(STRUMPACK_USE_MPI)\\n"
+            "  target_link_libraries(strumpack PUBLIC\\n"
+            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
+            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
+            "endif()\\n"
+        )
+        scalapack_block = (
+            "if(STRUMPACK_USE_MPI)\\n"
+            "  if(SCALAPACK_FOUND)\\n"
+            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
+            "  endif()\\n"
+            "endif()\\n"
+        )
+        cmake_lists = source / "CMakeLists.txt"
+        cmake_lists.write_text(
+            mpi_block + "\\nif(OpenMP_FOUND)\\nendif()\\n\\n" + scalapack_block,
+            encoding="utf-8",
+        )
+
+        self.assertTrue(deps.patch_strumpack_static_link_order(source))
+        patched = cmake_lists.read_text(encoding="utf-8")
+        marker = "# JOREK Build Studio static-link fix: ScaLAPACK may reference MPI symbols."
+        marker_at = patched.index(marker)
+        scalapack_at = patched.index(
+            "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
+            marker_at)
+        mpi_at = patched.index("MPI::MPI_CXX", marker_at)
+        self.assertLess(scalapack_at, mpi_at)
+        self.assertEqual(patched.count("MPI::MPI_CXX"), 1)
+        self.assertFalse(deps.patch_strumpack_static_link_order(source))
+        self.assertEqual(cmake_lists.read_text(encoding="utf-8"), patched)
+
+    def test_strumpack_static_link_patch_rejects_unknown_upstream_layout(self):
+        source = self.root / "strumpack-unknown-source"
+        source.mkdir()
+        (source / "CMakeLists.txt").write_text(
+            "project(STRUMPACK VERSION 7.2.0)\\n", encoding="utf-8")
+        with self.assertRaisesRegex(BuildError, "cannot safely patch STRUMPACK"):
+            deps.patch_strumpack_static_link_order(source)
+
     def test_strumpack_declares_its_required_numerical_dependencies(self):
         dependency = deps.DEPENDENCIES["strumpack"]
         self.assertIn("mpich", dependency.deps)
         self.assertIn("openblas", dependency.deps)
         self.assertIn("scalapack", dependency.deps)
         self.assertIn("metis", dependency.deps)
-        self.assertEqual(dependency.recipe_revision, "1")
+        self.assertEqual(dependency.recipe_revision, "2")
 
-    def test_strumpack_build_uses_private_blas_lapack_scalapack_and_metis(self):
+    def test_strumpack_build_uses_private_libraries_core_target_and_consumer_link_check(self):
         dependency = deps.DEPENDENCIES["strumpack"]
         source = self.root / "strumpack-source"
         source.mkdir()
+        mpi_block = (
+            "if(STRUMPACK_USE_MPI)\\n"
+            "  target_link_libraries(strumpack PUBLIC\\n"
+            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
+            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
+            "endif()\\n"
+        )
+        scalapack_block = (
+            "if(STRUMPACK_USE_MPI)\\n"
+            "  if(SCALAPACK_FOUND)\\n"
+            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
+            "  endif()\\n"
+            "endif()\\n"
+        )
+        (source / "CMakeLists.txt").write_text(
+            mpi_block + "\\nif(OpenMP_FOUND)\\nendif()\\n\\n" + scalapack_block,
+            encoding="utf-8",
+        )
         libdir = self.context.prefix / "lib"
         includedir = self.context.prefix / "include"
         libdir.mkdir()
@@ -183,6 +245,12 @@ class GitSourceTests(unittest.TestCase):
             (libdir / name).write_bytes(b"static archive fixture")
         (includedir / "metis.h").write_text(
             "#define IDXTYPEWIDTH 32\\n", encoding="utf-8")
+        package_dir = libdir / "cmake" / "STRUMPACK"
+        package_dir.mkdir(parents=True)
+        (package_dir / "strumpack-config.cmake").write_text(
+            "# package config fixture\\n", encoding="utf-8")
+        (package_dir / "strumpack-targets.cmake").write_text(
+            "# exported targets fixture\\n", encoding="utf-8")
 
         calls = []
 
@@ -194,10 +262,12 @@ class GitSourceTests(unittest.TestCase):
         with patch.object(deps, "run", side_effect=fake_run):
             deps.build_strumpack(self.context, dependency, source)
 
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 5)
         configure = calls[0][0]
         self.assertEqual(configure[:2], ["cmake", "-S"])
         self.assertIn("-DCMAKE_PREFIX_PATH=%s" % self.context.prefix, configure)
+        self.assertIn("-DBUILD_TESTING=OFF", configure)
+        self.assertNotIn("-DSTRUMPACK_BUILD_TESTS=OFF", configure)
         self.assertIn(
             "-DTPL_BLAS_LIBRARIES=%s" % (libdir / "libopenblas.a"), configure)
         self.assertIn(
@@ -215,9 +285,45 @@ class GitSourceTests(unittest.TestCase):
         for option in (
                 "SLATE", "PARMETIS", "SCOTCH", "PTSCOTCH", "BPACK", "ZFP"):
             self.assertIn("-DTPL_ENABLE_%s=OFF" % option, configure)
-        self.assertEqual(calls[1][0][:3], ["cmake", "--build", str(
-            self.context.work / "build" / "strumpack-7.1.0")])
-        self.assertEqual(calls[2][0][:2], ["cmake", "--install"])
+
+        build_dir = self.context.work / "build" / "strumpack-7.1.0"
+        core_build = calls[1][0]
+        self.assertEqual(
+            core_build,
+            ["cmake", "--build", str(build_dir),
+             "--target", "strumpack", "--parallel", "1"])
+        self.assertEqual(calls[2][0], ["cmake", "--install", str(build_dir)])
+
+        verify_configure = calls[3][0]
+        self.assertEqual(verify_configure[:3], [
+            "cmake", "-S", str(build_dir / "consumer-link-check" / "src")])
+        self.assertIn(
+            "-DCMAKE_PREFIX_PATH=%s" % self.context.prefix, verify_configure)
+        self.assertIn(
+            "-DMPI_C_COMPILER=%s" % (self.context.prefix / "bin" / "mpicc"),
+            verify_configure)
+        self.assertIn(
+            "-DMPI_CXX_COMPILER=%s" % (self.context.prefix / "bin" / "mpicxx"),
+            verify_configure)
+        self.assertIn(
+            "-DMPI_Fortran_COMPILER=%s" % (self.context.prefix / "bin" / "mpifort"),
+            verify_configure)
+        self.assertEqual(calls[4][0], [
+            "cmake", "--build", str(build_dir / "consumer-link-check" / "build"),
+            "--target", "strumpack_link_probe", "--parallel", "1"])
+
+        patched = (source / "CMakeLists.txt").read_text(encoding="utf-8")
+        marker_at = patched.index(
+            "# JOREK Build Studio static-link fix: ScaLAPACK may reference MPI symbols.")
+        self.assertLess(
+            patched.index(
+                "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
+                marker_at),
+            patched.index("MPI::MPI_CXX", marker_at))
+        probe = (build_dir / "consumer-link-check" / "src" /
+                 "strumpack_link_probe.cpp").read_text(encoding="utf-8")
+        self.assertIn("#include <StrumpackSparseSolverMPIDist.hpp>", probe)
+        self.assertIn("STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM)", probe)
 
     def test_parmetis_build_uses_static_default_and_dependency_prefix(self):
         dependency = deps.DEPENDENCIES["parmetis"]
