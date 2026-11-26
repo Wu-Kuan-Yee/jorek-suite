@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 import shlex
 from pathlib import PurePosixPath
 from typing import Any, Dict, List
@@ -161,10 +162,15 @@ def remote_repo_path(profile: Dict[str, Any]) -> str:
     return str(PurePosixPath(str(profile["remote_root"])) / "jorek-suite")
 
 
-def remote_artifact_path(profile: Dict[str, Any], output: str = "") -> str:
-    if output:
-        return output
-    return str(PurePosixPath(str(profile["remote_work"])) / "dist" / "jorek-suite")
+def remote_artifact_path(profile: Dict[str, Any]) -> str:
+    identity = "\0".join((
+        str(profile.get("destination", "")),
+        str(profile.get("name", "")),
+        str(profile.get("commit", "")),
+    )).encode("utf-8")
+    token = hashlib.sha256(identity).hexdigest()[:16]
+    # A no-space staging path works with both legacy SCP and SFTP-mode clients.
+    return "/tmp/jorek-suite-transfer-" + token
 
 
 def build_remote_command(
@@ -188,6 +194,8 @@ def build_remote_command(
     qcommit = shlex.quote(commit)
     build_command = shlex.join([python, repo + "/build.py"] + list(build_args))
     verify_command = shlex.join([python, repo + "/build.py"] + list(verify_args))
+    suite_source = str(PurePosixPath(str(profile["remote_work"])) / "dist" / "jorek-suite")
+    transfer_path = remote_artifact_path(profile)
     commands = [
         "set -eu",
         "mkdir -p " + qroot,
@@ -199,6 +207,8 @@ def build_remote_command(
         "test \"$(git -C " + qrepo + " rev-parse HEAD)\" = " + qcommit,
         build_command,
         verify_command,
+        "cp " + shlex.quote(suite_source) + " " + shlex.quote(transfer_path),
+        "chmod 700 " + shlex.quote(transfer_path),
     ]
     return "; ".join(commands)
 
@@ -207,9 +217,10 @@ def scp_arguments(profile: Dict[str, Any], remote_path: str, local_path: str) ->
     errors = validate_connection_profile(profile)
     if errors:
         raise RemoteProfileError("; ".join(errors))
-    # scp receives a single argv element; in its default SFTP mode the
-    # path is data, not a remote-shell fragment, so quoting would become
-    # literal filename characters on the server.
+    if any(character.isspace() for character in remote_path):
+        raise RemoteProfileError(
+            "remote SCP transfer path must not contain whitespace; use remote_artifact_path()")
+    # The no-space staging path also works with older legacy-SCP clients.
     remote_spec = "%s:%s" % (
         str(profile["destination"]).strip(), remote_path)
     return _ssh_common(profile, scp=True) + [remote_spec, local_path]

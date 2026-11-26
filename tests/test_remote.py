@@ -85,13 +85,15 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("verify --json", command)
         self.assertIn("rev-parse HEAD", command)
 
-    def test_scp_remote_path_is_quoted(self):
-        args = scp_arguments(
-            PROFILE, "/scratch/jorek work/dist/jorek-suite",
-            "/tmp/JOREK artifacts/suite")
+    def test_scp_uses_a_space_free_remote_staging_path(self):
+        transfer = remote_artifact_path(PROFILE)
+        self.assertFalse(any(character.isspace() for character in transfer))
+        args = scp_arguments(PROFILE, transfer, "/tmp/JOREK artifacts/suite")
         self.assertIn("-P", args)
-        self.assertTrue(any("/scratch/jorek work/dist/jorek-suite" in item for item in args))
+        self.assertIn("builder@example.invalid:" + transfer, args)
         self.assertEqual(args[-1], "/tmp/JOREK artifacts/suite")
+        with self.assertRaises(RemoteProfileError):
+            scp_arguments(PROFILE, "/tmp/remote path with spaces", "/tmp/local")
 
     def test_connection_test_reports_native_host_information(self):
         command = connection_test_command(PROFILE)
@@ -167,6 +169,9 @@ class RemoteCommandTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             artifact = Path(profile["remote_work"]) / "dist" / "jorek-suite"
             self.assertEqual(artifact.read_text(encoding="utf-8"), "native-suite")
+            transfer = Path(remote_artifact_path(profile))
+            self.assertEqual(transfer.read_text(encoding="utf-8"), "native-suite")
+            transfer.unlink(missing_ok=True)
             checkout = Path(profile["remote_root"]) / "jorek-suite"
             actual = subprocess.run(
                 ["git", "-C", str(checkout), "rev-parse", "HEAD"],
@@ -248,13 +253,19 @@ class RemoteCommandTests(unittest.TestCase):
             local_dir = Path(profile["artifact_dir"])
             local_dir.mkdir(parents=True, exist_ok=True)
             local_artifact = local_dir / "jorek-suite"
+            transfer_path = remote_artifact_path(profile)
             scp = subprocess.run(
                 ["scp"] + scp_arguments(
-                    profile, remote_artifact_path(profile), str(local_artifact)),
+                    profile, transfer_path, str(local_artifact)),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, check=False, timeout=30)
             self.assertEqual(scp.returncode, 0, scp.stdout)
             self.assertEqual(local_artifact.read_text(encoding="utf-8"), "ssh-native-suite")
+            cleanup = subprocess.run(
+                ["ssh"] + ssh_arguments(profile, "rm -f " + shlex.quote(transfer_path)),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False, timeout=15)
+            self.assertEqual(cleanup.returncode, 0, cleanup.stdout)
             self.assertIn('"portable_on_build_host": true', ssh.stdout)
 
     def test_remote_overrides_are_typed_and_restricted(self):

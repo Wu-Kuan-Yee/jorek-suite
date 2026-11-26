@@ -634,6 +634,10 @@ class MainWindow(QMainWindow):
             verify_args = build_arguments(remote_cfg, "verify")
             remote_command = build_remote_command(profile, build_args, verify_args)
             remote_artifact = remote_artifact_path(profile)
+            self.remote_artifact_path = remote_artifact
+            self.remote_ssh_executable = ssh
+            self.remote_cleanup_args = ssh_arguments(
+                profile, "rm -f " + shlex.quote(remote_artifact))
             local_dir = Path(profile["artifact_dir"]).expanduser()
             local_dir.mkdir(parents=True, exist_ok=True)
             safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", profile["name"]).strip("-") or "remote"
@@ -1335,6 +1339,10 @@ class MainWindow(QMainWindow):
             self.task_label.setText("Failed to start")
             self.statusBar().showMessage(message, 10000)
             self._record_task(-1, False)
+            if self.task_kind == "remote-cleanup":
+                self._finish_remote_download(
+                    bool(getattr(self, "remote_download_succeeded", False)),
+                    cleanup_succeeded=False)
 
     def _process_finished(self, exit_code: int, exit_status) -> None:
         self._read_process_output()
@@ -1364,12 +1372,19 @@ class MainWindow(QMainWindow):
                         "Remote build verified, but scp is unavailable for download", 12000)
             return
         if completed_kind == "remote-download":
-            if succeeded:
-                self.overview_text.setPlainText(
-                    "Remote suite downloaded successfully:\n%s\n\n"
-                    "The remote builder completed its portability verification before transfer."
-                    % getattr(self, "remote_local_artifact", ""))
-                self.statusBar().showMessage("Remote artifact downloaded", 10000)
+            self.remote_download_succeeded = succeeded
+            self.remote_download_log_path = self.task_log_path
+            cleanup_args = getattr(self, "remote_cleanup_args", None)
+            ssh = getattr(self, "remote_ssh_executable", None)
+            if cleanup_args and ssh:
+                self._start_external_process(ssh, cleanup_args, "remote-cleanup")
+            else:
+                self._finish_remote_download(succeeded, cleanup_succeeded=None)
+            return
+        if completed_kind == "remote-cleanup":
+            self._finish_remote_download(
+                bool(getattr(self, "remote_download_succeeded", False)),
+                cleanup_succeeded=succeeded)
             return
         if completed_kind == "remote-test":
             if succeeded:
@@ -1390,6 +1405,26 @@ class MainWindow(QMainWindow):
             self._show_verify_result()
         if self.task_kind == "dependencies" and exit_code == 0:
             self.refresh_catalog(show_message=False)
+
+    def _finish_remote_download(
+        self, downloaded: bool, cleanup_succeeded: Optional[bool],
+    ) -> None:
+        if downloaded:
+            message = (
+                "Remote suite downloaded successfully:\n%s\n\n"
+                "The remote builder completed its portability verification before transfer."
+                % getattr(self, "remote_local_artifact", ""))
+            self.statusBar().showMessage("Remote artifact downloaded", 10000)
+        else:
+            message = (
+                "Remote artifact download failed. Inspect the remote-download log at:\n%s"
+                % getattr(self, 'remote_download_log_path', self.task_log_path))
+            self.statusBar().showMessage("Remote artifact download failed", 10000)
+        if cleanup_succeeded is False:
+            message += (
+                "\n\nWarning: the temporary remote staging file could not be removed. "
+                "It is located at:\n%s" % getattr(self, "remote_artifact_path", ""))
+        self.overview_text.setPlainText(message)
 
     def _show_matrix_result(self) -> None:
         try:
