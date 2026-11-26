@@ -103,7 +103,12 @@ def run_checks(
         for line in result.details:
             print("  " + line)
 
-        stage_status = "failed" if result.status == "failed" else result.status
+        stage_status = {
+            "passed": "completed",
+            "warning": "warning",
+            "failed": "failed",
+            "skipped": "skipped",
+        }[result.status]
         emit_build_event(
             "stage_finish",
             id=stage_id,
