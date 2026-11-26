@@ -335,7 +335,8 @@ register(
         license="Apache-2.0", homepage="https://github.com/KarypisLab/METIS",
         deps=("gklib",), static_libs=("libmetis.a", "libGKlib.a"), includes=("metis.h",),
         builder="metis",
-        required_paths=("CMakeLists.txt", "include/metis.h", "include/CMakeLists.txt")),
+        required_paths=("CMakeLists.txt", "include/metis.h", "include/CMakeLists.txt"),
+        recipe_revision="1"),
     dep("parmetis", "4.0.3", "https://github.com/KarypisLab/ParMETIS/archive/refs/tags/v4.0.3.tar.gz",
         license="ParMETIS-license (non-commercial)", homepage="https://github.com/KarypisLab/ParMETIS",
         deps=("metis", "mpich"), static_libs=("libparmetis.a",), includes=("parmetis.h",),
@@ -1044,6 +1045,56 @@ LPORD = -L$(LPORDDIR) -lpord$(PLAT)
                 shutil.copy2(header, ctx.prefix / "include" / header.name)
 
 
+def merge_static_archives(
+    ar: str,
+    work_dir: Path,
+    archives: Sequence[Tuple[str, Path]],
+    output_archive: Path,
+    log: Optional[Path] = None,
+) -> Path:
+    """Merge static archives while namespacing members to avoid collisions.
+
+    Some upstream CMake find-modules probe only the primary library and do not
+    include its static transitive dependencies.  Combining the archives makes
+    the primary archive independently linkable without deleting the original
+    dependency archives from the installation prefix.
+    """
+    if len(archives) < 2:
+        raise BuildError("at least two static archives are required for merging")
+
+    work_dir = Path(work_dir)
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    ensure_dir(work_dir)
+
+    members: List[str] = []
+    for label, archive in archives:
+        archive = Path(archive)
+        if not archive.is_file():
+            raise BuildError("static archive required for merge is missing: %s" % archive)
+        extract_dir = ensure_dir(work_dir / label)
+        run([ar, "x", str(archive)], cwd=extract_dir, log=log)
+        objects = sorted(
+            path for path in extract_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in (".o", ".obj"))
+        if not objects:
+            raise BuildError(
+                "static archive contains no object members: %s" % archive)
+        for obj in objects:
+            member = work_dir / (label + "_" + obj.name)
+            shutil.copy2(obj, member)
+            members.append(str(member))
+
+    output_archive = Path(output_archive)
+    ensure_dir(output_archive.parent)
+    if output_archive.exists():
+        output_archive.unlink()
+    run([ar, "rcs", str(output_archive)] + members, log=log)
+    if not output_archive.is_file():
+        raise BuildError("archive merge did not create %s" % output_archive)
+    return output_archive
+
+
 def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     cmake = ctx.cmake or which("cmake", ctx.path)
     if not cmake:
@@ -1064,6 +1115,23 @@ def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     run([cmake, "--build", str(build_dir), "--parallel", str(max(1, ctx.jobs))],
         env=ctx.build_env(dep), log=ctx.log_path(dep.name))
     run([cmake, "--install", str(build_dir)], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+
+    # PaStiX's FindMETIS.cmake tests METIS_NodeND using libmetis.a alone.
+    # METIS 5.2.1 keeps its GKlib symbols in a separate archive, so the probe
+    # fails with undefined GKlib references unless the static members are
+    # merged into the METIS archive.  Keep libGKlib.a as a separate artefact
+    # too, for consumers that explicitly request it.
+    libdir = ctx.prefix / "lib"
+    metis_archive = libdir / "libmetis.a"
+    gklib_archive = libdir / "libGKlib.a"
+    merged_archive = merge_static_archives(
+        ctx.ar,
+        ctx.work / "build" / "metis-archive-merge",
+        (("metis", metis_archive), ("gklib", gklib_archive)),
+        ctx.work / "build" / "libmetis-merged.a",
+        log=ctx.log_path("metis-merge"),
+    )
+    shutil.copy2(merged_archive, metis_archive)
 
 
 def build_parmetis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
