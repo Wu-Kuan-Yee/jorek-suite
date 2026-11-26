@@ -1327,6 +1327,14 @@ class MainWindow(QMainWindow):
         if self.task_log:
             self.task_log.write("\n" + message + "\n")
             self.task_log.flush()
+        if error == QProcess.ProcessError.FailedToStart:
+            if self.task_log:
+                self.task_log.flush()
+                self.task_log.close()
+                self.task_log = None
+            self.task_label.setText("Failed to start")
+            self.statusBar().showMessage(message, 10000)
+            self._record_task(-1, False)
 
     def _process_finished(self, exit_code: int, exit_status) -> None:
         self._read_process_output()
