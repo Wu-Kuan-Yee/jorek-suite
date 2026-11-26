@@ -110,6 +110,86 @@ class GitSourceTests(unittest.TestCase):
         self.assertNotIn("scotch", names)
         self.assertIn("scotch", deps.core_dependencies("complete", "pastix6"))
 
+    def test_parmetis_source_is_pinned_to_the_official_403_commit(self):
+        dependency = deps.DEPENDENCIES["parmetis"]
+        self.assertEqual(dependency.version, "4.0.3")
+        self.assertEqual(dependency.source_kind, "git")
+        self.assertEqual(dependency.url, "https://github.com/KarypisLab/ParMETIS.git")
+        self.assertEqual(
+            dependency.git_ref,
+            "fc99804e3f043dd951e37775e30db697444816b8")
+        self.assertFalse(dependency.git_submodules)
+        self.assertIn("Makefile", dependency.required_paths)
+        self.assertIn("include/parmetis.h", dependency.required_paths)
+        self.assertIn("libparmetis/CMakeLists.txt", dependency.required_paths)
+        self.assertEqual(dependency.recipe_revision, "1")
+
+    def test_git_clone_checks_out_a_pinned_commit_sha(self):
+        commit = "a" * 40
+        dependency = deps.Dependency(
+            name="commit-fixture", version="1", url="https://example.invalid/repo.git",
+            source_kind="git", git_ref=commit,
+            required_paths=("CMakeLists.txt",),
+        )
+        calls = []
+        destination = self.context.work / "src" / "commit-fixture-1"
+
+        def fake_run(argv, **kwargs):
+            command = list(argv)
+            calls.append((command, kwargs))
+            if command[1] == "clone":
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / ".git").mkdir()
+            elif command[1:3] == ["-C", str(destination)] and command[3:5] == [
+                    "checkout", "--detach"]:
+                (destination / "CMakeLists.txt").write_text(
+                    "# pinned fixture\\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        with patch.object(deps, "which", return_value="git"), \\
+                patch.object(deps, "run", side_effect=fake_run):
+            source = deps._clone_git_source(
+                self.context, dependency, ["https://example.invalid/repo.git"])
+
+        self.assertEqual(source, destination)
+        self.assertEqual(len(calls), 2)
+        clone = calls[0][0]
+        self.assertEqual(clone[:2], ["git", "clone"])
+        self.assertIn("--no-checkout", clone)
+        self.assertNotIn("--depth", clone)
+        self.assertNotIn("--branch", clone)
+        checkout = calls[1][0]
+        self.assertEqual(
+            checkout,
+            ["git", "-C", str(destination), "checkout", "--detach", commit])
+
+    def test_parmetis_build_uses_static_default_and_dependency_prefix(self):
+        dependency = deps.DEPENDENCIES["parmetis"]
+        source = self.root / "parmetis-source"
+        source.mkdir()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            command = list(argv)
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        mpicc = str(self.context.prefix / "bin" / "mpicc")
+        with patch.object(deps, "which", return_value=mpicc), \\
+                patch.object(deps, "run", side_effect=fake_run):
+            deps.build_parmetis(self.context, dependency, source)
+
+        self.assertEqual(len(calls), 3)
+        configure = calls[0][0]
+        self.assertEqual(configure[:2], ["make", "config"])
+        self.assertIn("cc=%s" % mpicc, configure)
+        self.assertIn("prefix=%s" % self.context.prefix, configure)
+        self.assertIn("gklib_path=%s" % self.context.prefix, configure)
+        self.assertIn("metis_path=%s" % self.context.prefix, configure)
+        self.assertFalse(any(item.startswith("shared=") for item in configure))
+        self.assertEqual(calls[1][0], ["make", "-j1"])
+        self.assertEqual(calls[2][0], ["make", "install"])
+
     def test_git_clone_includes_recursive_submodules_and_validates_them(self):
         dependency = deps.Dependency(
             name="pastix-fixture", version="v1", url="https://example.invalid/repo.git",
@@ -481,6 +561,51 @@ class RecipeStampTests(unittest.TestCase):
 
 
 class DependencyStampTests(unittest.TestCase):
+    def test_git_source_identity_is_checked_when_reusing_a_stamp(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary)
+            (prefix / "lib").mkdir()
+            (prefix / "include").mkdir()
+            (prefix / "lib" / "libfixture.a").write_bytes(b"fixture")
+            (prefix / "include" / "fixture.h").write_text(
+                "/* fixture */", encoding="utf-8")
+            dependency = deps.Dependency(
+                name="fixture", version="1", url="https://example.invalid/fixture.git",
+                source_kind="git", git_ref="a" * 40,
+                static_libs=("libfixture.a",), includes=("fixture.h",))
+            context = object.__new__(deps.BuildContext)
+            context.force = False
+            context.prefix = prefix
+            context.stamps = {
+                "fixture": {
+                    "version": dependency.version,
+                    "url": dependency.url,
+                    "source_kind": "git",
+                    "git_ref": dependency.git_ref,
+                    "git_submodules": False,
+                }
+            }
+
+            self.assertTrue(context.has_stamp(dependency))
+            context.stamps["fixture"]["git_ref"] = "b" * 40
+            self.assertFalse(context.has_stamp(dependency))
+
+    def test_mark_built_records_git_source_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            context = object.__new__(deps.BuildContext)
+            context.stamp_dir = Path(temporary) / "stamps"
+            context.stamp_dir.mkdir()
+            context.stamps = {}
+            dependency = deps.DEPENDENCIES["parmetis"]
+
+            context.mark_built(dependency)
+
+            saved = json.loads(
+                context.stamp_path(dependency).read_text(encoding="utf-8"))
+            self.assertEqual(saved["source_kind"], "git")
+            self.assertEqual(saved["git_ref"], dependency.git_ref)
+            self.assertFalse(saved["git_submodules"])
+
     def test_failed_static_library_validation_does_not_write_a_stamp(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
