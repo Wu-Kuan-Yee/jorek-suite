@@ -47,6 +47,47 @@ class StageLogDialogTests(unittest.TestCase):
                     warning_formats[0].background().color().name(), "#352b16")
                 self.assertIsNotNone(highlighter)
 
+    def _highlighted_colors(self, message):
+        document = QTextDocument()
+        highlighter = LogHighlighter(document)
+        document.setPlainText(message)
+        highlighter.rehighlight()
+        self.app.processEvents()
+        formats = document.begin().layout().formats()
+        self.assertTrue(formats, "expected a diagnostic colour for: %s" % message)
+        return [
+            (
+                item.format.foreground().color().name(),
+                item.format.background().color().name()
+                if item.format.background().style() != 0 else None,
+            )
+            for item in formats
+        ]
+
+    def test_localized_diagnostics_are_classified_by_severity(self):
+        cases = (
+            ("CMake Deprecation Warning at CMakeLists.txt:24", "#ffca68"),
+            ("/tmp/main.c:5: 警告：未使用的变量", "#ffca68"),
+            ("/tmp/main.c:6: 错误：找不到声明", "#ff6b6b"),
+            ("ld: 未定义的引用：METIS_NodeND", "#ff6b6b"),
+            ("gfortran: предупреждение: unused variable", "#ffca68"),
+            ("main.c:4: エラー: undeclared identifier", "#ff6b6b"),
+            ("CMake 配置完成", "#83d6a5"),
+        )
+        for message, expected in cases:
+            with self.subTest(message=message):
+                colors = self._highlighted_colors(message)
+                self.assertEqual(colors[0][0], expected)
+
+    def test_localized_git_clone_and_detached_head_messages_are_informational(self):
+        for message in (
+            "正克隆到 '/tmp/source'...",
+            "注意：正在切换到 'bff79df1'。",
+        ):
+            with self.subTest(message=message):
+                colors = self._highlighted_colors(message)
+                self.assertEqual(colors[0][0], "#8fb7e8")
+
     def test_live_log_follows_appended_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "live.log"
