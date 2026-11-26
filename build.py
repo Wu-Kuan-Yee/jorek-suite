@@ -1558,7 +1558,7 @@ def cmd_preflight(args) -> int:
         ]
 
     def check_dependency_plan():
-        if args.deps == "none" and not args.dep_prefix:
+        if build_kind != "full" and args.deps == "none" and not args.dep_prefix:
             raise BuildError("--deps none requires at least one --dep-prefix")
         if build_kind == "full":
             if args.dep_prefix:
@@ -1571,7 +1571,13 @@ def cmd_preflight(args) -> int:
                 policy = "source"
                 prefixes = []
         elif args.deps == "none":
-            return ["Dependency building is disabled; supplied prefixes will be used."]
+            prefixes = [Path(value).expanduser() for value in (args.dep_prefix or [])]
+            missing = _preflight_check_static_libraries(selected_names, prefixes)
+            if missing:
+                raise BuildError(
+                    "the supplied dependency prefixes are incomplete; missing: %s" %
+                    ", ".join(missing))
+            return ["Dependency building is disabled; all selected static libraries are present."]
         else:
             probe = copy.copy(args)
             _wait_for_deps_policy(probe)
