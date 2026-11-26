@@ -590,7 +590,7 @@ def _clone_git_source(
 
     destination = ctx.work / "src" / ("%s-%s" % (dep.name, dep.version))
     ensure_dir(destination.parent)
-    if ctx.offline:
+    if getattr(ctx, "offline", False):
         if not (destination / ".git").is_dir():
             raise BuildError(
                 "offline mode has no cached Git checkout for %s at %s" %
