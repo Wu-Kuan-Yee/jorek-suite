@@ -179,7 +179,7 @@ BUILD_EVENT_PREFIX = "@@JOREK_BUILD_EVENT@@"
 def _remote_event_line(event: str, **payload) -> str:
     message = {"event": event}
     message.update(payload)
-    return "printf '%s\\n' " + shlex.quote(
+    return "printf '\\n%s\\n' " + shlex.quote(
         BUILD_EVENT_PREFIX + json.dumps(message, ensure_ascii=False, separators=(",", ":")))
 
 
