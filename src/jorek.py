@@ -1014,8 +1014,8 @@ class MakeBuilder:
     def _pastix5_block(self) -> List[str]:
         layout = self.layout
         libs = []
-        for name in ("libpastix.a", "libmetis.a", "libopenblas.a",
-                     "libomp.a", "libhwloc.a"):
+        for name in ("libpastix.a", "libmetis.a", "libGKlib.a",
+                     "libopenblas.a", "libomp.a", "libhwloc.a"):
             try:
                 libs.append(str(layout.lib(name)))
             except BuildError:
