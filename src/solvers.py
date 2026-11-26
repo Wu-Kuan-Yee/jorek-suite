@@ -171,7 +171,7 @@ class SolverBuild:
             destination.parent.mkdir(parents=True, exist_ok=True)
             env = self.env
             env["GIT_TERMINAL_PROMPT"] = "0"
-            if self.downloader.offline:
+            if getattr(self.downloader, "offline", False):
                 if not (destination / ".git").is_dir():
                     raise BuildError(
                         "offline mode has no cached Git checkout for %s at %s" %
