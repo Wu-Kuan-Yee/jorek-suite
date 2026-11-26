@@ -1472,6 +1472,23 @@ def _preflight_cache_check(
         supplied = source_dirs.get(item.name)
         if supplied and supplied.is_dir():
             continue
+        stamp_path = Path(args.work).expanduser() / "stamps" / (item.name + ".json")
+        if stamp_path.is_file():
+            try:
+                stamp = json.loads(stamp_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                stamp = {}
+            prefix = Path(args.work).expanduser() / "deps"
+            artifacts_ok = all(
+                deps._find_in_prefix(prefix, library)
+                for library in item.static_libs if library and library != "libgmake.a"
+            ) and all(
+                deps._find_header_in_prefix(prefix, header)
+                for header in item.includes
+            )
+            if (stamp.get("version") == item.version and
+                    stamp.get("url") == item.url and artifacts_ok):
+                continue
         if source_root and any(
                 (source_root / candidate).is_dir()
                 for candidate in ("%s-%s" % (item.name, item.version), item.name)):
@@ -1769,8 +1786,9 @@ def cmd_preflight(args) -> int:
                 if recipe.source_kind == "git":
                     cached = work / "solver-build" / "src" / (
                         "%s-%s" % (name, recipe.version))
-                    if not (cached / ".git").is_dir():
-                        missing.append("%s: Git checkout is not cached" % name)
+                    issue = _preflight_cached_git_source(name, recipe, cached)
+                    if issue:
+                        missing.append("%s: %s" % (name, issue))
                 else:
                     basename = os.path.basename(recipe.url.split("?", 1)[0]) or "source"
                     filename = getattr(
