@@ -16,6 +16,7 @@ if str(SRC) not in sys.path:
 
 from common import BUILD_EVENT_PREFIX, emit_build_event, output as command_output, run
 from suite import _run as suite_run
+from jorek import _captured_run
 
 
 class BuildEventTests(unittest.TestCase):
@@ -56,6 +57,21 @@ class BuildEventTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("quiet-stdout", output.getvalue())
         self.assertIn("quiet-stderr", output.getvalue())
+
+    def test_jorek_verification_probes_stream_captured_output(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('probe-stdout'); "
+            "print('probe-stderr', file=sys.stderr)",
+        ]
+        with patch.dict(os.environ, {"JOREK_BUILD_STUDIO_EVENTS": "1"}):
+            with contextlib.redirect_stdout(output):
+                result = _captured_run(command)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"probe-stdout\n")
+        self.assertIn("probe-stdout", output.getvalue())
+        self.assertIn("probe-stderr", output.getvalue())
 
     def test_captured_tool_output_is_logged_without_changing_return_value(self):
         output = io.StringIO()
