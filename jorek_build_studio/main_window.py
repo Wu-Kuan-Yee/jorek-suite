@@ -729,17 +729,17 @@ class MainWindow(QMainWindow):
         tabs.addTab(build_view, "Build arguments")
         outer.addWidget(tabs, 1)
 
-        buttons = QDialogButtonBox(dialog)
         if confirm_build:
+            buttons = QDialogButtonBox(dialog)
             buttons.addButton("Build now", QDialogButtonBox.ButtonRole.AcceptRole)
             buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            outer.addWidget(buttons)
         else:
-            buttons.addButton(QDialogButtonBox.StandardButton.Close)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept) \
-            if not confirm_build else None
-        outer.addWidget(buttons)
+            close_button = QPushButton("Close")
+            close_button.clicked.connect(dialog.accept)
+            outer.addWidget(close_button, 0, Qt.AlignmentFlag.AlignRight)
         return dialog.exec() == QDialog.DialogCode.Accepted
 
     def preview_remote_build(self) -> None:
