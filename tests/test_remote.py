@@ -553,7 +553,8 @@ class RemoteCommandTests(unittest.TestCase):
                 suite = Path(args.work) / "dist" / "jorek-suite"
                 if args.action == "preflight":
                     actual = subprocess.run(
-                        ["git", "rev-parse", "HEAD"], check=True,
+                        ["git", "-C", str(Path(__file__).resolve().parent),
+                         "rev-parse", "HEAD"], check=True,
                         stdout=subprocess.PIPE, text=True).stdout.strip()
                     if args.for_command != "dist" or actual != args.expected_commit:
                         raise SystemExit(3)
