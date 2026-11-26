@@ -292,6 +292,62 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("verify --json", command)
         self.assertIn("rev-parse HEAD", command)
 
+    @unittest.skipIf(os.name == "nt", "remote command uses a POSIX shell")
+    def test_remote_source_audit_rejects_stale_pastix_archive_recipe(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "stale source"
+            (source / "src").mkdir(parents=True)
+            subprocess.run(
+                ["git", "init", "-b", "main", str(source)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(
+                ["git", "-C", str(source), "config", "user.name", "Build Test"],
+                check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "config", "user.email", "build@example.invalid"],
+                check=True)
+            (source / "build.py").write_text(
+                "print('BUILD SHOULD NOT START', flush=True)\n",
+                encoding="utf-8")
+            (source / "src" / "deps.py").write_text(
+                "from types import SimpleNamespace\n"
+                "DEPENDENCIES = {'pastix6': SimpleNamespace("
+                "source_kind='archive', git_ref='', git_submodules=False)}\n",
+                encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(source), "add", "build.py", "src/deps.py"],
+                check=True)
+            subprocess.run(
+                ["git", "-C", str(source), "commit", "-m", "stale fixture"],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            commit = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+
+            profile = dict(PROFILE)
+            profile.update({
+                "remote_root": str(root / "remote root"),
+                "remote_work": str(root / "remote work"),
+                "repo_url": str(source),
+                "branch": "main",
+                "commit": commit,
+            })
+            command = build_remote_command(
+                profile,
+                ["--work", profile["remote_work"], "dist"],
+                ["--work", profile["remote_work"], "verify", "--json"],
+            )
+            result = subprocess.run(
+                ["/bin/sh", "-c", command], stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, check=False, timeout=45)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn(
+                "Pinned commit does not contain the recursive PaStiX 6.3.2 source fix",
+                result.stdout)
+            self.assertNotIn("BUILD SHOULD NOT START", result.stdout)
+
     def test_scp_uses_a_space_free_remote_staging_path(self):
         transfer = remote_artifact_path(PROFILE)
         self.assertFalse(any(character.isspace() for character in transfer))
