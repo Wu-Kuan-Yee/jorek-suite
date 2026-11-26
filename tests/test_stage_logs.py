@@ -56,11 +56,7 @@ class StageLogDialogTests(unittest.TestCase):
         formats = document.begin().layout().formats()
         self.assertTrue(formats, "expected a diagnostic colour for: %s" % message)
         return [
-            (
-                item.format.foreground().color().name(),
-                item.format.background().color().name()
-                if item.format.background().style() != 0 else None,
-            )
+            item.format.foreground().color().name()
             for item in formats
         ]
 
@@ -77,7 +73,7 @@ class StageLogDialogTests(unittest.TestCase):
         for message, expected in cases:
             with self.subTest(message=message):
                 colors = self._highlighted_colors(message)
-                self.assertEqual(colors[0][0], expected)
+                self.assertEqual(colors[0], expected)
 
     def test_localized_git_clone_and_detached_head_messages_are_informational(self):
         for message in (
@@ -86,7 +82,7 @@ class StageLogDialogTests(unittest.TestCase):
         ):
             with self.subTest(message=message):
                 colors = self._highlighted_colors(message)
-                self.assertEqual(colors[0][0], "#8fb7e8")
+                self.assertEqual(colors[0], "#8fb7e8")
 
     def test_live_log_follows_appended_output(self):
         with tempfile.TemporaryDirectory() as temporary:
