@@ -1379,11 +1379,16 @@ def cmd_dist(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
-    _wait_for_deps_policy(args)
+    _tracked_stage(
+        "dependencies:policy", "Resolve dependency policy", "Dependencies",
+        lambda: _wait_for_deps_policy(args),
+        Path(args.work) / "logs" / "dependency-policy.log")
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
-    cc, cxx, fc, mpifc = _find_compilers(args, platform)
-    toolchain = (cc, cxx, fc, mpifc)
+    toolchain = _tracked_stage(
+        "toolchain:detect", "Detect native compiler toolchain", "Toolchain",
+        lambda: _find_compilers(args, platform),
+        Path(args.work) / "logs" / "toolchain-detection.log")
     _write_toolchain_json(args, *toolchain)
     built = _collect_variants(args, platform, toolchain)
     if not built:
