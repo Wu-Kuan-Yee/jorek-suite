@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import tempfile
@@ -147,6 +148,45 @@ class ScotchInstallTests(unittest.TestCase):
             install_argv = run_mock.call_args_list[2].args[0]
             self.assertIn("prefix=%s" % context.prefix, install_argv)
             self.assertEqual(install_argv[-1], "install")
+
+
+class RecipeStampTests(unittest.TestCase):
+    def test_old_scotch_stamp_is_invalidated_by_recipe_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary)
+            dependency = deps.DEPENDENCIES["scotch"]
+            (prefix / "lib").mkdir()
+            for library in dependency.static_libs:
+                (prefix / "lib" / library).write_bytes(b"fixture")
+
+            context = object.__new__(deps.BuildContext)
+            context.force = False
+            context.prefix = prefix
+            context.stamps = {
+                "scotch": {
+                    "name": "scotch",
+                    "version": dependency.version,
+                    "url": dependency.url,
+                    "time": "before-prefix-fix",
+                }
+            }
+            self.assertFalse(context.has_stamp(dependency))
+
+            context.stamps["scotch"]["recipe_revision"] = dependency.recipe_revision
+            self.assertTrue(context.has_stamp(dependency))
+
+    def test_mark_built_persists_recipe_revision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            context = object.__new__(deps.BuildContext)
+            context.stamp_dir = Path(temporary) / "stamps"
+            context.stamp_dir.mkdir()
+            context.stamps = {}
+            dependency = deps.DEPENDENCIES["scotch"]
+
+            context.mark_built(dependency)
+
+            saved = json.loads(context.stamp_path(dependency).read_text(encoding="utf-8"))
+            self.assertEqual(saved["recipe_revision"], dependency.recipe_revision)
 
 
 class DependencyStampTests(unittest.TestCase):
