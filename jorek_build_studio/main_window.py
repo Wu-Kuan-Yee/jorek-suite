@@ -416,6 +416,11 @@ class MainWindow(QMainWindow):
         self.remote_jorek_root_edit.setPlaceholderText(
             "Optional path to an existing JOREK checkout on the remote host")
         self.remote_python_edit = QLineEdit("python3")
+        self.remote_heartbeat_timeout_spin = QSpinBox()
+        self.remote_heartbeat_timeout_spin.setRange(10, 3600)
+        self.remote_heartbeat_timeout_spin.setSingleStep(10)
+        self.remote_heartbeat_timeout_spin.setValue(DEFAULT_HEARTBEAT_TIMEOUT)
+        self.remote_heartbeat_timeout_spin.setSuffix(" s")
         self.remote_repo_url_edit = QLineEdit(
             "https://github.com/Wu-Kuan-Yee/jorek-suite.git")
         self.remote_branch_edit = QLineEdit(
@@ -443,6 +448,7 @@ class MainWindow(QMainWindow):
         form.addRow("Remote build work directory", self.remote_work_edit)
         form.addRow("Remote JOREK source (optional)", self.remote_jorek_root_edit)
         form.addRow("Remote Python executable", self.remote_python_edit)
+        form.addRow("Disconnect grace period", self.remote_heartbeat_timeout_spin)
         form.addRow("jorek-suite repository URL", self.remote_repo_url_edit)
         form.addRow("Repository branch", self.remote_branch_edit)
         form.addRow("Pinned repository commit", self.remote_commit_edit)
@@ -513,6 +519,7 @@ class MainWindow(QMainWindow):
             "remote_work": self.remote_work_edit.text().strip(),
             "remote_jorek_root": self.remote_jorek_root_edit.text().strip(),
             "python": self.remote_python_edit.text().strip() or "python3",
+            "heartbeat_timeout": self.remote_heartbeat_timeout_spin.value(),
             "repo_url": self.remote_repo_url_edit.text().strip(),
             "branch": self.remote_branch_edit.text().strip(),
             "commit": self.remote_commit_edit.text().strip(),
@@ -534,6 +541,8 @@ class MainWindow(QMainWindow):
         self.remote_work_edit.setText(str(profile.get("remote_work", "/tmp/jorek-build-work")))
         self.remote_jorek_root_edit.setText(str(profile.get("remote_jorek_root", "")))
         self.remote_python_edit.setText(str(profile.get("python", "python3")))
+        self.remote_heartbeat_timeout_spin.setValue(
+            int(profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT)))
         self.remote_repo_url_edit.setText(str(profile.get("repo_url", "")))
         self.remote_branch_edit.setText(str(profile.get("branch", "")))
         self.remote_commit_edit.setText(str(profile.get("commit", "")))
@@ -674,9 +683,11 @@ class MainWindow(QMainWindow):
             build_args = build_arguments(remote_cfg, action)
             verify_args = build_arguments(remote_cfg, "verify")
             task_id = uuid.uuid4().hex
+            heartbeat_timeout = int(
+                profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT))
             remote_command = build_remote_task_command(
                 profile, build_args, verify_args, task_id,
-                heartbeat_timeout=DEFAULT_HEARTBEAT_TIMEOUT)
+                heartbeat_timeout=heartbeat_timeout)
             remote_artifact = remote_artifact_path(profile)
             local_dir = Path(profile["artifact_dir"]).expanduser()
             safe_name = re.sub(
@@ -699,6 +710,7 @@ class MainWindow(QMainWindow):
             "verify_args": verify_args,
             "remote_command": remote_command,
             "task_id": task_id,
+            "heartbeat_timeout": heartbeat_timeout,
             "remote_artifact": remote_artifact,
             "local_artifact": local_artifact,
             "local_dir": local_dir,
@@ -732,10 +744,11 @@ class MainWindow(QMainWindow):
             "remote_supervisor_directory": str(
                 PurePosixPath(profile["remote_root"]) / ".jorek-build-studio" / "tasks"),
             "heartbeat_interval_seconds": HEARTBEAT_INTERVAL,
-            "disconnect_grace_period_seconds": DEFAULT_HEARTBEAT_TIMEOUT,
+            "disconnect_grace_period_seconds": plan["heartbeat_timeout"],
             "disconnect_policy": (
                 "The detached remote supervisor terminates the complete build process "
-                "group if no GUI heartbeat is received within 120 seconds."
+                "group if no GUI heartbeat is received within %d seconds." %
+                plan["heartbeat_timeout"]
             ),
             "remote_artifact_staging_path": plan["remote_artifact"],
             "local_artifact_path": str(plan["local_artifact"]),
@@ -861,7 +874,8 @@ class MainWindow(QMainWindow):
                 if self.remote_task_started_at else datetime.now(timezone.utc).isoformat()),
             "remote_artifact": str(getattr(self, "remote_artifact_path", "")),
             "local_artifact": str(getattr(self, "remote_local_artifact", "")),
-            "heartbeat_timeout": DEFAULT_HEARTBEAT_TIMEOUT,
+            "heartbeat_timeout": int(
+                self.remote_task_profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT)),
         }
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -954,7 +968,9 @@ class MainWindow(QMainWindow):
             self.task_label.setText("Remote disconnected — reconnecting")
             self.statusBar().showMessage(
                 "SSH connection lost; retrying in %d seconds. The remote supervisor "
-                "will terminate the build if heartbeats are absent for 120 seconds." % delay)
+                "will terminate the build if heartbeats are absent for %d seconds." %
+                (delay, int(self.remote_task_profile.get(
+                    "heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT))))
             self.remote_reconnect_timer.start(delay * 1000)
             # Keep retry intervals short enough to reconnect before the
             # supervisor's 120-second lease expires.
@@ -991,8 +1007,9 @@ class MainWindow(QMainWindow):
             "Task ID: %s\nRemote host: %s\n\n"
             "Resume monitoring and recover its logs? If you choose No, Build Studio "
             "will request cancellation; if that cannot reach the host, the remote "
-            "120-second heartbeat timeout will still stop the task." %
-            (task_id, profile.get("destination", "unknown")),
+            "%d-second heartbeat timeout will still stop the task." %
+            (task_id, profile.get("destination", "unknown"),
+             int(profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT))),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
