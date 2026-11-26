@@ -6,6 +6,7 @@ import codecs
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout,
 )
@@ -93,7 +94,7 @@ class StageLogDialog(QDialog):
         if not self.running:
             tail = self.decoder.decode(b"", final=True)
             if tail:
-                self.editor.moveCursor(self.editor.textCursor().MoveOperation.End)
+                self.editor.moveCursor(QTextCursor.MoveOperation.End)
                 self.editor.insertPlainText(tail)
             self.timer.stop()
 
