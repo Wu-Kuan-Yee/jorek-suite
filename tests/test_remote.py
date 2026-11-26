@@ -134,10 +134,8 @@ class RemoteSupervisorTests(unittest.TestCase):
             attach.stdin.flush()
             state = self._wait_for_terminal(state_path, timeout=8)
             self.assertEqual(state.get("status"), "cancelled", state)
-            # Wake the attach loop without closing stdin; it checks the terminal
-            # state before processing the next heartbeat.
-            attach.stdin.write(b"\n")
-            attach.stdin.flush()
+            # The attach loop polls the task state and exits once the final
+            # log bytes and terminal marker have been sent.
             output = attach.stdout.read()
             attach.wait(timeout=5)
             attach.stdin.close()
