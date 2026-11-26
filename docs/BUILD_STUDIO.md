@@ -142,10 +142,17 @@ Preview the matrix, start a build, verify a generated suite, run a suite, or
 cancel the current builder process. The Build tab keeps a concise overview
 separate from the Detailed logs view. The detailed view lists each dependency,
 solver backend, JOREK model/variant, launcher, packaging, and verification
-stage independently. Double-click a stage or choose Open selected log to open
-its own log window. A running stage is followed live; completed and failed
-stage logs remain available after the stage ends. The progress indicator reports
-the current dependency/solver/variant phase and its completed count.
+stage independently. The build driver publishes planned work before it starts,
+so not-yet-started stages appear as disabled grey rows; active, completed,
+failed, skipped, and not-run stages have distinct status symbols and colours.
+Double-click a running or completed stage, or choose Open selected log, to open
+its own full transcript. The live log window never forces the reader back to the
+end: it follows new output only while the reader is already at the tail, and
+otherwise preserves both vertical and horizontal scroll positions. Top, Bottom,
+Left, and Right controls jump to each edge of the log. Build Studio mode streams
+complete merged command output to stage transcripts even when the underlying
+build command requests quiet output. The progress indicator reports the current
+dependency/solver/variant phase and its completed count.
 
 Compiler and dependency commands stream their merged stdout/stderr while they
 run. The full task transcript and each stage log are also persisted under the
