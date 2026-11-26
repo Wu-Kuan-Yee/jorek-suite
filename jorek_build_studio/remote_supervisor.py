@@ -206,7 +206,6 @@ def run_daemon(root, task_id):
                 reason = "user_cancel"
                 update_state(directory, status="stopping", reason=reason)
                 terminate_group(pgid, child, stream, log_handle)
-                stream_eof = True
             elif not reason and heartbeat_age > timeout:
                 reason = "heartbeat_timeout"
                 update_state(
@@ -214,7 +213,6 @@ def run_daemon(root, task_id):
                     heartbeat_age_seconds=heartbeat_age,
                 )
                 terminate_group(pgid, child, stream, log_handle)
-                stream_eof = True
 
             if not stream_eof:
                 result = drain_output(stream, log_handle, 0.5)
@@ -230,7 +228,6 @@ def run_daemon(root, task_id):
                     # The shell exited but a descendant still holds the pipe or
                     # remains in the task process group. Do not leave it orphaned.
                     terminate_group(pgid, child, stream, log_handle)
-                    stream_eof = True
 
             if now - last_state_write >= 5.0 and not reason:
                 update_state(
