@@ -1140,6 +1140,81 @@ BUILDERS = {
 }
 
 
+def validate_source_recipe(
+    name: str,
+    version: str,
+    url: str,
+    source_kind: str = "archive",
+    git_ref: str = "",
+    git_submodules: bool = False,
+    required_paths: Sequence[str] = (),
+) -> List[str]:
+    """Validate source-acquisition metadata without knowing a package's name."""
+    errors: List[str] = []
+    prefix = "source recipe %s" % name
+    if not str(name).strip():
+        errors.append("%s has an empty name" % prefix)
+    if not str(version).strip():
+        errors.append("%s has an empty version" % prefix)
+    if not str(url).strip():
+        errors.append("%s has no source URL" % prefix)
+    if source_kind not in ("archive", "git"):
+        errors.append("%s has unsupported source_kind %r" % (prefix, source_kind))
+    if source_kind == "git" and not str(git_ref).strip():
+        errors.append("%s uses Git but does not pin git_ref" % prefix)
+    if source_kind != "git" and git_submodules:
+        errors.append("%s requests submodules but is not a Git source" % prefix)
+    for relative in required_paths or ():
+        path = Path(str(relative))
+        if path.is_absolute() or ".." in path.parts or not str(relative).strip():
+            errors.append("%s has unsafe required path %r" % (prefix, relative))
+    return errors
+
+
+def validate_dependency_registry() -> List[str]:
+    """Check every dependency record, builder reference and graph edge."""
+    errors: List[str] = []
+    for key, item in sorted(DEPENDENCIES.items()):
+        if key != item.name:
+            errors.append("dependency registry key %r does not match record name %r" % (
+                key, item.name))
+        errors.extend(validate_source_recipe(
+            item.name, item.version, item.url, item.source_kind,
+            item.git_ref, item.git_submodules, item.required_paths))
+        if item.builder not in BUILDERS:
+            errors.append("%s references unknown builder %r" % (item.name, item.builder))
+        if len(set(item.deps)) != len(item.deps):
+            errors.append("%s lists a prerequisite more than once" % item.name)
+        if len(set(item.static_libs)) != len(item.static_libs):
+            errors.append("%s lists a static library more than once" % item.name)
+        if len(set(item.includes)) != len(item.includes):
+            errors.append("%s lists an include file more than once" % item.name)
+        for child in item.deps:
+            if child not in DEPENDENCIES:
+                errors.append("%s depends on unknown dependency %r" % (item.name, child))
+
+    state: Dict[str, int] = {}
+
+    def visit(name: str, stack: Tuple[str, ...]) -> None:
+        mark = state.get(name, 0)
+        if mark == 2:
+            return
+        if mark == 1:
+            errors.append("cyclic dependency: %s" % " -> ".join(stack + (name,)))
+            return
+        state[name] = 1
+        item = DEPENDENCIES.get(name)
+        if item:
+            for child in item.deps:
+                if child in DEPENDENCIES:
+                    visit(child, stack + (name,))
+        state[name] = 2
+
+    for name in sorted(DEPENDENCIES):
+        visit(name, ())
+    return errors
+
+
 def _lib_path(ctx: BuildContext, name: str) -> str:
     path = _find_in_prefix(ctx.prefix, name)
     if path:
@@ -1280,6 +1355,14 @@ class DepManager:
                 raise BuildError(
                     "unsupported source kind for %s: %s" %
                     (item.name, item.source_kind))
+        missing_source = [
+            relative for relative in item.required_paths
+            if not (src / relative).exists()
+        ]
+        if missing_source:
+            raise BuildError(
+                "%s source is incomplete; missing required paths: %s" %
+                (item.name, ", ".join(missing_source)))
         try:
             builder(ctx, item, src)
         except BuildError:
