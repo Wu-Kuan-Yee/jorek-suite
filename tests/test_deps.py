@@ -267,6 +267,34 @@ class MetisArchiveTests(unittest.TestCase):
             self.assertEqual(sum(1 for command, _ in calls if command[1] == "x"), 2)
             self.assertTrue(any(command[1] == "rcs" for command, _ in calls))
 
+    def test_merge_static_archives_uses_libtool_when_requested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            primary = root / "libmetis.a"
+            dependency = root / "libGKlib.a"
+            primary.write_bytes(b"primary archive")
+            dependency.write_bytes(b"dependency archive")
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                command = list(argv)
+                calls.append(command)
+                output = Path(command[command.index("-o") + 1])
+                output.write_bytes(b"libtool merged archive")
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            output = root / "merged" / "libmetis-merged.a"
+            with patch.object(deps, "run", side_effect=fake_run):
+                result = deps.merge_static_archives(
+                    "ar", root / "work",
+                    (("metis", primary), ("gklib", dependency)),
+                    output, libtool="libtool")
+
+            self.assertEqual(result, output)
+            self.assertEqual(output.read_bytes(), b"libtool merged archive")
+            self.assertEqual(calls[0][0], "libtool")
+            self.assertIn("-static", calls[0])
+
     def test_build_metis_merges_gklib_into_the_primary_archive(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -288,7 +316,7 @@ class MetisArchiveTests(unittest.TestCase):
             def fake_run(argv, **kwargs):
                 return subprocess.CompletedProcess(list(argv), 0, b"", b"")
 
-            def fake_merge(ar, work_dir, archives, output_archive, log=None):
+            def fake_merge(ar, work_dir, archives, output_archive, log=None, libtool=None):
                 merge_calls.append((ar, tuple(archives), log))
                 output_archive = Path(output_archive)
                 output_archive.parent.mkdir(parents=True, exist_ok=True)
