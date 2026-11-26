@@ -950,13 +950,15 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
 # ---------------------------------------------------------------------------
 def cmd_doctor(args) -> int:
     platform = _platform()
+    # doctor must work before a JOREK checkout exists; report the detected
+    # root (or cwd) instead of dereferencing a None root.
+    root = Path(args.root) if getattr(args, "root", None) else (_find_jorek_root(Path(args.work)) or Path.cwd()) if getattr(args, "root", None) else (_find_jorek_root(Path(args.work)) or Path.cwd())
     if getattr(args, "json", False):
         tools = {}
         for tool in ("cc", "gcc", "c++", "g++", "gfortran", "mpicc", "mpifort", "mpirun",
                      "make", "gmake", "cmake", "ninja", "pkg-config", "pkgconf", "perl",
                      "ar", "ranlib", "ld", "nm", "objcopy", "strip", "git", "curl", "tar"):
             tools[tool] = _host_tool(tool)
-        root = Path(args.root)
         print(json.dumps({
             "platform": {
                 "system": platform.system, "machine": platform.machine,
@@ -979,7 +981,7 @@ def cmd_doctor(args) -> int:
     print("  libc          : %s" % platform.libc)
     print("  python        : %s (%s)" % (platform.python, sys.version.split()[0]))
     print("  cwd           : %s" % Path.cwd())
-    print("  jorek root    : %s" % Path(args.root).resolve())
+    print("  jorek root    : %s" % root.resolve())
     print("")
     print("Toolchain")
     tools = ["cc", "gcc", "c++", "g++", "gfortran", "mpicc", "mpifort", "mpirun",
@@ -993,7 +995,7 @@ def cmd_doctor(args) -> int:
             missing.append(tool)
     print("")
     print("JOREK")
-    root = Path(args.root)
+    root = Path(args.root) if getattr(args, "root", None) else (_find_jorek_root(Path(args.work)) or Path.cwd())
     print("  Makefile      : %s" % (root / "Makefile").exists())
     print("  models        : %d" % len(list((root / "models").glob("model*"))))
     print("  git revision  : %s" % common.git_describe(root))
@@ -1501,223 +1503,400 @@ class Parser(argparse.ArgumentParser):
         raise SystemExit("error: %s" % message)
 
 
+def _add_subparser(sub, name: str, summary: str, description: str, epilog: str):
+    return sub.add_parser(
+        name,
+        help=summary,
+        description=description,
+        epilog=textwrap.dedent(epilog).strip(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
 def make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="build.py",
-        description="Build the complete JOREK suite from source and fuse every model/feature variant into one native file.",
+        description=(
+            "Build the complete JOREK suite from source and fuse every "
+            "model/feature/parameter variant into one native single-file launcher."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""
-            QUICK START
+            OPTION PLACEMENT
+              Global options may appear before the command:
+                build.py --work /big/build --jobs 32 dist ...
+              Build-matrix options belong after the command:
+                build.py dist --model 600 --param-grid n_tor=33 ...
+              Do not use --param-grid/--param-max before the command; they
+              are subcommand options.
+
+            PARAMETER GRIDS
+              Hard-coded JOREK parameters are compiled into each variant.
+              The launcher selects a variant by --params at run time.
+
+              --set NAME=VALUE
+                Override one hard-coded parameter for every planned variant.
+
+              --param-grid NAME=V1,V2,...
+                Build this explicit Cartesian set of values.
+
+              --param-max NAME=MAX
+                Build every value up to MAX.  n_tor, n_coord_tor and n_order
+                use only odd values 1,3,5,...; n_plane and normal integer
+                parameters use 1..MAX.  The capacity parameters
+                n_nodes_max, n_elements_max, n_boundary_max and n_pieces_max
+                are upper bounds, so --param-max builds only the MAX variant
+                of each capacity.  l_pol_domm starts at 0.
+
+              Multiple parameter options form their Cartesian product.
+              Invalid JOREK combinations are skipped automatically; in
+              particular n_plane must be at least 2*(n_tor-1).
+
+              --param-grid and --param-max cannot both name the same
+              parameter.  --everything does NOT generate numeric values;
+              add --param-grid or --param-max explicitly.
+
+            COMMANDS
+              doctor    host/toolchain/JOREK diagnostic
+              deps      inspect, fetch or build dependency sources
+              bootstrap build missing compiler/toolchain pieces
+              matrix    plan variants without building
+              build     build variants, without packing a suite
+              dist      build variants and pack one suite
+              full      build all solver backends and merge their variants
+              verify    check static linkage/signature of a suite
+              run       launch a suite
+              env       print shell exports for the work prefix
+              clean     remove selected build outputs
+              version   print the builder version
+
+            EXAMPLES
               python3 build.py doctor
-              python3 build.py bootstrap --with-deps
-              python3 build.py dist --model 303 --programs main
-              ./build/dist/jorek-suite --list
-
-            COMPLETE MATRIX
-              python3 build.py matrix --matrix complete --json > matrix.json
-              python3 build.py dist --matrix complete --programs main
-
-            DEPENDENCIES
-              By default every third-party library is downloaded and built as a
-              static archive under build/deps.  Use --deps none and --dep-prefix
-              DIR to consume an existing static installation instead.  On
-              Windows and macOS only operating-system libraries may remain
-              dynamic; all other libraries are checked with verify.
+              python3 build.py matrix --model 600 --param-max n_tor=33 \\
+                  --param-max n_plane=128
+              python3 build.py --deps source dist --model 600 \\
+                  --matrix maximal --programs main \\
+                  --param-max n_tor=33 --param-max n_plane=128
+              python3 build.py --deps source full --model 600 \\
+                  --matrix maximal --programs main \\
+                  --param-grid n_tor=33 --param-grid n_plane=128
+              ./build/dist/jorek-suite-model600-all-solvers --list
 
             NOTES
-              * Hard-coded parameters are compiled into each variant.  Use
-                --set/--param-grid to generate parameter combinations; the
-                launcher selects the matching variant at run time.
               * Model families (180, 183, 600, 750) are expanded to every
                 supported extension combination by --matrix complete;
                 --matrix maximal enables all supported extensions at once.
+              * Proprietary WSMP and the legacy HIPS backend are never
+                downloaded.  Supply their libraries explicitly only if
+                licensed; see the --solver help and README.
               * The suite embeds the MPICH/Hydra mpiexec and process manager.
                 Use --mpi -np N for local runs and --hostfile/--launcher ssh
                 for clusters with a shared filesystem.
-              * Proprietary WSMP and the legacy HIPS backend are never
-                downloaded; supply them explicitly if you are licensed to use
-                them.  IMAS and ParaView Catalyst are large optional layers.
         """),
     )
-    parser.add_argument("--root", default=None, help="JOREK source checkout (default: auto-detect; with --fetch-source, WORK/src/JOREK)")
-    parser.add_argument("--fetch-source", action="store_true", help="clone JOREK into --root if it is missing")
-    parser.add_argument("--jorek-url", default=JOREK_GIT_URL, help="JOREK git URL used by --fetch-source")
-    parser.add_argument("--work", default=os.environ.get("JOREK_BUILD_DIR", str(WORK_DEFAULT)), help="build directory (default: %(default)s)")
-    parser.add_argument("--jobs", "-j", type=int, default=common.cpu_count(), help="parallel build jobs (default: CPU count)")
-    parser.add_argument("--verbose", "-v", action="store_true", help="show every command")
+    parser.add_argument("--root", default=None, help="JOREK source checkout; default auto-detect, or WORK/src/JOREK with --fetch-source")
+    parser.add_argument("--fetch-source", action="store_true", help="clone the JOREK git repository into --root if it is missing")
+    parser.add_argument("--jorek-url", default=JOREK_GIT_URL, help="JOREK git URL used with --fetch-source (default: %(default)s)")
+    parser.add_argument("--work", default=os.environ.get("JOREK_BUILD_DIR", str(WORK_DEFAULT)), help="build/work directory (default: %(default)s)")
+    parser.add_argument("--jobs", "-j", type=int, default=common.cpu_count(), help="parallel build jobs (default: number of CPUs, %(default)s)")
+    parser.add_argument("--verbose", "-v", action="store_true", help="show every executed command")
     parser.add_argument("--quiet", "-q", action="store_true", help="suppress informational output")
-    parser.add_argument("--version", action="version", version="JOREK build.py %s" % VERSION)
-    parser.add_argument("--dry-run", action="store_true", help="print commands and planned variants without executing")
-    parser.add_argument("--offline", action="store_true", help="never access the network; use cached sources only")
-    parser.add_argument("--force", action="store_true", help="rebuild dependencies even when stamps exist")
-    parser.add_argument("--no-checksum", action="store_true", help="do not verify downloaded source digests")
+    parser.add_argument("--version", action="version", version="JOREK build.py %s" % VERSION, help="print builder version and exit")
+    parser.add_argument("--dry-run", action="store_true", help="print the planned commands/variants without executing them")
+    parser.add_argument("--offline", action="store_true", help="never access the network; use only cached source archives")
+    parser.add_argument("--force", action="store_true", help="rebuild dependencies even when their stamp files exist")
+    parser.add_argument("--no-checksum", action="store_true", help="do not verify downloaded source archive digests")
     parser.add_argument("--no-verify", action="store_true", help="skip static dependency verification")
-    parser.add_argument("--allow-shared", action="store_true", help="allow third-party shared libraries (not recommended)")
+    parser.add_argument("--allow-shared", action="store_true", help="permit non-system shared libraries instead of failing verification")
     parser.add_argument("--no-full-static", action="store_true", help="do not pass -static on Linux/BSD/Windows")
-    parser.add_argument("--require-full-static", action="store_true", help="fail instead of falling back when static libc is missing")
-    parser.add_argument("--keep-going", action="store_true", help="continue after a JOREK target fails")
-    parser.add_argument("--keep-source", action="store_true", help="keep staged source trees")
-    parser.add_argument("--toolchain-prefix", default=os.environ.get("JOREK_TOOLCHAIN_PREFIX"), help="prefix containing bootstrap compilers")
-    parser.add_argument("--cc", default=os.environ.get("JOREK_CC"), help="C compiler")
-    parser.add_argument("--cxx", default=os.environ.get("JOREK_CXX"), help="C++ compiler")
-    parser.add_argument("--fc", default=os.environ.get("JOREK_FC"), help="Fortran compiler")
-    parser.add_argument("--mpi-prefix", default=os.environ.get("JOREK_MPI_PREFIX"), help="MPI installation prefix")
-    parser.add_argument("--dep-prefix", action="append", default=[], help="additional static dependency prefix (repeatable)")
-    parser.add_argument("--source", action="append", default=[], metavar="NAME=DIR", help="use this extracted source tree for a dependency")
-    parser.add_argument("--source-dir", default=None, metavar="DIR", help="directory containing <name>-<version> source trees")
+    parser.add_argument("--require-full-static", action="store_true", help="fail instead of falling back when the platform lacks a static libc")
+    parser.add_argument("--keep-going", action="store_true", help="continue after a JOREK target or variant fails")
+    parser.add_argument("--keep-source", action="store_true", help="keep staged per-variant source trees after building")
+    parser.add_argument("--toolchain-prefix", default=os.environ.get("JOREK_TOOLCHAIN_PREFIX"), help="prefix containing a bootstrapped compiler toolchain")
+    parser.add_argument("--cc", default=os.environ.get("JOREK_CC"), help="C compiler to use (default: auto-detect)")
+    parser.add_argument("--cxx", default=os.environ.get("JOREK_CXX"), help="C++ compiler to use (default: auto-detect)")
+    parser.add_argument("--fc", default=os.environ.get("JOREK_FC"), help="Fortran compiler to use (default: auto-detect)")
+    parser.add_argument("--mpi-prefix", default=os.environ.get("JOREK_MPI_PREFIX"), help="MPI installation prefix to use for headers/libraries")
+    parser.add_argument("--dep-prefix", action="append", default=[], metavar="DIR", help="additional static dependency prefix; repeatable and searched before built deps")
+    parser.add_argument("--source", action="append", default=[], metavar="NAME=DIR", help="use an already-extracted source tree for the named dependency")
+    parser.add_argument("--source-dir", default=None, metavar="DIR", help="directory containing extracted <name>-<version> dependency trees")
     parser.add_argument("--url", action="append", default=[], metavar="NAME=URL", help="override the primary source URL for a dependency")
-    parser.add_argument("--mirror", action="append", default=[], metavar="NAME=URL", help="additional source URL for a dependency (repeatable)")
-    parser.add_argument("--deps", choices=("source", "auto", "system", "none"), default="auto", help="dependency policy: source, system, auto (default), or none")
-    parser.add_argument("--profile", choices=("minimal", "standard", "full", "complete"), default="full", help="dependency/solver profile")
+    parser.add_argument("--mirror", action="append", default=[], metavar="NAME=URL", help="additional fallback source URL for a dependency; repeatable")
+    parser.add_argument("--deps", choices=("source", "auto", "system", "none"), default="auto",
+                        help="dependency policy: source=build all needed static libraries; auto=use complete static prefix else build from source; system=require preinstalled static libraries; none=do not build/resolve deps and use --dep-prefix")
+    parser.add_argument("--profile", choices=("minimal", "standard", "full", "complete"), default="full",
+                        help="dependency/solver profile: minimal/standard=core stack; full=also Boost; complete=also optional solver/SCOTCH dependencies")
     parser.add_argument("--everything", action="store_true",
-                        help="preset: complete model-toggle matrix, all solvers, all programs, complete dependencies; numeric parameter grids still need --param-grid")
-    parser.add_argument("--solver", choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default="mumps", help="direct solver backend")
-    parser.add_argument("--ima-root", "--imas-root", dest="imas_root", default=os.environ.get("JOREK_IMAS_ROOT"), help="IMAS installation prefix")
-    parser.add_argument("--catalyst-root", default=os.environ.get("JOREK_CATALYST_ROOT"), help="ParaView Catalyst installation prefix")
+                        help="preset for the largest useful build: --matrix complete, --solver all, --programs all, --profile complete, --deps auto; numeric grids still need --param-grid or --param-max")
+    parser.add_argument("--solver", choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default="mumps",
+                        help="direct solver backend: mumps, pastix6, pastix5, strumpack, all (MUMPS+PaStiX6+STRUMPACK), or none; wsmp/hips require externally supplied proprietary libraries")
+    parser.add_argument("--ima-root", "--imas-root", dest="imas_root", default=os.environ.get("JOREK_IMAS_ROOT"), help="IMAS installation prefix (only needed for the IMAS feature)")
+    parser.add_argument("--catalyst-root", default=os.environ.get("JOREK_CATALYST_ROOT"), help="ParaView Catalyst installation prefix (only needed for the Catalyst feature)")
 
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    p = sub.add_parser("doctor", help="diagnose the host toolchain and JOREK checkout")
-    p.add_argument("--json", action="store_true", help="machine-readable output (not yet implemented)")
+    p = _add_subparser(sub, "doctor",
+        "diagnose host, toolchain, JOREK checkout and disk",
+        "Inspect the host platform, compiler/tool availability, JOREK checkout and disk space. No files are modified.",
+        """
+        EXAMPLES
+          build.py doctor
+          build.py doctor --json
+        """)
+    p.add_argument("--json", action="store_true", help="emit the diagnostic report as machine-readable JSON")
     p.set_defaults(func=cmd_doctor)
 
-    p = sub.add_parser("deps", help="inspect, download, or build third-party dependencies")
-    p.add_argument("action", choices=("list", "graph", "fetch", "build", "verify"))
-    p.add_argument("--only", action="append", help="restrict to these dependency names (repeatable)")
+    p = _add_subparser(sub, "deps",
+        "inspect, download or build third-party dependencies",
+        "Inspect, resolve, download, build or verify the static third-party dependency set.",
+        """
+        ACTIONS
+          list     print the dependency table (name, version, license, homepage)
+          graph    print the resolved dependency order and direct children
+          fetch    download the source archives, without building
+          build    build the selected dependencies and their prerequisites
+          verify   check that each dependency's static libraries are installed
+
+        --only restricts graph/fetch/build/verify to the named dependencies;
+        by default the profile/solver dependency closure is used.
+        """)
+    p.add_argument("action", choices=("list", "graph", "fetch", "build", "verify"), metavar="ACTION",
+                   help="operation to perform: list, graph, fetch, build, or verify")
+    p.add_argument("--only", action="append", metavar="NAME", help="restrict to this dependency name; repeatable")
     p.add_argument("--deps-action", dest="deps_action", help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_deps, deps_action=None)
 
-    p = sub.add_parser("bootstrap", help="build a missing Fortran compiler and foundational tools from source")
-    p.add_argument("--with-deps", action="store_true", help="also build all JOREK third-party libraries")
-    p.add_argument("--json", action="store_true", help="machine-readable summary")
+    p = _add_subparser(sub, "bootstrap",
+        "build missing compiler and foundational tools",
+        "Build a missing GNU make/GCC/Fortran toolchain and optionally the JOREK third-party stack.",
+        """
+        EXAMPLES
+          build.py bootstrap
+          build.py bootstrap --with-deps
+        """)
+    p.add_argument("--with-deps", action="store_true", help="also build the complete JOREK static dependency set")
     p.set_defaults(func=cmd_bootstrap)
 
-    p = sub.add_parser("matrix", help="list the model/feature/parameter matrix")
-    p.add_argument("--matrix", choices=("models", "complete", "maximal"), default="models")
-    p.add_argument("--model", help="restrict to one model (models matrix only)")
-    p.add_argument("--programs", choices=("main", "most", "all"), default="main")
-    p.add_argument("--json", action="store_true")
-    p.add_argument("--details", action="store_true", help="include features and hard-coded parameters")
-    p.add_argument("--enable", action="append", default=[], help="enable feature (repeatable)")
-    p.add_argument("--disable", action="append", default=[], help="disable feature (repeatable)")
-    p.add_argument("--debug", action="store_true")
+    p = _add_subparser(sub, "matrix",
+        "list the model/feature/parameter variant matrix",
+        "Plan and print variants without compiling them. Useful before a large --param-grid/--param-max build.",
+        """
+        MATRIX MODES
+          models    one variant per model (default)
+          maximal   each model with all supported model extensions enabled
+          complete  every supported model-extension combination
+
+        --model filters the matrix to one model.  Parameter options form a
+        Cartesian product; --param-max and --param-grid may be used here
+        without building anything.
+        """)
+    p.add_argument("--matrix", choices=("models", "complete", "maximal"), default="models",
+                   help="variant set to plan (default: models)")
+    p.add_argument("--model", help="restrict the planned matrix to one model number, e.g. 303 or 600")
+    p.add_argument("--programs", choices=("main", "most", "all"), default="main",
+                   help="program set metadata to attach to planned variants (default: main)")
+    p.add_argument("--json", action="store_true", help="emit the planned variants as JSON instead of a table")
+    p.add_argument("--details", action="store_true", help="include feature tokens and hard-coded parameters in the table")
+    p.add_argument("--enable", action="append", default=[], metavar="FEATURE", help="enable a compile-time feature; repeatable")
+    p.add_argument("--disable", action="append", default=[], metavar="FEATURE", help="disable a compile-time feature; repeatable")
+    p.add_argument("--debug", action="store_true", help="plan debug builds (runtime checks and debug symbols)")
     p.set_defaults(func=cmd_matrix)
 
-    p = sub.add_parser("build", help="build one or more JOREK variants")
-    _add_build_options(p)
+    p = _add_subparser(sub, "build",
+        "build one or more JOREK variants",
+        "Compile the planned JOREK variants but do not pack them into a suite.",
+        """
+        Examples
+          build.py build --model 303 --matrix one --programs main
+          build.py build --model 600 --matrix maximal --param-grid n_tor=33 --param-grid n_plane=128
+        """)
+    _add_build_options(p, suite_io=False)
     p.set_defaults(func=cmd_build)
 
-    p = sub.add_parser("dist", help="build variants and pack them into one single-file suite")
-    _add_build_options(p)
+    p = _add_subparser(sub, "dist",
+        "build variants and pack one single-file suite",
+        "Build the planned variants and write one native single-file JOREK suite.",
+        """
+        Examples
+          build.py dist --model 303 --programs main
+          build.py dist --model 600 --matrix maximal --programs all \\
+              --param-max n_tor=33 --param-max n_plane=128 --output suite
+        """)
+    _add_build_options(p, suite_io=True)
     p.set_defaults(func=cmd_dist)
 
-    p = sub.add_parser("full", help="one-command full build: core deps, all solvers, all variants, one suite")
-    p.add_argument("--model", default=None, help="build only this model (default: all)")
-    p.add_argument("--solver-prefix", default=None, help="prefix for PaStiX/STRUMPACK (default: WORK/solvers)")
-    p.add_argument("--no-build-solvers", action="store_true", help="use an existing solver prefix")
-    p.add_argument("--output", default=None, help="final single-file output")
-    p.add_argument("--compression", type=int, default=9, help="DEFLATE level (0..9)")
+    p = _add_subparser(sub, "full",
+        "build all solvers and merge one full suite",
+        "Build the MUMPS core plus the PaStiX6/STRUMPACK solver stack and PaStiX5 variants, then merge all variants into one suite.",
+        """
+        This is the only command that builds multiple direct-solver variants:
+          all variant     MUMPS + PaStiX6 + STRUMPACK in one executable
+          pastix5 variant PaStiX5 in a separate executable
+          mumps variant   MUMPS in a separate executable (when selected)
+
+        WSMP and HIPS are never downloaded; they require externally supplied
+        licensed libraries and are not part of this full suite by default.
+        Use --deps source in a clean work directory so PaStiX/STRUMPACK are
+        actually built (auto may reuse an incomplete system prefix).
+        --solver is accepted globally but this command always builds the
+        all-solver variant plus the PaStiX5 variant; use --solver-prefix or
+        --no-build-solvers to control where the solver stack comes from.
+        """)
+    p.add_argument("--model", default=None, help="build only this model; default: all models (or one if --matrix one)")
+    p.add_argument("--solver", choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default=None,
+                   help="accepted for compatibility; full always builds the all-solver and PaStiX5 variants, independent of this value")
+    p.add_argument("--solver-prefix", default=None, metavar="DIR", help="location for the PaStiX/STRUMPACK solver stack (default: WORK/solvers)")
+    p.add_argument("--no-build-solvers", action="store_true", help="use an existing solver prefix instead of building PaStiX/STRUMPACK")
+    p.add_argument("--output", default=None, metavar="FILE", help="final single-file suite path (default: WORK/dist/jorek-suite)")
+    p.add_argument("--compression", type=int, default=9, metavar="LEVEL", help="DEFLATE compression level for the suite payload, 0..9 (default: 9)")
     p.set_defaults(func=cmd_full)
-    p = sub.add_parser("verify", help="verify static linkage and code signature of a suite")
-    p.add_argument("target", nargs="?", help="suite path (default: build/dist/jorek-suite)")
+
+    p = _add_subparser(sub, "verify",
+        "verify static linkage and code signature",
+        "Verify that a built suite has only allowed system dynamic dependencies and, on macOS, a valid code signature.",
+        """
+        EXAMPLES
+          build.py verify build/dist/jorek-suite
+          build.py verify --work /big/build build/dist/jorek-suite
+        """)
+    p.add_argument("target", nargs="?", metavar="SUITE", help="suite path to verify (default: WORK/dist/jorek-suite)")
     p.set_defaults(func=cmd_verify)
 
-    p = sub.add_parser("run", help="run a built suite")
-    p.add_argument("--suite", default=None, help="suite path")
-    p.add_argument("--model", default=None, help="model selector")
-    p.add_argument("--variant", default=None, help="variant selector")
-    p.add_argument("--program", default=None, help="program selector")
-    p.add_argument("--stdin", default=None, help="JOREK namelist on stdin")
-    p.add_argument("args", nargs=argparse.REMAINDER, help="arguments after -- are passed to JOREK")
+    p = _add_subparser(sub, "run",
+        "run a built suite",
+        "Launch a built suite, optionally through the embedded MPI launcher.",
+        """
+        EXAMPLES
+          build.py run --suite build/dist/jorek-suite --model 303 --stdin namelist
+          build.py run --suite suite --variant NAME -- --mpi -np 8
+        """)
+    p.add_argument("--suite", default=None, metavar="FILE", help="suite executable to run (default: WORK/dist/jorek-suite)")
+    p.add_argument("--model", default=None, help="model selector passed to the suite")
+    p.add_argument("--variant", default=None, metavar="NAME", help="exact variant name passed to the suite")
+    p.add_argument("--program", default=None, metavar="NAME", help="embedded program name to run (default: jorek2_main)")
+    p.add_argument("--stdin", default=None, metavar="FILE", help="JOREK namelist file to feed on standard input")
+    p.add_argument("args", nargs=argparse.REMAINDER, metavar="JOREK-ARGS", help="arguments after -- are passed to JOREK")
     p.set_defaults(func=cmd_run)
 
-    p = sub.add_parser("env", help="print shell exports for the built dependency prefix")
+    p = _add_subparser(sub, "env",
+        "print shell exports for the work prefix",
+        "Print shell export statements for PATH, PKG_CONFIG_PATH, compilers and linker flags for the build prefix.",
+        """
+        Usage
+          eval "$(build.py env)"
+        """)
     p.set_defaults(func=cmd_env)
 
-    p = sub.add_parser("clean", help="remove build outputs")
-    p.add_argument("--all", action="store_true", help="remove the whole work directory")
-    p.add_argument("--builds", action="store_true", help="remove staged sources")
-    p.add_argument("--dist", action="store_true", help="remove distributions")
-    p.add_argument("--downloads", action="store_true", help="remove the download cache")
-    p.add_argument("--deps", dest="deps_flag", action="store_true", help="remove built dependencies")
+    p = _add_subparser(sub, "clean",
+        "remove selected build outputs",
+        "Remove build outputs from the work directory. With no flags, removes WORK/build and WORK/dist.",
+        """
+        Selection
+          --all        remove every child of WORK
+          --builds     remove staged source trees and compiled variants
+          --dist       remove built suite distributions
+          --downloads  remove the download cache
+          --deps       remove the built dependency prefix
+
+        --all takes precedence over the individual flags.  Work-directory
+        safety checks reject paths outside WORK.
+        """)
+    p.add_argument("--all", action="store_true", help="remove every child of the work directory")
+    p.add_argument("--builds", action="store_true", help="remove staged JOREK sources and variant build trees")
+    p.add_argument("--dist", action="store_true", help="remove suite distributions")
+    p.add_argument("--downloads", action="store_true", help="remove the downloaded source archive cache")
+    p.add_argument("--deps", dest="deps_flag", action="store_true", help="remove the built static dependency prefix")
     p.set_defaults(func=cmd_clean)
 
-    p = sub.add_parser("version", help="print the builder version")
+    p = _add_subparser(sub, "version",
+        "print the builder version",
+        "Print the JOREK suite builder version and exit.",
+        "\nVersion information for the JOREK single-file suite builder.\n")
     p.set_defaults(func=lambda a: (print("JOREK build.py %s" % VERSION), 0)[1])
 
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
-            for subparser in action.choices.values():
-                _add_global_to_sub(subparser)
+            for name, subparser in action.choices.items():
+                _add_global_to_sub(subparser, include_build_options=name in ("matrix", "build", "dist", "full"))
     return parser
 
 
-def _add_build_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--matrix", choices=("one", "models", "complete", "maximal"), default="one", help="variant set (default one)")
-    parser.add_argument("--model", default=None, help="JOREK physics model (default 303)")
-    parser.add_argument("--set", dest="set_param", action="append", default=[], metavar="NAME=VALUE", help="override a hard-coded parameter")
-    parser.add_argument("--param-grid", action="append", default=[], metavar="NAME=V1,V2", help="build a Cartesian parameter grid")
-    parser.add_argument("--param-max", action="append", default=[], metavar="NAME=MAX", help="build values up to MAX; odd n_tor and one capacity build")
-    parser.add_argument("--programs", choices=("main", "most", "all", "list"), default="main", help="program set per variant")
-    parser.add_argument("--enable", action="append", default=[], help="enable a compile-time feature (repeatable)")
-    parser.add_argument("--disable", action="append", default=[], help="disable a compile-time feature (repeatable)")
+def _add_build_options(parser: argparse.ArgumentParser, *, suite_io: bool) -> None:
+    parser.add_argument("--matrix", choices=("one", "models", "complete", "maximal"), default="one",
+                        help="variant set: one=one model, models=one variant per model, complete=every model-extension combination, maximal=all extensions enabled per model (default: one)")
+    parser.add_argument("--model", default=None, help="JOREK model number to build; with --matrix one/models it is the only model, with complete/maximal it filters the expansion (default: 303)")
+    parser.add_argument("--set", dest="set_param", action="append", default=[], metavar="NAME=VALUE",
+                        help="override a hard-coded integer parameter for every planned variant; repeatable; use matrix --details to inspect names")
+    parser.add_argument("--param-grid", action="append", default=[], metavar="NAME=V1,V2,...",
+                        help="build an explicit Cartesian grid of values for a hard-coded parameter; repeatable; different parameter options are multiplied together; may not name the same parameter as --param-max")
+    parser.add_argument("--param-max", action="append", default=[], metavar="NAME=MAX",
+                        help="build every value up to MAX for one hard-coded parameter: n_tor/n_coord_tor/n_order use odd 1..MAX; n_plane and other integers use 1..MAX; capacities build only MAX; repeated options form a Cartesian product; n_plane below 2*(n_tor-1) is skipped; --param-max and --param-grid cannot name the same parameter")
+    parser.add_argument("--programs", choices=("main", "most", "all", "list"), default="main",
+                        help="program set per variant: main=jorek2_main, most=main+most diagnostics, all=all diagnostics, list=print the 'most' program names without building")
+    parser.add_argument("--enable", action="append", default=[], metavar="FEATURE", help="enable a compile-time feature; repeatable; use matrix --details to inspect available tokens")
+    parser.add_argument("--disable", action="append", default=[], metavar="FEATURE", help="disable a compile-time feature; repeatable; mutually exclusive alternatives are rejected")
     parser.add_argument("--debug", action="store_true", help="build with runtime checks and debug symbols")
-    parser.add_argument("--output", default=None, help="suite output path")
-    parser.add_argument("--compression", type=int, default=9, help="DEFLATE level (0..9)")
+    if suite_io:
+        parser.add_argument("--output", default=None, metavar="FILE", help="suite output path (default: WORK/dist/jorek-suite)")
+        parser.add_argument("--compression", type=int, default=9, metavar="LEVEL", help="DEFLATE compression level for the suite payload, 0..9 (default: 9)")
 
 
-
-def _add_global_to_sub(parser: argparse.ArgumentParser) -> None:
+def _add_global_to_sub(parser: argparse.ArgumentParser, *, include_build_options: bool) -> None:
     """Let users place global options after the subcommand as well."""
     common_opts = [
-        ("--root", dict(default=argparse.SUPPRESS)),
-        ("--fetch-source", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--jorek-url", dict(default=argparse.SUPPRESS)),
-        ("--work", dict(default=argparse.SUPPRESS)),
-        ("--jobs", dict(type=int, default=argparse.SUPPRESS)),
-        ("--verbose", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--quiet", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--dry-run", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--offline", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--force", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--no-checksum", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--no-verify", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--allow-shared", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--no-full-static", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--require-full-static", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--keep-going", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--keep-source", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--toolchain-prefix", dict(default=argparse.SUPPRESS)),
-        ("--cc", dict(default=argparse.SUPPRESS)),
-        ("--cxx", dict(default=argparse.SUPPRESS)),
-        ("--fc", dict(default=argparse.SUPPRESS)),
-        ("--mpi-prefix", dict(default=argparse.SUPPRESS)),
-        ("--dep-prefix", dict(action="append", default=argparse.SUPPRESS)),
-        ("--deps", dict(choices=("source", "auto", "system", "none"), default=argparse.SUPPRESS)),
-        ("--source", dict(action="append", default=argparse.SUPPRESS)),
-        ("--source-dir", dict(default=argparse.SUPPRESS)),
-        ("--url", dict(action="append", default=argparse.SUPPRESS)),
-        ("--mirror", dict(action="append", default=argparse.SUPPRESS)),
-        ("--param-max", dict(action="append", default=argparse.SUPPRESS)),
-        ("--profile", dict(choices=("minimal", "standard", "full", "complete"), default=argparse.SUPPRESS)),
-        ("--matrix", dict(choices=("one", "models", "complete", "maximal"), default=argparse.SUPPRESS)),
-        ("--programs", dict(choices=("main", "most", "all", "list"), default=argparse.SUPPRESS)),
-        ("--param-grid", dict(action="append", default=argparse.SUPPRESS)),
-        ("--set", dict(dest="set_param", action="append", default=argparse.SUPPRESS)),
-        ("--enable", dict(action="append", default=argparse.SUPPRESS)),
-        ("--disable", dict(action="append", default=argparse.SUPPRESS)),
-        ("--debug", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--everything", dict(action="store_true", default=argparse.SUPPRESS)),
-        ("--solver", dict(choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default=argparse.SUPPRESS)),
-        ("--ima-root", "--imas-root", dict(dest="imas_root", default=argparse.SUPPRESS)),
-        ("--catalyst-root", dict(default=argparse.SUPPRESS)),
+        ("--root", dict(default=argparse.SUPPRESS, help="JOREK source checkout; default auto-detect")),
+        ("--fetch-source", dict(action="store_true", default=argparse.SUPPRESS, help="clone JOREK into --root if missing")),
+        ("--jorek-url", dict(default=argparse.SUPPRESS, help="JOREK git URL used with --fetch-source")),
+        ("--work", dict(default=argparse.SUPPRESS, help="build/work directory")),
+        ("--jobs", dict(type=int, default=argparse.SUPPRESS, help="parallel build jobs")),
+        ("--verbose", dict(action="store_true", default=argparse.SUPPRESS, help="show every executed command")),
+        ("--quiet", dict(action="store_true", default=argparse.SUPPRESS, help="suppress informational output")),
+        ("--dry-run", dict(action="store_true", default=argparse.SUPPRESS, help="print planned commands/variants only")),
+        ("--offline", dict(action="store_true", default=argparse.SUPPRESS, help="never access the network")),
+        ("--force", dict(action="store_true", default=argparse.SUPPRESS, help="rebuild dependencies even if stamped")),
+        ("--no-checksum", dict(action="store_true", default=argparse.SUPPRESS, help="do not verify source archive digests")),
+        ("--no-verify", dict(action="store_true", default=argparse.SUPPRESS, help="skip static dependency verification")),
+        ("--allow-shared", dict(action="store_true", default=argparse.SUPPRESS, help="allow non-system shared libraries")),
+        ("--no-full-static", dict(action="store_true", default=argparse.SUPPRESS, help="do not pass -static on Linux/BSD/Windows")),
+        ("--require-full-static", dict(action="store_true", default=argparse.SUPPRESS, help="fail if a static libc is unavailable")),
+        ("--keep-going", dict(action="store_true", default=argparse.SUPPRESS, help="continue after a target/variant fails")),
+        ("--keep-source", dict(action="store_true", default=argparse.SUPPRESS, help="keep staged per-variant source trees")),
+        ("--toolchain-prefix", dict(default=argparse.SUPPRESS, help="prefix containing a bootstrapped toolchain")),
+        ("--cc", dict(default=argparse.SUPPRESS, help="C compiler")),
+        ("--cxx", dict(default=argparse.SUPPRESS, help="C++ compiler")),
+        ("--fc", dict(default=argparse.SUPPRESS, help="Fortran compiler")),
+        ("--mpi-prefix", dict(default=argparse.SUPPRESS, help="MPI installation prefix")),
+        ("--dep-prefix", dict(action="append", default=argparse.SUPPRESS, metavar="DIR", help="additional static dependency prefix")),
+        ("--deps", dict(choices=("source", "auto", "system", "none"), default=argparse.SUPPRESS, help="dependency policy: source, auto, system, or none")),
+        ("--source", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=DIR", help="use an extracted source tree for a dependency")),
+        ("--source-dir", dict(default=argparse.SUPPRESS, metavar="DIR", help="directory of extracted dependency sources")),
+        ("--url", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=URL", help="override a primary source URL")),
+        ("--mirror", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=URL", help="additional fallback source URL")),
+        ("--profile", dict(choices=("minimal", "standard", "full", "complete"), default=argparse.SUPPRESS, help="dependency/solver profile")),
+        ("--solver", dict(choices=("mumps", "pastix6", "pastix5", "strumpack", "wsmp", "hips", "all", "none"), default=argparse.SUPPRESS, help="direct solver backend (all=MUMPS+PaStiX6+STRUMPACK)")),
+        ("--ima-root", "--imas-root", dict(dest="imas_root", default=argparse.SUPPRESS, help="IMAS installation prefix")),
+        ("--catalyst-root", dict(default=argparse.SUPPRESS, help="ParaView Catalyst installation prefix")),
     ]
+    if include_build_options:
+        common_opts.append(("--everything", dict(action="store_true", default=argparse.SUPPRESS, help="preset: complete matrix, all solvers, all programs, complete deps; numeric grids still need --param-grid/--param-max")))
+        common_opts += [
+            ("--param-max", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=MAX", help="build every value up to MAX for one hard-coded parameter: n_tor/n_coord_tor/n_order odd 1..MAX, n_plane and other integers 1..MAX, capacities only MAX; repeated options form a Cartesian product; n_plane below 2*(n_tor-1) is skipped; cannot name the same parameter as --param-grid")),
+            ("--param-grid", dict(action="append", default=argparse.SUPPRESS, metavar="NAME=V1,V2,...", help="build an explicit Cartesian grid for a hard-coded parameter; repeatable and combined across parameters; cannot combine with --param-max for the same name")),
+            ("--set", dict(dest="set_param", action="append", default=argparse.SUPPRESS, metavar="NAME=VALUE", help="override a hard-coded parameter for every planned variant")),
+            ("--matrix", dict(choices=("one", "models", "complete", "maximal"), default=argparse.SUPPRESS, help="variant set: one, models, complete, or maximal")),
+            ("--programs", dict(choices=("main", "most", "all", "list"), default=argparse.SUPPRESS, help="program set: main, most, all, or list")),
+            ("--enable", dict(action="append", default=argparse.SUPPRESS, metavar="FEATURE", help="enable a compile-time feature")),
+            ("--disable", dict(action="append", default=argparse.SUPPRESS, metavar="FEATURE", help="disable a compile-time feature")),
+            ("--debug", dict(action="store_true", default=argparse.SUPPRESS, help="build with runtime checks and debug symbols")),
+        ]
     for item in common_opts:
-        if len(item) == 3:
-            option_strings, kwargs = (item[0], item[1]), item[2]
+        if len(item) == 2:
+            option_strings, kwargs = item
         else:
-            names, kwargs = item
-            option_strings = names if isinstance(names, tuple) else (names,)
+            # Three-element form: (primary option, alias, kwargs).
+            option_strings, kwargs = item[:2], item[2]
+        if isinstance(option_strings, str):
+            option_strings = (option_strings,)
         if any(opt in parser._option_string_actions for opt in option_strings):
             continue
         parser.add_argument(*option_strings, **kwargs)
