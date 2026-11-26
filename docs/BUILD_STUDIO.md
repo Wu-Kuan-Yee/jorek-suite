@@ -159,9 +159,11 @@ Left, and Right controls jump to each edge of the log. Detailed log windows also
 provide visible-by-default line numbers, toggleable line-number gutters, PCRE
 regular-expression search with next/previous navigation and match highlighting,
 and live statistics for bytes, characters, lines, words, and maximum line length.
-Diagnostic highlighting distinguishes fatal errors, warnings, expected failed
-feature probes, ignored/non-fatal errors, and successful checks. Logs can be
-copied or saved independently. Build Studio mode streams complete merged command
+The PCRE2 search supports case sensitivity, multiline anchors, dot-matches-newline,
+and reports invalid expressions with the engine's error position. Diagnostic
+highlighting distinguishes fatal errors, warnings, expected failed feature
+probes, ignored/non-fatal errors, and successful checks. Logs can be copied or
+saved independently. Build Studio mode streams complete merged command
 output to stage transcripts even when the underlying build command requests quiet
 output. The progress indicator reports the current dependency/solver/variant
 phase and its completed count.
