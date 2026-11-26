@@ -51,15 +51,7 @@ SOLVER_SOURCE_RECIPES = {
     "metis": DEPENDENCIES["metis"],
     "pastix6": DEPENDENCIES["pastix6"],
     "strumpack": DEPENDENCIES["strumpack"],
-    "pastix5": SolverSourceRecipe(
-        "pastix5", "5.2.3",
-        "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
-        "pastix-5.2.3.tar.bz2", "pastix5",
-        required_any_paths=(
-            ("CMakeLists.txt", "src/CMakeLists.txt"),
-            ("common/src/pastix_fortran.h", "src/common/src/pastix_fortran.h"),
-        ),
-    ),
+    "pastix5": DEPENDENCIES["pastix5"],
 }
 
 SOLVER_STAGE_ARTIFACTS = {
@@ -91,7 +83,8 @@ def validate_solver_source_recipes() -> List[str]:
                 name, recipe.name))
         errors.extend(validate_source_recipe(
             recipe.name, recipe.version, recipe.url, recipe.source_kind,
-            recipe.git_ref, recipe.git_submodules, recipe.required_paths))
+            recipe.git_ref, recipe.git_submodules, recipe.required_paths,
+            getattr(recipe, "required_any_paths", ())))
         for alternatives in getattr(recipe, "required_any_paths", ()):
             for relative in alternatives:
                 path = Path(relative)
