@@ -71,6 +71,7 @@ class Dependency:
     git_ref: str = ""
     git_submodules: bool = False
     required_paths: Tuple[str, ...] = ()
+    recipe_revision: str = ""
 
     def supports(self, platform: PlatformInfo) -> bool:
         return not self.platforms or platform.system in self.platforms
@@ -339,7 +340,8 @@ register(
         license="CeCILL-C", homepage="https://www.labri.fr/perso/pelegrin/scotch/",
         deps=("mpich",), static_libs=("libscotch.a", "libscotcherr.a", "libesmumps.a",
                                          "libptscotch.a", "libptscotcherr.a", "libptesmumps.a"),
-        includes=("scotch.h", "ptscotch.h"), builder="scotch"),
+        includes=("scotch.h", "ptscotch.h"), builder="scotch",
+        recipe_revision="2"),
     dep("mumps", "5.7.3", "https://mumps-solver.org/MUMPS_5.7.3.tar.gz",
         license="CeCILL-C", homepage="http://mumps-solver.org/",
         deps=("scalapack",), static_libs=("libdmumps.a", "libzmumps.a",
@@ -514,6 +516,9 @@ class BuildContext:
             return False
         if data.get("version") != dep.version or data.get("url") != dep.url:
             return False
+        if (dep.recipe_revision and
+                data.get("recipe_revision") != dep.recipe_revision):
+            return False
         for lib in dep.static_libs:
             if lib and lib != "libgmake.a" and not _find_in_prefix(self.prefix, lib):
                 return False
@@ -521,6 +526,8 @@ class BuildContext:
 
     def mark_built(self, dep: Dependency) -> None:
         value = {"name": dep.name, "version": dep.version, "url": dep.url, "time": _now()}
+        if dep.recipe_revision:
+            value["recipe_revision"] = dep.recipe_revision
         self.stamps[dep.name] = value
         from common import write_json
         write_json(self.stamp_path(dep), value)
