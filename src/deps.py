@@ -355,7 +355,7 @@ register(
         license="CeCILL-C", homepage="https://solverstack.gitlabpages.inria.fr/pastix/",
         deps=("mpich", "openblas", "metis", "hwloc"),
         static_libs=("pastix5/lib/libpastix.a",),
-        includes=("pastix5/pastix_fortran.h",),
+        includes=("pastix5/include/pastix_fortran.h",),
         builder="pastix5", platforms=("linux", "bsd", "macos"),
         install=False, filename="pastix-5.2.3.tar.bz2",
         required_any_paths=(
@@ -590,6 +590,9 @@ def _find_header_in_prefix(prefix: Path, name: str) -> Optional[Path]:
     relative = Path(name)
     if relative.is_absolute() or ".." in relative.parts:
         return None
+    direct = prefix / relative
+    if direct.is_file():
+        return direct
     candidate = prefix / "include" / relative
     if candidate.is_file():
         return candidate
