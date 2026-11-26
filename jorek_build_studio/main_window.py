@@ -869,6 +869,7 @@ class MainWindow(QMainWindow):
                     stale.unlink(missing_ok=True)
         except OSError:
             pass
+        self.task_kind = ""
         self._start_external_process(
             plan["ssh"], plan["ssh_args"], "remote-start")
         if self.task_kind == "remote-start" and self.task_stage_log_dir is not None:
