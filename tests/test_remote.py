@@ -644,7 +644,10 @@ class RemoteCommandTests(unittest.TestCase):
                     remote_log += base64.b64decode(encoded)
                 elif line.startswith(b"@@JOREK_REMOTE_TASK@@"):
                     task_state = json.loads(line[len(b"@@JOREK_REMOTE_TASK@@"):])
-            self.assertEqual(task_state.get("status"), "completed", task_state)
+            self.assertEqual(
+                task_state.get("status"), "completed",
+                "%r\nRemote log:\n%s" % (
+                    task_state, remote_log.decode("utf-8", "replace")))
             self.assertIn(b'"portable_on_build_host": true', remote_log)
 
             local_dir = Path(profile["artifact_dir"])
