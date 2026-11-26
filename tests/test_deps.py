@@ -164,7 +164,7 @@ class GitSourceTests(unittest.TestCase):
         self.assertIn("-DPASTIX_INT64=OFF", configure)
         self.assertIn("-DPASTIX_ORDERING_METIS=ON", configure)
         self.assertIn("-DPASTIX_ORDERING_SCOTCH=OFF", configure)
-        self.assertIn(str(private), configure)
+        self.assertIn("-DCMAKE_INSTALL_PREFIX=%s" % private, configure)
 
     def test_pastix_discards_cmake_cache_from_the_old_archive_root(self):
         dependency = deps.DEPENDENCIES["pastix6"]
