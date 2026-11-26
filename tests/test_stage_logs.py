@@ -124,6 +124,64 @@ class StageLogDialogTests(unittest.TestCase):
                 dialog.editor.horizontalScrollBar().minimum())
             dialog.close()
 
+    def test_line_numbers_are_visible_by_default_and_can_be_hidden(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "numbers.log"
+            path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+            dialog = StageLogDialog("number stage", str(path), running=False)
+            self.assertTrue(dialog.line_numbers.isChecked())
+            self.assertTrue(dialog.editor.line_numbers_visible)
+            dialog.line_numbers.setChecked(False)
+            self.assertFalse(dialog.editor.line_numbers_visible)
+            dialog.line_numbers.setChecked(True)
+            self.assertTrue(dialog.editor.line_numbers_visible)
+            dialog.close()
+
+    def test_log_statistics_report_bytes_chars_lines_words_and_max_line(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "stats.log"
+            payload = "one two\nthree\n"
+            path.write_text(payload, encoding="utf-8")
+            dialog = StageLogDialog("stats stage", str(path), running=False)
+            stats = dialog.stats_label.text()
+            self.assertIn("Bytes: %s" % len(payload.encode("utf-8")), stats)
+            self.assertIn("Chars: %s" % len(payload), stats)
+            self.assertIn("Lines: 3", stats)
+            self.assertIn("Words: 3", stats)
+            self.assertIn("Max line length: 7", stats)
+            dialog.close()
+
+    def test_regex_search_supports_alternation_and_navigation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "search.log"
+            path.write_text(
+                "INFO ready\nWARNING first\nERROR second\nWARNING third\n",
+                encoding="utf-8")
+            dialog = StageLogDialog("search stage", str(path), running=False)
+            dialog.search_edit.setText(r"WARNING|ERROR")
+            self.app.processEvents()
+            self.assertEqual(len(dialog.matches), 3)
+            self.assertEqual(dialog.match_label.text(), "1 / 3")
+            dialog.search_next()
+            self.assertEqual(dialog.match_label.text(), "2 / 3")
+            dialog.search_next()
+            self.assertEqual(dialog.match_label.text(), "3 / 3")
+            dialog.search_next()
+            self.assertEqual(dialog.match_label.text(), "1 / 3")
+            dialog.search_previous()
+            self.assertEqual(dialog.match_label.text(), "3 / 3")
+            dialog.close()
+
+    def test_regex_search_reports_invalid_expression(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "invalid-regex.log"
+            path.write_text("some output\n", encoding="utf-8")
+            dialog = StageLogDialog("regex stage", str(path), running=False)
+            dialog.search_edit.setText("(")
+            self.app.processEvents()
+            self.assertIn("Invalid regex", dialog.match_label.text())
+            dialog.close()
+
     def test_completed_log_reads_beyond_one_poll_chunk(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "large.log"
