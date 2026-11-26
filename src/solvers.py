@@ -46,31 +46,11 @@ class SolverSourceRecipe:
 # Solver-only source recipes live here; PaStiX 6 reuses the authoritative
 # dependency record so the dist and full build paths cannot silently diverge.
 SOLVER_SOURCE_RECIPES = {
-    "hwloc": SolverSourceRecipe(
-        "hwloc", "2.11.2",
-        "https://download.open-mpi.org/release/hwloc/v2.11/hwloc-2.11.2.tar.gz",
-        "hwloc-2.11.2.tar.gz", "hwloc",
-        required_paths=("configure",),
-    ),
-    "gklib": SolverSourceRecipe(
-        "gklib", "master",
-        "https://github.com/KarypisLab/GKlib/archive/refs/heads/master.tar.gz",
-        "gklib-master.tar.gz", "gklib",
-        required_paths=("CMakeLists.txt",),
-    ),
-    "metis": SolverSourceRecipe(
-        "metis", "5.2.1",
-        "https://github.com/KarypisLab/METIS/archive/refs/tags/v5.2.1.tar.gz",
-        "metis-5.2.1.tar.gz", "metis",
-        required_paths=("CMakeLists.txt", "include/metis.h", "include/CMakeLists.txt"),
-    ),
+    "hwloc": DEPENDENCIES["hwloc"],
+    "gklib": DEPENDENCIES["gklib"],
+    "metis": DEPENDENCIES["metis"],
     "pastix6": DEPENDENCIES["pastix6"],
-    "strumpack": SolverSourceRecipe(
-        "strumpack", "7.1.0",
-        "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
-        "strumpack-7.1.0.tar.gz", "strumpack",
-        required_paths=("CMakeLists.txt", "src"),
-    ),
+    "strumpack": DEPENDENCIES["strumpack"],
     "pastix5": SolverSourceRecipe(
         "pastix5", "5.2.3",
         "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
@@ -149,9 +129,10 @@ class SolverBuild:
         recipe = SOLVER_SOURCE_RECIPES[name]
         recipe_name = recipe.name
         directory = getattr(recipe, "directory", recipe.name)
+        basename = os.path.basename(recipe.url.split("?", 1)[0]) or "source"
         filename = getattr(
             recipe, "filename",
-            os.path.basename(recipe.url.split("?", 1)[0]) or (recipe.name + ".source"))
+            "%s-%s-%s" % (recipe.name, recipe.version, basename))
         supplied = self.source_dirs.get(directory)
         if supplied is not None:
             supplied = Path(supplied).expanduser().resolve()
