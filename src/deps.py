@@ -1051,6 +1051,7 @@ def merge_static_archives(
     archives: Sequence[Tuple[str, Path]],
     output_archive: Path,
     log: Optional[Path] = None,
+    libtool: Optional[str] = None,
 ) -> Path:
     """Merge static archives while namespacing members to avoid collisions.
 
@@ -1062,16 +1063,33 @@ def merge_static_archives(
     if len(archives) < 2:
         raise BuildError("at least two static archives are required for merging")
 
+    normalized = []
+    for label, archive in archives:
+        archive = Path(archive)
+        if not archive.is_file():
+            raise BuildError("static archive required for merge is missing: %s" % archive)
+        normalized.append((label, archive))
+
+    output_archive = Path(output_archive)
+    ensure_dir(output_archive.parent)
+    if output_archive.exists():
+        output_archive.unlink()
+
+    # Apple's libtool is the native, reliable way to combine Mach-O archives.
+    if libtool:
+        run([libtool, "-static", "-o", str(output_archive)] +
+            [str(archive) for _label, archive in normalized], log=log)
+        if not output_archive.is_file():
+            raise BuildError("archive merge did not create %s" % output_archive)
+        return output_archive
+
     work_dir = Path(work_dir)
     if work_dir.exists():
         shutil.rmtree(work_dir)
     ensure_dir(work_dir)
 
     members: List[str] = []
-    for label, archive in archives:
-        archive = Path(archive)
-        if not archive.is_file():
-            raise BuildError("static archive required for merge is missing: %s" % archive)
+    for label, archive in normalized:
         extract_dir = ensure_dir(work_dir / label)
         run([ar, "x", str(archive)], cwd=extract_dir, log=log)
         objects = sorted(
@@ -1085,15 +1103,10 @@ def merge_static_archives(
             shutil.copy2(obj, member)
             members.append(str(member))
 
-    output_archive = Path(output_archive)
-    ensure_dir(output_archive.parent)
-    if output_archive.exists():
-        output_archive.unlink()
     run([ar, "rcs", str(output_archive)] + members, log=log)
     if not output_archive.is_file():
         raise BuildError("archive merge did not create %s" % output_archive)
     return output_archive
-
 
 def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     cmake = ctx.cmake or which("cmake", ctx.path)
@@ -1130,6 +1143,7 @@ def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         (("metis", metis_archive), ("gklib", gklib_archive)),
         ctx.work / "build" / "libmetis-merged.a",
         log=ctx.log_path("metis-merge"),
+        libtool=(which("libtool", ctx.path) if ctx.platform.is_macos else None),
     )
     shutil.copy2(merged_archive, metis_archive)
 
