@@ -65,6 +65,10 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("BatchMode=yes", args)
         self.assertIn("2222", args)
         self.assertIn("/home/user/.ssh/build key", args)
+        profile = dict(PROFILE)
+        profile["ssh_options"] = ["Compression=yes", "ProxyJump=jump@example.invalid"]
+        jump_args = ssh_arguments(profile, "uname -s")
+        self.assertIn("ProxyJump=jump@example.invalid", jump_args)
         self.assertEqual(args[-2:], ["builder@example.invalid", "uname -s"])
 
     def test_remote_build_command_quotes_paths_and_pins_commit(self):

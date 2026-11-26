@@ -158,7 +158,9 @@ machine needs Git, Python 3, and a working native compiler/MPI/dependency
 environment. Configure public-key or agent authentication in OpenSSH; the
 builder uses batch mode and does not prompt for passwords. Strict host-key
 checking is enabled by default; pre-populate known_hosts or deliberately
-choose the accept-new policy for a first connection.
+choose the accept-new policy for a first connection. SSH config aliases and
+options such as ProxyJump, ForwardAgent, ControlMaster, and ControlPath can be
+used for bastion and cluster-login workflows.
 
 ### Help
 
