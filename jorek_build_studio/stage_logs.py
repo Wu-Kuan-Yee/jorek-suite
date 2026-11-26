@@ -400,26 +400,27 @@ class StageLogDialog(QDialog):
                 "Invalid regex at %s: %s" % (
                     regex.patternErrorOffset(), regex.errorString()))
             return
-        cursor = QTextCursor(self.editor.document())
-        cursor.movePosition(QTextCursor.MoveOperation.Start)
         selections = []
         fmt = QTextCharFormat()
         fmt.setBackground(QColor("#665b22"))
         fmt.setForeground(QColor("#fff3b0"))
-        while True:
-            found = self.editor.document().find(regex, cursor)
-            if found.isNull():
-                break
-            self.matches.append((found.selectionStart(), found.selectionEnd()))
+        document = self.editor.document()
+        # Match against the complete document rather than one QTextBlock at a
+        # time. This is required for genuine multiline PCRE2 expressions.
+        iterator = regex.globalMatch(self.editor.toPlainText())
+        while iterator.hasNext():
+            match = iterator.next()
+            start = match.capturedStart()
+            end = match.capturedEnd()
+            if start < 0:
+                continue
+            self.matches.append((start, end))
             selection = QTextEdit.ExtraSelection()
-            selection.cursor = found
+            selection.cursor = QTextCursor(document)
+            selection.cursor.setPosition(start)
+            selection.cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
             selection.format = fmt
             selections.append(selection)
-            next_position = found.selectionEnd()
-            if next_position <= found.selectionStart():
-                next_position = found.selectionStart() + 1
-            cursor = QTextCursor(self.editor.document())
-            cursor.setPosition(next_position)
         self.editor.setExtraSelections(selections)
         self.match_label.setText("%s matches" % format(len(self.matches), ",d"))
         if self.matches:
