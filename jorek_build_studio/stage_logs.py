@@ -142,6 +142,13 @@ class StageLogDialog(QDialog):
         self.running = bool(running)
         self.offset = 0
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self._stats_chars = 0
+        self._stats_lines = 0
+        self._stats_words = 0
+        self._stats_word_tail = ""
+        self._stats_line_tail = ""
+        self._stats_max_line_length = 0
+        self._stats_finalized = False
         self.matches = []
         self.match_index = -1
 
@@ -284,6 +291,7 @@ class StageLogDialog(QDialog):
         horizontal.setValue(
             horizontal.maximum() if follow_horizontal
             else min(old_horizontal, horizontal.maximum()))
+        self._accumulate_statistics(text)
         self.update_statistics()
         if self.search_edit.text():
             self.update_search()
@@ -304,18 +312,47 @@ class StageLogDialog(QDialog):
         self.editor.horizontalScrollBar().setValue(
             self.editor.horizontalScrollBar().maximum())
 
+    def _accumulate_statistics(self, text):
+        if not text:
+            return
+        self._stats_finalized = False
+        self._stats_chars += len(text)
+        self._stats_lines += text.count("\n")
+
+        line_text = self._stats_line_tail + text
+        line_parts = line_text.split("\n")
+        for complete_line in line_parts[:-1]:
+            self._stats_max_line_length = max(
+                self._stats_max_line_length, len(complete_line.rstrip("\r")))
+        self._stats_line_tail = line_parts[-1]
+
+        word_text = self._stats_word_tail + text
+        tokens = re.findall(r"\S+", word_text)
+        if word_text and not word_text[-1].isspace():
+            self._stats_words += max(0, len(tokens) - 1)
+            self._stats_word_tail = tokens[-1]
+        else:
+            self._stats_words += len(tokens)
+            self._stats_word_tail = ""
+
+    def _finalize_statistics(self):
+        if self._stats_finalized:
+            return
+        if self._stats_word_tail:
+            self._stats_words += 1
+            self._stats_word_tail = ""
+        self._stats_max_line_length = max(
+            self._stats_max_line_length, len(self._stats_line_tail.rstrip("\r")))
+        self._stats_finalized = True
+
     def update_statistics(self):
-        text = self.editor.toPlainText()
-        lines = text.splitlines()
-        line_count = self.editor.document().blockCount()
-        words = len(re.findall(r"\S+", text))
-        maximum = max((len(line) for line in lines), default=0)
+        line_count = self._stats_lines + (1 if self._stats_line_tail else 0)
         self.stats_label.setText(
             "Bytes: %s    Chars: %s    Lines: %s    Words: %s    "
             "Max line length: %s" % (
-                format(self.offset, ",d"), format(len(text), ",d"),
-                format(line_count, ",d"), format(words, ",d"),
-                format(maximum, ",d")))
+                format(self.offset, ",d"), format(self._stats_chars, ",d"),
+                format(line_count, ",d"), format(self._stats_words + bool(self._stats_word_tail), ",d"),
+                format(self._stats_max_line_length, ",d")))
 
     def update_search(self):
         query = self.search_edit.text()
@@ -434,6 +471,13 @@ class StageLogDialog(QDialog):
         if size < self.offset:
             self.offset = 0
             self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            self._stats_chars = 0
+            self._stats_lines = 0
+            self._stats_words = 0
+            self._stats_word_tail = ""
+            self._stats_line_tail = ""
+            self._stats_max_line_length = 0
+            self._stats_finalized = False
             self.editor.clear()
         try:
             with self.path.open("rb") as handle:
@@ -454,6 +498,7 @@ class StageLogDialog(QDialog):
             tail = self.decoder.decode(b"", final=True)
             self._append_text(tail)
             self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            self._finalize_statistics()
             self.status_label.setText(
                 "Log complete — %s bytes" % format(self.offset, ",d"))
             self.timer.stop()
