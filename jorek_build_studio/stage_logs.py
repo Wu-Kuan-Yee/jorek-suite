@@ -13,12 +13,12 @@ from PySide6.QtWidgets import (
 
 
 class StageLogDialog(QDialog):
-    """Read a stage log from disk and follow it while its stage is running."""
+    """Read a complete stage log and follow new output without stealing scroll."""
 
     def __init__(self, title: str, path: str, running: bool = False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Build log — " + title)
-        self.resize(900, 620)
+        self.resize(1000, 680)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.path = Path(path)
         self.running = bool(running)
@@ -27,26 +27,48 @@ class StageLogDialog(QDialog):
 
         outer = QVBoxLayout(self)
         header = QHBoxLayout()
-        self.status_label = QLabel("Following live output" if self.running else "Completed log")
+        self.status_label = QLabel(
+            "Following live output" if self.running else "Loading complete log")
         header.addWidget(self.status_label)
         header.addStretch(1)
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.refresh)
-        header.addWidget(refresh)
+
+        self.top_button = QPushButton("Top")
+        self.bottom_button = QPushButton("Bottom")
+        self.left_button = QPushButton("Left")
+        self.right_button = QPushButton("Right")
+        self.refresh_button = QPushButton("Refresh")
+        self.top_button.setToolTip("Scroll to the first line")
+        self.bottom_button.setToolTip("Scroll to the latest line")
+        self.left_button.setToolTip("Scroll to the beginning of long lines")
+        self.right_button.setToolTip("Scroll to the end of long lines")
+        self.top_button.clicked.connect(self.scroll_to_top)
+        self.bottom_button.clicked.connect(self.scroll_to_bottom)
+        self.left_button.clicked.connect(self.scroll_to_left)
+        self.right_button.clicked.connect(self.scroll_to_right)
+        self.refresh_button.clicked.connect(self.refresh)
+        for button in (
+            self.top_button, self.bottom_button,
+            self.left_button, self.right_button, self.refresh_button,
+        ):
+            header.addWidget(button)
         outer.addLayout(header)
 
         self.editor = QPlainTextEdit()
         self.editor.setReadOnly(True)
         self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.editor.setMaximumBlockCount(0)
+        self.editor.setPlaceholderText("The complete stage output will appear here.")
         outer.addWidget(self.editor, 1)
 
+        footer = QHBoxLayout()
+        footer.addStretch(1)
         close = QPushButton("Close")
         close.clicked.connect(self.close)
-        outer.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        footer.addWidget(close)
+        outer.addLayout(footer)
 
         self.timer = QTimer(self)
-        self.timer.setInterval(300)
+        self.timer.setInterval(250)
         self.timer.timeout.connect(self.refresh)
         if self.running:
             self.timer.start()
@@ -61,6 +83,47 @@ class StageLogDialog(QDialog):
         else:
             self.refresh()
 
+    def _append_text(self, text: str) -> None:
+        if not text:
+            return
+
+        vertical = self.editor.verticalScrollBar()
+        horizontal = self.editor.horizontalScrollBar()
+        old_vertical = vertical.value()
+        old_horizontal = horizontal.value()
+        follow_vertical = old_vertical >= vertical.maximum() - 1
+        follow_horizontal = old_horizontal >= horizontal.maximum() - 1
+
+        # Insert through an independent document cursor.  Setting the widget's
+        # visible cursor to End or calling ensureCursorVisible() would steal the
+        # user's scroll position on every live refresh.
+        cursor = QTextCursor(self.editor.document())
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(text)
+
+        vertical.setValue(
+            vertical.maximum() if follow_vertical
+            else min(old_vertical, vertical.maximum()))
+        horizontal.setValue(
+            horizontal.maximum() if follow_horizontal
+            else min(old_horizontal, horizontal.maximum()))
+
+    def scroll_to_top(self) -> None:
+        self.editor.verticalScrollBar().setValue(
+            self.editor.verticalScrollBar().minimum())
+
+    def scroll_to_bottom(self) -> None:
+        self.editor.verticalScrollBar().setValue(
+            self.editor.verticalScrollBar().maximum())
+
+    def scroll_to_left(self) -> None:
+        self.editor.horizontalScrollBar().setValue(
+            self.editor.horizontalScrollBar().minimum())
+
+    def scroll_to_right(self) -> None:
+        self.editor.horizontalScrollBar().setValue(
+            self.editor.horizontalScrollBar().maximum())
+
     def refresh(self) -> None:
         try:
             size = self.path.stat().st_size
@@ -73,35 +136,34 @@ class StageLogDialog(QDialog):
             self.offset = 0
             self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
             self.editor.clear()
+
         try:
             with self.path.open("rb") as handle:
                 handle.seek(self.offset)
-                data = handle.read(262144)
+                data = handle.read(1024 * 1024)
         except OSError as exc:
             self.status_label.setText("Cannot read log: %s" % exc)
             return
+
         if data:
             self.offset += len(data)
-            text = self.decoder.decode(data, final=False)
-            if text:
-                cursor = self.editor.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                self.editor.setTextCursor(cursor)
-                self.editor.insertPlainText(text)
+            self._append_text(self.decoder.decode(data, final=False))
 
         if not self.running and self.offset < size:
-            self.status_label.setText("Loading remaining log data…")
+            self.status_label.setText(
+                "Loading complete log… %s read" % format(self.offset, ",d"))
             if not self.timer.isActive():
                 self.timer.start()
         elif not self.running:
             tail = self.decoder.decode(b"", final=True)
-            if tail:
-                self.editor.moveCursor(QTextCursor.MoveOperation.End)
-                self.editor.insertPlainText(tail)
+            self._append_text(tail)
             self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
-            self.status_label.setText("Log complete")
+            self.status_label.setText(
+                "Log complete — %s bytes" % format(self.offset, ",d"))
             self.timer.stop()
-        self.editor.ensureCursorVisible()
+        else:
+            self.status_label.setText(
+                "Following live output — %s bytes received" % format(self.offset, ",d"))
 
     def closeEvent(self, event) -> None:
         self.timer.stop()
