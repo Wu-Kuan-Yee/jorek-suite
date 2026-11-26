@@ -2181,6 +2181,7 @@ def cmd_full(args) -> int:
             mpicxx=which("mpicxx", [str(core_prefix / "bin")]) or cxx,
             mpifc=mpifc, log_dir=work / "logs",
             source_dirs=source_dirs, url_overrides=url_overrides,
+            source_dir=Path(args.source_dir).expanduser() if args.source_dir else None,
         )
         sb.build()
 
