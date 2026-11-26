@@ -1315,11 +1315,16 @@ def cmd_build(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
-    _wait_for_deps_policy(args)
+    _tracked_stage(
+        "dependencies:policy", "Resolve dependency policy", "Dependencies",
+        lambda: _wait_for_deps_policy(args),
+        Path(args.work) / "logs" / "dependency-policy.log")
     if args.deps == "source" and not args.dry_run:
         _ensure_source_deps(args)
-    cc, cxx, fc, mpifc = _find_compilers(args, platform)
-    toolchain = (cc, cxx, fc, mpifc)
+    toolchain = _tracked_stage(
+        "toolchain:detect", "Detect native compiler toolchain", "Toolchain",
+        lambda: _find_compilers(args, platform),
+        Path(args.work) / "logs" / "toolchain-detection.log")
     _write_toolchain_json(args, *toolchain)
     built = _collect_variants(args, platform, toolchain)
     if built:
@@ -1392,7 +1397,11 @@ def cmd_dist(args) -> int:
 def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[Path],
                           output: Path) -> Path:
     """Merge build.py variant JSON manifests into one native suite."""
-    launcher, objects = _compile_launcher(args, platform, Path(args.work))
+    work = Path(args.work)
+    launcher, objects = _tracked_stage(
+        "suite:launcher", "Compile suite launcher", "Packaging",
+        lambda: _compile_launcher(args, platform, work),
+        work / "logs" / "suite-launcher.log")
     builder = suite.SuiteBuilder(
         launcher=launcher, suite_version=VERSION,
         jorek_version=common.git_describe(Path(args.root)),
@@ -1418,17 +1427,33 @@ def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[
         builder.add_helper(helper_name, helper_path)
     for rel, path in _runtime_payloads(Path(args.root)):
         builder.add_helper(rel, path)
-    builder.add_helper("bin/jorek-tool" + platform.exe_suffix,
-                       _compile_runtime_tool(args, platform, Path(args.work)))
+    tool = _tracked_stage(
+        "suite:runtime-tool", "Compile JOREK runtime helper", "Packaging",
+        lambda: _compile_runtime_tool(args, platform, work),
+        work / "logs" / "jorek-tool.log")
+    builder.add_helper("bin/jorek-tool" + platform.exe_suffix, tool)
     output.parent.mkdir(parents=True, exist_ok=True)
-    if platform.is_macos:
-        cc = os.environ.get("CC") or which("cc") or "cc"
-        builder.build_macho_section(output, [cc], objects)
-    else:
-        builder.build(output)
-    ok, offenders = jorek.verify_static(output, platform)
-    if not ok and not getattr(args, "allow_shared", False):
-        raise BuildError("suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
+    def package_suite():
+        if platform.is_macos:
+            cc = os.environ.get("CC") or which("cc") or "cc"
+            builder.build_macho_section(output, [cc], objects)
+        else:
+            builder.build(output)
+        return output
+    _tracked_stage(
+        "suite:archive", "Assemble final single-file suite", "Packaging",
+        package_suite, work / "logs" / "suite-archive.log")
+    def verify_suite():
+        ok, offenders = jorek.verify_static(output, platform)
+        if not ok and not getattr(args, "allow_shared", False):
+            raise BuildError(
+                "suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
+        return ok, offenders
+    ok, offenders = _tracked_stage(
+        "suite:verify", "Verify final single-file suite", "Verification",
+        verify_suite, work / "logs" / "suite-verify.log")
+    if not ok:
+        print("warning: final suite has non-system dependencies: %s" % ", ".join(offenders))
     print("Merged %d variants, %d programs into %s (%s)" % (
         len(builder.variants), total_programs, output, human_bytes(output.stat().st_size)))
     return output
@@ -1440,7 +1465,10 @@ def cmd_full(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
-    _wait_for_deps_policy(args)
+    _tracked_stage(
+        "dependencies:policy", "Resolve dependency policy", "Dependencies",
+        lambda: _wait_for_deps_policy(args),
+        Path(args.work) / "logs" / "dependency-policy.log")
     if not (platform.is_linux or platform.is_macos or platform.is_bsd):
         raise BuildError("the full solver builder is currently supported on Linux, macOS and the BSDs")
     if args.dry_run:
@@ -1468,7 +1496,10 @@ def cmd_full(args) -> int:
         _ensure_source_deps(core_args)
 
     if not args.no_build_solvers and not args.dep_prefix:
-        cc, cxx, fc, mpifc = _find_compilers(args, platform)
+        cc, cxx, fc, mpifc = _tracked_stage(
+            "toolchain:solver-detection", "Detect compiler toolchain for solvers",
+            "Toolchain", lambda: _find_compilers(args, platform),
+            work / "logs" / "solver-toolchain-detection.log")
         downloader = Downloader(work / "downloads", offline=args.offline,
                                 verify=not args.no_checksum)
         source_dirs, url_overrides = _source_options(args)
@@ -1505,8 +1536,10 @@ def cmd_full(args) -> int:
     all_args.mpi_prefix = str(mpi_prefix) if mpi_prefix else None
     all_args.output = str(work / "dist" / "jorek-suite-solvers")
     all_args.keep_going = True
-    cc, cxx, fc, mpifc = _find_compilers(all_args, platform)
-    toolchain = (cc, cxx, fc, mpifc)
+    toolchain = _tracked_stage(
+        "toolchain:variant-detection", "Detect compiler toolchain for JOREK variants",
+        "Toolchain", lambda: _find_compilers(all_args, platform),
+        work / "logs" / "variant-toolchain-detection.log")
     built = _collect_variants(all_args, platform, toolchain)
     variants_dir = work / "variants"
     ensure_dir(variants_dir)
