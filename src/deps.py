@@ -67,6 +67,10 @@ class Dependency:
     note: str = ""
     manual: bool = False
     archive: str = "auto"
+    source_kind: str = "archive"
+    git_ref: str = ""
+    git_submodules: bool = False
+    required_paths: Tuple[str, ...] = ()
 
     def supports(self, platform: PlatformInfo) -> bool:
         return not self.platforms or platform.system in self.platforms
@@ -341,12 +345,16 @@ register(
         deps=("scalapack",), static_libs=("libdmumps.a", "libzmumps.a",
                                                              "libmumps_common.a", "libpord.a"),
         includes=("dmumps_struc.h", "mumps_compat.h"), builder="mumps"),
-    dep("pastix6", "6.3.2", "https://gitlab.inria.fr/solverstack/pastix/-/archive/v6.3.2/pastix-v6.3.2.tar.gz",
+    dep("pastix6", "6.3.2", "https://gitlab.inria.fr/solverstack/pastix.git",
         license="CeCILL-C", homepage="https://solverstack.gitlabpages.inria.fr/pastix/",
         deps=("mpich", "openblas", "scalapack", "metis", "hwloc"),
         static_libs=("libpastix.a", "libspm.a", "libpastix_kernels.a"),
         includes=("pastix.h", "spm.h"),
-        builder="pastix", platforms=("linux", "bsd", "macos")),
+        builder="pastix", platforms=("linux", "bsd", "macos"),
+        source_kind="git", git_ref="v6.3.2", git_submodules=True,
+        required_paths=("spm/CMakeLists.txt",
+                        "cmake_modules/morse_cmake/modules/MorseInit.cmake"),
+        cmake_args=("-DGIT_SUBMODULE=OFF",)),
     dep("strumpack", "7.1.0", "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
         license="BSD-3-Clause", homepage="https://portal.nersc.gov/project/sparse/strumpack/",
         deps=("mpich", "openblas", "scalapack", "metis"),
@@ -548,6 +556,55 @@ def _provided_source(ctx: BuildContext, dep: Dependency) -> Optional[Path]:
             raise BuildError("source directory for %s is not a directory: %s" % (dep.name, supplied))
         print("  %-18s using source tree %s" % (dep.name, supplied))
     return supplied
+
+
+def _clone_git_source(
+    ctx: BuildContext, dep: Dependency, urls: Sequence[str],
+) -> Path:
+    """Clone a Git source tree, optionally including all recursive submodules."""
+    git = which("git", ctx.path) or shutil.which("git")
+    if not git:
+        raise BuildError("git is required to fetch the %s source tree" % dep.name)
+
+    destination = ctx.work / "src" / ("%s-%s" % (dep.name, dep.version))
+    ensure_dir(destination.parent)
+    failures: List[str] = []
+    for url in urls:
+        if destination.exists():
+            shutil.rmtree(destination)
+        args = [git, "clone", "--depth", "1"]
+        if dep.git_ref:
+            args.extend(["--branch", dep.git_ref])
+        if dep.git_submodules:
+            args.extend(["--recurse-submodules", "--shallow-submodules"])
+        args.extend([url, str(destination)])
+        env = ctx.build_env(dep)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        result = run(
+            args, cwd=ctx.work, env=env, log=ctx.log_path(dep.name), check=False)
+        if result.returncode != 0:
+            failures.append("%s: git clone exited with status %d" % (
+                url, result.returncode))
+            continue
+
+        missing = [
+            relative for relative in dep.required_paths
+            if not (destination / relative).exists()
+        ]
+        if missing:
+            failures.append(
+                "%s: checkout is missing required source paths: %s" %
+                (url, ", ".join(missing)))
+            shutil.rmtree(destination, ignore_errors=True)
+            continue
+        print("  %-18s cloned %s at %s" % (
+            dep.name, url, dep.git_ref or "default revision"))
+        return destination
+
+    raise BuildError(
+        "could not obtain complete Git source for %s:\n  %s" %
+        (dep.name, "\n  ".join(failures))
+    )
 
 
 def _extract_root(ctx: BuildContext, dep: Dependency, archive: Path) -> Path:
@@ -944,7 +1001,10 @@ def build_scotch(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         log=ctx.log_path(dep.name))
     run([ctx.make, "-C", "src", "-j1", "ptesmumps"], cwd=src, env=env,
         log=ctx.log_path(dep.name))
-    run([ctx.make, "-C", "src", "install"], cwd=src, env=env, log=ctx.log_path(dep.name), check=False)
+    # SCOTCH's Makefile defaults to /usr/local.  Pass prefix on the
+    # make command line; editing Makefile.inc does not reliably override it.
+    run([ctx.make, "-C", "src", "prefix=%s" % ctx.prefix, "install"],
+        cwd=src, env=env, log=ctx.log_path(dep.name))
     _install_fallback(ctx, dep, src)
 
 
@@ -977,6 +1037,16 @@ def build_dierckx(ctx: BuildContext, dep: Dependency, src: Path) -> None:
 
 
 def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
+    missing = [
+        relative for relative in dep.required_paths
+        if not (src / relative).exists()
+    ]
+    if missing:
+        raise BuildError(
+            "PaStiX source checkout is incomplete; missing submodule content: %s. "
+            "Fetch the v%s Git tag with recursive submodules." %
+            (", ".join(missing), dep.version)
+        )
     build_cmake(ctx, dep, src)
     # PaStiX installs a CMake package; pastix-conf is not produced by 6.x.
     conf = ctx.prefix / "bin" / "pastix-conf"
@@ -1168,24 +1238,40 @@ class DepManager:
         urls = list(ctx.url_overrides.get(item.name, [])) + [item.url]
         src = _provided_source(ctx, item)
         if src is None:
-            archive = ctx.downloader.fetch(urls, "%s-%s-%s" % (item.name, item.version, os.path.basename(item.url.split("?")[0])), item.sha256)
-            src = _extract_root(ctx, item, archive)
+            if item.source_kind == "git":
+                src = _clone_git_source(ctx, item, urls)
+            elif item.source_kind == "archive":
+                archive = ctx.downloader.fetch(
+                    urls,
+                    "%s-%s-%s" % (
+                        item.name, item.version,
+                        os.path.basename(item.url.split("?")[0])),
+                    item.sha256)
+                src = _extract_root(ctx, item, archive)
+            else:
+                raise BuildError(
+                    "unsupported source kind for %s: %s" %
+                    (item.name, item.source_kind))
         try:
             builder(ctx, item, src)
         except BuildError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise BuildError("failed to build %s: %s" % (item.name, exc)) from exc
-        ctx.mark_built(item)
         ctx.refresh_tools()
-        if not item.static_libs:
-            return
-        missing = [lib for lib in item.static_libs if not _find_in_prefix(ctx.prefix, lib)]
-        if missing:
-            raise BuildError(
-                "%s built, but these static libraries were not installed: %s"
-                % (item.name, ", ".join(missing))
-            )
+        if item.static_libs:
+            missing = [
+                lib for lib in item.static_libs
+                if not _find_in_prefix(ctx.prefix, lib)
+            ]
+            if missing:
+                raise BuildError(
+                    "%s built, but these static libraries were not installed: %s"
+                    % (item.name, ", ".join(missing))
+                )
+        # A dependency is stamped only after all declared artefacts have been
+        # verified.  Otherwise a failed install could be skipped on retry.
+        ctx.mark_built(item)
 
 
 def core_dependencies(profile: str = "standard", solver: str = "mumps",
