@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem, QTextCursor,
+    QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
