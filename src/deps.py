@@ -522,6 +522,9 @@ class BuildContext:
         for lib in dep.static_libs:
             if lib and lib != "libgmake.a" and not _find_in_prefix(self.prefix, lib):
                 return False
+        for header in dep.includes:
+            if header and not _find_header_in_prefix(self.prefix, header):
+                return False
         return True
 
     def mark_built(self, dep: Dependency) -> None:
@@ -543,6 +546,15 @@ def _find_in_prefix(prefix: Path, name: str) -> Optional[Path]:
         if candidate.exists():
             return candidate
     hits = list((prefix / "lib").rglob(name)) if (prefix / "lib").exists() else []
+    return hits[0] if hits else None
+
+
+def _find_header_in_prefix(prefix: Path, name: str) -> Optional[Path]:
+    candidate = prefix / "include" / name
+    if candidate.is_file():
+        return candidate
+    include = prefix / "include"
+    hits = list(include.rglob(name)) if include.is_dir() else []
     return hits[0] if hits else None
 
 
@@ -1380,6 +1392,14 @@ class DepManager:
                     "%s built, but these static libraries were not installed: %s"
                     % (item.name, ", ".join(missing))
                 )
+        missing_headers = [
+            header for header in item.includes
+            if not _find_header_in_prefix(ctx.prefix, header)
+        ]
+        if missing_headers:
+            raise BuildError(
+                "%s built, but these declared headers were not installed: %s" %
+                (item.name, ", ".join(missing_headers)))
         # A dependency is stamped only after all declared artefacts have been
         # verified.  Otherwise a failed install could be skipped on retry.
         ctx.mark_built(item)
