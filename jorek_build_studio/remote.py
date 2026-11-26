@@ -216,9 +216,9 @@ def build_remote_command(
     qurl = shlex.quote(repo_url)
     qbranch = shlex.quote(branch)
     qcommit = shlex.quote(commit)
-    build_command = "PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join(
+    build_command = "PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join
         [python, repo + "/build.py"] + list(build_args))
-    verify_command = "PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join(
+    verify_command = "PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join
         [python, repo + "/build.py"] + list(verify_args))
     suite_source = str(PurePosixPath(str(profile["remote_work"])) / "dist" / "jorek-suite")
     transfer_path = remote_artifact_path(profile)
