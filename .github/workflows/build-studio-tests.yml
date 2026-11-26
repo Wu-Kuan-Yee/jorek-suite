@@ -86,3 +86,7 @@ jobs:
         run: |
           python build.py --root /tmp/jorek-base --work /tmp/jorek-work matrix --matrix maximal --json > /tmp/jorek-matrix.json
           python -c "import json; data = json.load(open('/tmp/jorek-matrix.json', encoding='utf-8')); assert data; print('Discovered %d native JOREK variants' % len(data))"
+      - name: Install a native Fortran compiler
+        run: sudo apt-get update && sudo apt-get install -y gfortran
+      - name: Dry-run a real JOREK model build
+        run: python build.py --root /tmp/jorek-base --work /tmp/jorek-dry-run --dry-run --deps none build --model 303 --matrix one --programs main
