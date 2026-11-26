@@ -382,7 +382,7 @@ register(
         cmake_args=("-DGIT_SUBMODULE=OFF", "-DPASTIX_INT64=OFF",
                     "-DPASTIX_ORDERING_METIS=ON",
                     "-DPASTIX_ORDERING_SCOTCH=OFF"),
-        recipe_revision="2"),
+        recipe_revision="3"),
     dep("strumpack", "7.1.0", "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
         license="BSD-3-Clause", homepage="https://portal.nersc.gov/project/sparse/strumpack/",
         deps=("mpich", "openblas", "scalapack", "metis"),
@@ -1319,6 +1319,49 @@ def build_pastix5(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         shutil.copy2(header_source, incdir / "pastix_fortran.h")
 
 
+def patch_pastix_metis_find_module(source: Path) -> bool:
+    """Repair the pinned MORSE FindMETIS/FindM variable mismatch.
+
+    The pinned FindMETIS.cmake appends M_LIBRARIES, while its paired
+    FindM.cmake exports M_LIBRARY and MORSE::M.  Consequently a successful
+    find_package(M) can still leave the METIS link probe without libm.
+    Return True when the module was patched and False when already patched.
+    """
+    module = (Path(source) / "cmake_modules" / "morse_cmake" /
+              "modules" / "find" / "FindMETIS.cmake")
+    if not module.is_file():
+        raise BuildError("PaStiX MORSE FindMETIS.cmake is missing: %s" % module)
+
+    content = read_text(module)
+    old = '''  find_package(M QUIET)
+  if ( M_FOUND )
+    set( METIS_LIBRARIES "${METIS_LIBRARIES};${M_LIBRARIES}" )
+  endif()
+'''
+    new = '''  find_package(M QUIET)
+  if (M_FOUND)
+    # The pinned FindM.cmake exports M_LIBRARY and MORSE::M, not
+    # M_LIBRARIES.  Fall back to the variables/target it actually exports.
+    if (M_LIBRARIES)
+      list(APPEND METIS_LIBRARIES ${M_LIBRARIES})
+    elseif (M_LIBRARY)
+      list(APPEND METIS_LIBRARIES ${M_LIBRARY})
+    elseif (TARGET MORSE::M)
+      list(APPEND METIS_LIBRARIES MORSE::M)
+    endif()
+  endif()
+'''
+    if old in content:
+        write_text(module, content.replace(old, new, 1))
+        return True
+    if ("list(APPEND METIS_LIBRARIES ${M_LIBRARY})" in content and
+            "list(APPEND METIS_LIBRARIES MORSE::M)" in content):
+        return False
+    raise BuildError(
+        "unrecognized math-library handling in PaStiX FindMETIS.cmake; "
+        "refusing to configure with an unverified METIS link probe")
+
+
 def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     missing = [
         relative for relative in dep.required_paths
@@ -1330,9 +1373,15 @@ def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
             "Fetch the v%s Git tag with recursive submodules." %
             (", ".join(missing), dep.version)
         )
-    # The previous archive extraction used a nested source root.  A recursive
-    # Git checkout has a different root, so discard any CMake cache generated
-    # from the old source path before configuring this checkout.
+    # Patch the actual MORSE module used by this dependency-graph build
+    # before CMake configures PaStiX.  The standalone solver builder uses the
+    # same shared helper; keeping the fix here is essential because remote
+    # dependency builds enter through DepManager -> build_pastix.
+    patched = patch_pastix_metis_find_module(src)
+    print("  PaStiX MORSE FindMETIS math-library patch: %s" %
+          ("applied" if patched else "already present"))
+    # A recursive Git checkout may have a different root from an older
+    # source layout, so discard any CMake cache before configuring it.
     build_dir = ctx.work / "build" / ("%s-%s" % (dep.name, dep.version))
     if build_dir.exists():
         shutil.rmtree(build_dir)
