@@ -224,11 +224,11 @@ def build_remote_command(
     transfer_path = remote_artifact_path(profile)
     repository_command = (
         "if [ ! -d " + shlex.quote(repo + "/.git") + " ]; then "
-        "git clone --filter=blob:none --no-checkout -- " + qurl + " " + qrepo + "; fi"
-        " && git -C " + qrepo + " remote set-url origin " + qurl
-        " && git -C " + qrepo + " fetch --prune origin " + qbranch
-        " && git -C " + qrepo + " checkout --force --detach " + qcommit
-        " && test \"$(git -C " + qrepo + " rev-parse HEAD)\" = " + qcommit
+        + "git clone --filter=blob:none --no-checkout -- " + qurl + " " + qrepo + "; fi"
+        + " && git -C " + qrepo + " remote set-url origin " + qurl
+        + " && git -C " + qrepo + " fetch --prune origin " + qbranch
+        + " && git -C " + qrepo + " checkout --force --detach " + qcommit
+        + " && test \"$(git -C " + qrepo + " rev-parse HEAD)\" = " + qcommit
     )
     commands = [
         "set -eu",
