@@ -29,6 +29,11 @@ class LogHighlighter(QSyntaxHighlighter):
              "#ff6b6b", "#3b171b", True),
             (re.compile(r"(?i)\bwarning\s*:"),
              "#ffca68", "#352b16", True),
+            # GNU ar/ranlib may report ignored modifiers without saying "warning".
+            (re.compile(
+                r"(?i)(?:^|[\s/\\])(?:llvm-|gcc-)?(?:ar|ranlib)(?:\.exe)?\s*:"
+                r".*\b(?:modifier|option|flag)\b.*\bignored\b"),
+             "#ffca68", "#352b16", True),
             (re.compile(r"(?i)performing test .+ - failed"),
              "#aab2c0", None, False),
             (re.compile(r"(?i)\b(?:ignored|skipped|disabled|not found|not enabled)\b"),
