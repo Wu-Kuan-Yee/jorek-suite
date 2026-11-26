@@ -227,7 +227,7 @@ class MetisArchiveTests(unittest.TestCase):
                 elif command[1] == "rcs":
                     output = Path(command[2])
                     output.write_text(
-                        "\\n".join(Path(item).name for item in command[3:]),
+                        "\n".join(Path(item).name for item in command[3:]),
                         encoding="utf-8")
                 return subprocess.CompletedProcess(command, 0, b"", b"")
 
