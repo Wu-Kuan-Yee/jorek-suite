@@ -28,6 +28,8 @@ class FakeContext:
         self.path = []
         self.cc = "cc"
         self.make = "make"
+        self.cmake = "cmake"
+        self.ar = "ar"
         self.jobs = 1
         self.force = False
         self.platform = SimpleNamespace(
@@ -200,6 +202,88 @@ class GitSourceTests(unittest.TestCase):
             with self.assertRaisesRegex(BuildError, "missing required source paths"):
                 deps._clone_git_source(
                     self.context, dependency, ["https://example.invalid/repo.git"])
+
+
+class MetisArchiveTests(unittest.TestCase):
+    def test_metis_recipe_revision_invalidates_pre_merge_install_stamps(self):
+        self.assertEqual(deps.DEPENDENCIES["metis"].recipe_revision, "1")
+
+    def test_merge_static_archives_namespaces_object_members(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            primary = root / "libmetis.a"
+            dependency = root / "libGKlib.a"
+            primary.write_bytes(b"primary archive")
+            dependency.write_bytes(b"dependency archive")
+            calls = []
+
+            def fake_run(argv, **kwargs):
+                command = list(argv)
+                calls.append((command, kwargs))
+                if command[1] == "x":
+                    archive = Path(command[2])
+                    member = Path(kwargs["cwd"]) / "common.o"
+                    member.write_text(archive.name, encoding="utf-8")
+                elif command[1] == "rcs":
+                    output = Path(command[2])
+                    output.write_text(
+                        "\\n".join(Path(item).name for item in command[3:]),
+                        encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            output = root / "merged" / "libmetis-merged.a"
+            with patch.object(deps, "run", side_effect=fake_run):
+                result = deps.merge_static_archives(
+                    "ar", root / "work",
+                    (("metis", primary), ("gklib", dependency)),
+                    output)
+
+            self.assertEqual(result, output)
+            members = output.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(members, ["metis_common.o", "gklib_common.o"])
+            self.assertEqual(sum(1 for command, _ in calls if command[1] == "x"), 2)
+            self.assertTrue(any(command[1] == "rcs" for command, _ in calls))
+
+    def test_build_metis_merges_gklib_into_the_primary_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            context = FakeContext(root)
+            source = root / "metis-source"
+            include = source / "include"
+            include.mkdir(parents=True)
+            (include / "metis.h").write_text("/* METIS fixture */\\n", encoding="utf-8")
+            (include / "CMakeLists.txt").write_text("# fixture\\n", encoding="utf-8")
+            libdir = context.prefix / "lib"
+            libdir.mkdir(parents=True)
+            primary = libdir / "libmetis.a"
+            gklib = libdir / "libGKlib.a"
+            primary.write_bytes(b"split metis")
+            gklib.write_bytes(b"gklib")
+
+            merge_calls = []
+
+            def fake_run(argv, **kwargs):
+                return subprocess.CompletedProcess(list(argv), 0, b"", b"")
+
+            def fake_merge(ar, work_dir, archives, output_archive, log=None):
+                merge_calls.append((ar, tuple(archives), log))
+                output_archive = Path(output_archive)
+                output_archive.parent.mkdir(parents=True, exist_ok=True)
+                output_archive.write_bytes(b"merged metis + gklib")
+                return output_archive
+
+            with patch.object(deps, "which", return_value=None), \\
+                    patch.object(deps, "run", side_effect=fake_run), \\
+                    patch.object(deps, "merge_static_archives", side_effect=fake_merge):
+                deps.build_metis(context, deps.DEPENDENCIES["metis"], source)
+
+            self.assertEqual(primary.read_bytes(), b"merged metis + gklib")
+            self.assertEqual(gklib.read_bytes(), b"gklib")
+            self.assertEqual(len(merge_calls), 1)
+            self.assertEqual(merge_calls[0][0], "ar")
+            self.assertEqual(
+                merge_calls[0][1],
+                (("metis", primary), ("gklib", gklib)))
 
 
 class ScotchInstallTests(unittest.TestCase):
