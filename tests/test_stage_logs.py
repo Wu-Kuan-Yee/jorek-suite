@@ -45,6 +45,8 @@ class StageLogDialogTests(unittest.TestCase):
             payload = "A" * 300000 + "\nEND-OF-LOG\n"
             path.write_text(payload, encoding="utf-8")
             dialog = StageLogDialog("completed stage", str(path), running=False)
+            while dialog.offset < path.stat().st_size:
+                dialog.refresh()
             displayed = dialog.editor.toPlainText()
             self.assertIn("END-OF-LOG", displayed)
             self.assertEqual(len(displayed), len(payload))
