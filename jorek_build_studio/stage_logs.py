@@ -34,12 +34,12 @@ class LogHighlighter(QSyntaxHighlighter):
             # ordinary prose containing a translated word for "error" is not
             # accidentally promoted to an error.
             (re.compile(
-                r"(?i)\\b(?:fatal error|cmake error|traceback|assertionerror|"
+                r"(?i)\b(?:fatal error|cmake error|traceback|assertionerror|"
                 r"undefined reference|undefined symbol|unresolved external symbol|"
-                r"multiple definition|error:|error occurred|linker command failed|"
-                r"collect2: error)\\b|"
-                r"(?:^|[\\s:：])(?:致命错误|错误|エラー|오류|erreur|fehler|"
-                r"erro|ошибка|errore|fout|błąd|hata)\\s*[：:]|"
+                r"multiple definition|error occurred|linker command failed|"
+                r"collect2: error)\b|\berror\s*:|"
+                r"(?:^|[\s:：])(?:致命错误|错误|エラー|오류|erreur|fehler|"
+                r"erro|ошибка|errore|fout|błąd|hata)\s*[：:]|"
                 r"(?:未定义的引用|未定义符号|未解析的外部符号|链接失败|"
                 r"致命なエラー|未解決の外部シンボル|정의되지 않은 참조|"
                 r"неопределённая ссылка)"),
@@ -48,41 +48,41 @@ class LogHighlighter(QSyntaxHighlighter):
             # CMake commonly emits "CMake Deprecation Warning at ..." without
             # a colon.  Other toolchains localize the diagnostic label.
             (re.compile(
-                r"(?i)\\b(?:cmake\\s+)?(?:deprecation\\s+)?warning\\b|"
-                r"\\bwarning\\s*:|"
-                r"(?:^|[\\s:：])(?:警告|경고|avertissement|warnung|"
+                r"(?i)\b(?:cmake\s+)?(?:deprecation\s+)?warning\b|"
+                r"\bwarning\s*:|"
+                r"(?:^|[\s:：])(?:警告|경고|avertissement|warnung|"
                 r"advertencia|aviso|предупреждение|avvertimento|"
-                r"waarschuwing|ostrzeżenie|uyarı)\\s*[：:]|"
+                r"waarschuwing|ostrzeżenie|uyarı)\s*[：:]|"
                 r"修饰符.*被忽略"),
              "#ffca68", "#352b16", True),
 
             # GNU ar/ranlib report ignored modifiers as a diagnostic but do
             # not consistently include the word "warning".
             (re.compile(
-                r"(?i)(?:^|[\\s/\\\\])(?:llvm-|gcc-)?(?:ar|ranlib)(?:\\.exe)?\\s*:"
-                r".*(?:\\b(?:modifier|option|flag)\\b.*\\bignored\\b|"
+                r"(?i)(?:^|[\s/\\])(?:llvm-|gcc-)?(?:ar|ranlib)(?:\.exe)?\s*:"
+                r".*(?:\b(?:modifier|option|flag)\b.*\bignored\b|"
                 r"修饰符.*被忽略)"),
              "#ffca68", "#352b16", True),
 
             # Compiler notes and benign localized Git status/advice messages.
             (re.compile(
-                r"(?i)\\b(?:note|remark)\\s*:|"
-                r"(?:^|[\\s:：])(?:注意|提示|备注|참고|注記|remarque|"
-                r"hinweis|nota|примечание)\\s*[：:]|"
+                r"(?i)\b(?:note|remark)\s*:|"
+                r"(?:^|[\s:：])(?:注意|提示|备注|참고|注記|remarque|"
+                r"hinweis|nota|примечание)\s*[：:]|"
                 r"正克隆到|注意：正在切换到"),
              "#8fb7e8", None, False),
 
             # Failed optional probes and non-error absence/skip messages.
             (re.compile(
                 r"(?i)performing test .+ - failed|"
-                r"\\b(?:ignored|skipped|disabled|not found|not enabled)\\b|"
+                r"\b(?:ignored|skipped|disabled|not found|not enabled)\b|"
                 r"(?:已跳过|跳过|已禁用|未启用|未找到|未检测到)"),
              "#9aa4b2", None, False),
 
             # Successful checks and build milestones, including localized
             # status text.  The muted "not found" rule above takes precedence.
             (re.compile(
-                r"(?i)\\b(?:success|passed|completed|installed|found|configured)\\b|"
+                r"(?i)\b(?:success|passed|completed|installed|found|configured)\b|"
                 r"(?:成功|已完成|完成|已安装|安装成功|已找到|编译成功|"
                 r"构建成功|配置完成|检测通过|成功)"),
              "#83d6a5", None, False),
