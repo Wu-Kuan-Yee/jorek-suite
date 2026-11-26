@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
         self.stage_log_handles: Dict[str, Any] = {}
         self.stage_stack: List[str] = []
         self.stage_dialogs: Dict[str, StageLogDialog] = {}
+        self.history_stage_dialogs: List[QDialog] = []
         self.process_output_buffer = ""
         self.current_phase = ""
         self._cancel_requested = False
@@ -894,11 +895,12 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(page)
         row = QHBoxLayout()
         row.addWidget(_button("Refresh history", self.refresh_history, page))
+        row.addWidget(_button("View selected stage logs", self._open_selected_history_stage_logs, page))
         row.addStretch(1)
         outer.addLayout(row)
-        self.history_table = QTableWidget(0, 5)
+        self.history_table = QTableWidget(0, 6)
         self.history_table.setHorizontalHeaderLabels(
-            ["Started (UTC)", "Task", "Result", "Exit code", "Log file"])
+            ["Started (UTC)", "Task", "Result", "Exit code", "Log file", "Stage logs"])
         self.history_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents)
         self.history_table.horizontalHeader().setSectionResizeMode(
@@ -909,6 +911,8 @@ class MainWindow(QMainWindow):
             3, QHeaderView.ResizeMode.ResizeToContents)
         self.history_table.horizontalHeader().setSectionResizeMode(
             4, QHeaderView.ResizeMode.Stretch)
+        self.history_table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeMode.ResizeToContents)
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.history_table.cellDoubleClicked.connect(self._open_history_log)
@@ -938,16 +942,31 @@ class MainWindow(QMainWindow):
                 "Success" if item.get("success") else "Failed",
                 str(item.get("exit_code", "")),
                 item.get("log", ""),
+                str(len(item.get("stage_logs", []))),
             ]
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value))
                 if column == 4:
                     cell.setData(Qt.ItemDataRole.UserRole, item.get("log", ""))
+                elif column == 5:
+                    cell.setData(Qt.ItemDataRole.UserRole, item.get("stage_logs", []))
                 self.history_table.setItem(row, column, cell)
 
     def _record_task(self, exit_code: int, normal_exit: bool) -> None:
         finished = datetime.now(timezone.utc)
         started = self.task_started_at or finished
+        stage_logs = []
+        if self.task_kind not in ("remote-download", "remote-cleanup", "remote-test"):
+            for record in self.stage_records.values():
+                stage_logs.append({
+                    "id": record.get("id", ""),
+                    "label": record.get("label", ""),
+                    "category": record.get("category", ""),
+                    "status": record.get("status", ""),
+                    "log": record.get("log", ""),
+                    "remote_log_path": record.get("remote_log_path", ""),
+                    "elapsed_seconds": record.get("elapsed_seconds", 0.0),
+                })
         item = {
             "started_at": started.isoformat(timespec="seconds"),
             "finished_at": finished.isoformat(timespec="seconds"),
@@ -957,6 +976,7 @@ class MainWindow(QMainWindow):
             "exit_code": int(exit_code),
             "command": self.current_command,
             "log": str(self.task_log_path or ""),
+            "stage_logs": stage_logs,
         }
         path = self.config_path.parent / "history.jsonl"
         try:
@@ -969,10 +989,67 @@ class MainWindow(QMainWindow):
         self.refresh_history()
 
     def _open_history_log(self, row: int, column: int) -> None:
+        if column == 5:
+            self._open_history_stage_logs(row)
+            return
         cell = self.history_table.item(row, 4)
         path = cell.data(Qt.ItemDataRole.UserRole) if cell else ""
         if path and Path(path).is_file():
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).resolve())))
+
+    def _open_selected_history_stage_logs(self) -> None:
+        row = self.history_table.currentRow()
+        if row >= 0:
+            self._open_history_stage_logs(row)
+
+    def _open_history_stage_logs(self, row: int) -> None:
+        cell = self.history_table.item(row, 5)
+        records = cell.data(Qt.ItemDataRole.UserRole) if cell else []
+        if not records:
+            QMessageBox.information(self, APP_TITLE, "This task has no per-stage logs.")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Build stages — historical task")
+        dialog.resize(820, 480)
+        layout = QVBoxLayout(dialog)
+        table = QTableWidget(0, 4)
+        table.setHorizontalHeaderLabels(["Build part", "Category", "Status", "Log file"])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in (1, 2):
+            table.horizontalHeader().setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setRowCount(len(records))
+        for index, record in enumerate(records):
+            values = [
+                record.get("label", ""),
+                record.get("category", ""),
+                record.get("status", ""),
+                record.get("log", ""),
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if column == 3:
+                    item.setData(Qt.ItemDataRole.UserRole, record.get("log", ""))
+                table.setItem(index, column, item)
+        table.cellDoubleClicked.connect(
+            lambda selected_row, _column, items=records:
+                self._show_stage_log_dialog(
+                    items[selected_row].get("label", "Build stage"),
+                    items[selected_row].get("log", ""), running=False))
+        layout.addWidget(table, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(dialog.close)
+        layout.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
+        self.history_stage_dialogs.append(dialog)
+        dialog.finished.connect(
+            lambda _result, target=dialog:
+                self.history_stage_dialogs.remove(target)
+                if target in self.history_stage_dialogs else None)
+        dialog.show()
+
 
     def _build_help_tab(self) -> None:
         page = QWidget()
