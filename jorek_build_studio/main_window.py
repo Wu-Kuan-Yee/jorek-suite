@@ -930,6 +930,13 @@ class MainWindow(QMainWindow):
         self._start_external_process(ssh, args, "remote-attach")
         if self.process.state() == QProcess.ProcessState.Running:
             self.remote_heartbeat_timer.start()
+            if self._cancel_requested:
+                QTimer.singleShot(500, self._send_remote_cancel_on_attach)
+
+    def _send_remote_cancel_on_attach(self) -> None:
+        if (self.task_kind == "remote-attach" and
+                self.process.state() == QProcess.ProcessState.Running):
+            self.process.write(b"CANCEL\n")
 
     def _send_remote_heartbeat(self) -> None:
         if (self.task_kind == "remote-attach" and
@@ -2396,6 +2403,8 @@ class MainWindow(QMainWindow):
                 "\n\nWarning: the temporary remote staging file could not be removed. "
                 "It is located at:\n%s" % getattr(self, "remote_artifact_path", ""))
         self.overview_text.setPlainText(message)
+        if downloaded:
+            self._clear_remote_task_metadata()
 
     def _show_matrix_result(self) -> None:
         try:
