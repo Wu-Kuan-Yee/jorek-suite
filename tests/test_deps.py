@@ -163,6 +163,61 @@ class GitSourceTests(unittest.TestCase):
             checkout,
             ["git", "-C", str(destination), "checkout", "--detach", commit])
 
+    def test_strumpack_declares_its_required_numerical_dependencies(self):
+        dependency = deps.DEPENDENCIES["strumpack"]
+        self.assertIn("mpich", dependency.deps)
+        self.assertIn("openblas", dependency.deps)
+        self.assertIn("scalapack", dependency.deps)
+        self.assertIn("metis", dependency.deps)
+
+    def test_strumpack_build_uses_private_blas_lapack_scalapack_and_metis(self):
+        dependency = deps.DEPENDENCIES["strumpack"]
+        source = self.root / "strumpack-source"
+        source.mkdir()
+        libdir = self.context.prefix / "lib"
+        includedir = self.context.prefix / "include"
+        libdir.mkdir()
+        includedir.mkdir()
+        for name in ("libopenblas.a", "libscalapack.a", "libmetis.a"):
+            (libdir / name).write_bytes(b"static archive fixture")
+        (includedir / "metis.h").write_text(
+            "#define IDXTYPEWIDTH 32\\n", encoding="utf-8")
+
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            command = list(argv)
+            calls.append((command, kwargs))
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        with patch.object(deps, "run", side_effect=fake_run):
+            deps.build_strumpack(self.context, dependency, source)
+
+        self.assertEqual(len(calls), 3)
+        configure = calls[0][0]
+        self.assertEqual(configure[:2], ["cmake", "-S"])
+        self.assertIn("-DCMAKE_PREFIX_PATH=%s" % self.context.prefix, configure)
+        self.assertIn(
+            "-DTPL_BLAS_LIBRARIES=%s" % (libdir / "libopenblas.a"), configure)
+        self.assertIn(
+            "-DTPL_LAPACK_LIBRARIES=%s" % (libdir / "libopenblas.a"), configure)
+        self.assertIn(
+            "-DTPL_SCALAPACK_LIBRARIES=%s" % (libdir / "libscalapack.a"),
+            configure)
+        self.assertIn("-DTPL_METIS_PREFIX=%s" % self.context.prefix, configure)
+        self.assertIn(
+            "-DTPL_METIS_INCLUDE_DIRS=%s" % includedir, configure)
+        self.assertIn(
+            "-DTPL_METIS_LIBRARY_DIR=%s" % libdir, configure)
+        self.assertIn(
+            "-DTPL_METIS_LIBRARIES=%s" % (libdir / "libmetis.a"), configure)
+        for option in (
+                "SLATE", "PARMETIS", "SCOTCH", "PTSCOTCH", "BPACK", "ZFP"):
+            self.assertIn("-DTPL_ENABLE_%s=OFF" % option, configure)
+        self.assertEqual(calls[1][0][:3], ["cmake", "--build", str(
+            self.context.work / "build" / "strumpack-7.1.0")])
+        self.assertEqual(calls[2][0][:2], ["cmake", "--install"])
+
     def test_parmetis_build_uses_static_default_and_dependency_prefix(self):
         dependency = deps.DEPENDENCIES["parmetis"]
         source = self.root / "parmetis-source"
