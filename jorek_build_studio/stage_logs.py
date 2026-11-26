@@ -219,7 +219,7 @@ class StageLogDialog(QDialog):
         outer.addLayout(search_row)
         self.search_edit.textChanged.connect(self.update_search)
 
-        self.find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        self.find_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self)
         self.find_shortcut.activated.connect(self.search_edit.setFocus)
         self.next_shortcut = QShortcut(QKeySequence("F3"), self)
         self.next_shortcut.activated.connect(self.search_next)
