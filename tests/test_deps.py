@@ -106,6 +106,26 @@ class GitSourceTests(unittest.TestCase):
         self.assertIn("--shallow-submodules", argv)
         self.assertEqual(kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
 
+    def test_pastix_discards_cmake_cache_from_the_old_archive_root(self):
+        dependency = deps.DEPENDENCIES["pastix6"]
+        source = self.root / "pastix-source"
+        for relative in dependency.required_paths:
+            target = source / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("# fixture\\n", encoding="utf-8")
+        build_dir = self.context.work / "build" / "pastix6-6.3.2"
+        build_dir.mkdir(parents=True)
+        stale_cache = build_dir / "CMakeCache.txt"
+        stale_cache.write_text("CMAKE_HOME_DIRECTORY=old/archive/root\\n", encoding="utf-8")
+        (self.context.prefix / "bin").mkdir()
+
+        with patch.object(deps, "build_cmake") as cmake_mock:
+            deps.build_pastix(self.context, dependency, source)
+
+        self.assertFalse(stale_cache.exists())
+        cmake_mock.assert_called_once_with(self.context, dependency, source)
+        self.assertTrue((self.context.prefix / "bin" / "pastix-conf").is_file())
+
     def test_git_clone_rejects_missing_required_submodule_content(self):
         dependency = deps.Dependency(
             name="pastix-fixture", version="v1", url="https://example.invalid/repo.git",
