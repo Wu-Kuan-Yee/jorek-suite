@@ -481,8 +481,8 @@ def remote_task_start_command(
     heartbeat_timeout: int = DEFAULT_HEARTBEAT_TIMEOUT,
 ) -> str:
     timeout = int(heartbeat_timeout)
-    if not 10 <= timeout <= 3600:
-        raise ValueError("heartbeat timeout must be between 10 and 3600 seconds")
+    if not 30 <= timeout <= 3600:
+        raise ValueError("heartbeat timeout must be between 30 and 3600 seconds")
     payload = json.dumps({
         "command": str(workload_command),
         # The remote_root may not exist until the workload creates it.
