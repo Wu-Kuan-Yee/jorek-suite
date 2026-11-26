@@ -40,6 +40,7 @@ class SolverSourceRecipe:
     git_ref: str = ""
     git_submodules: bool = False
     required_paths: Tuple[str, ...] = ()
+    required_any_paths: Tuple[Tuple[str, ...], ...] = ()
 
 
 def _dependency_source(name: str, directory: Optional[str] = None) -> SolverSourceRecipe:
@@ -65,7 +66,7 @@ SOLVER_SOURCE_RECIPES = {
         "hwloc", "2.11.2",
         "https://download.open-mpi.org/release/hwloc/v2.11/hwloc-2.11.2.tar.gz",
         "hwloc-2.11.2.tar.gz", "hwloc",
-        required_paths=("configure", "hwloc/Makefile.am"),
+        required_paths=("configure",),
     ),
     "gklib": SolverSourceRecipe(
         "gklib", "master",
@@ -90,7 +91,10 @@ SOLVER_SOURCE_RECIPES = {
         "pastix5", "5.2.3",
         "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
         "pastix-5.2.3.tar.bz2", "pastix5",
-        required_paths=("common/src/pastix_fortran.h",),
+        required_any_paths=(
+            ("CMakeLists.txt", "src/CMakeLists.txt"),
+            ("common/src/pastix_fortran.h", "src/common/src/pastix_fortran.h"),
+        ),
     ),
 }
 
@@ -113,6 +117,12 @@ def validate_solver_source_recipes() -> List[str]:
         errors.extend(validate_source_recipe(
             recipe.name, recipe.version, recipe.url, recipe.source_kind,
             recipe.git_ref, recipe.git_submodules, recipe.required_paths))
+        for alternatives in recipe.required_any_paths:
+            for relative in alternatives:
+                path = Path(relative)
+                if path.is_absolute() or ".." in path.parts or not relative:
+                    errors.append("%s has unsafe alternative required path %r" % (
+                        recipe.name, relative))
     return errors
 
 
@@ -167,34 +177,41 @@ class SolverBuild:
                 raise BuildError("git is required to fetch the %s source tree" % recipe.name)
             destination = self.work / "src" / (
                 "%s-%s" % (recipe.name, recipe.version))
-            if destination.exists():
-                shutil.rmtree(destination)
-            command = [git, "clone", "--depth", "1"]
-            if recipe.git_ref:
-                command.extend(["--branch", recipe.git_ref])
-            if recipe.git_submodules:
-                command.extend(["--recurse-submodules", "--shallow-submodules"])
-            command.extend([recipe.url, str(destination)])
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            urls = list(self.url_overrides.get(recipe.directory, [])) + [recipe.url]
+            failures = []
             env = self.env
             env["GIT_TERMINAL_PROMPT"] = "0"
-            result = run(command, cwd=self.work, env=env,
-                         log=self.log(recipe.name), check=False)
-            if result.returncode != 0:
-                raise BuildError("Git clone failed for %s (exit %d)" % (
-                    recipe.name, result.returncode))
-            if recipe.git_submodules:
-                status = run(
-                    [git, "-C", str(destination), "submodule", "status", "--recursive"],
-                    env=env, log=self.log(recipe.name), check=False)
-                if status.returncode != 0:
-                    raise BuildError("could not verify recursive submodules for %s" % recipe.name)
-                lines = status.stdout.decode("utf-8", "replace").splitlines()
-                incomplete = [line for line in lines if line[:1] in ("-", "+", "U")]
-                if incomplete:
-                    raise BuildError(
-                        "%s has uninitialized or mismatched submodules: %s" %
-                        (recipe.name, "; ".join(incomplete)))
-            source = destination
+            source = None
+            for url in urls:
+                if destination.exists():
+                    shutil.rmtree(destination)
+                command = [git, "clone", "--depth", "1"]
+                if recipe.git_ref:
+                    command.extend(["--branch", recipe.git_ref])
+                if recipe.git_submodules:
+                    command.extend(["--recurse-submodules", "--shallow-submodules"])
+                command.extend([url, str(destination)])
+                result = run(command, cwd=self.work, env=env,
+                             log=self.log(recipe.name), check=False)
+                if result.returncode != 0:
+                    failures.append("%s: git clone exited %d" % (url, result.returncode))
+                    continue
+                if recipe.git_submodules:
+                    status = run(
+                        [git, "-C", str(destination), "submodule", "status", "--recursive"],
+                        env=env, log=self.log(recipe.name), check=False)
+                    lines = status.stdout.decode("utf-8", "replace").splitlines()
+                    incomplete = [line for line in lines if line[:1] in ("-", "+", "U")]
+                    if status.returncode != 0 or incomplete:
+                        failures.append("%s: recursive submodule checkout is incomplete" % url)
+                        shutil.rmtree(destination, ignore_errors=True)
+                        continue
+                source = destination
+                break
+            if source is None:
+                raise BuildError("could not clone %s:\\n  %s" % (
+                    recipe.name, "\\n  ".join(failures)))
         else:
             urls = list(self.url_overrides.get(recipe.directory, [])) + [recipe.url]
             archive = self.downloader.fetch(urls, recipe.filename)
@@ -205,10 +222,16 @@ class SolverBuild:
             relative for relative in recipe.required_paths
             if not (source / relative).exists()
         ]
-        if missing:
+        missing_alternatives = [
+            " or ".join(alternatives)
+            for alternatives in recipe.required_any_paths
+            if not any((source / relative).exists() for relative in alternatives)
+        ]
+        if missing or missing_alternatives:
+            details = missing + missing_alternatives
             raise BuildError(
                 "%s source tree is incomplete; missing required paths: %s" %
-                (recipe.name, ", ".join(missing)))
+                (recipe.name, ", ".join(details)))
         return source
 
     def verify_stage_artifacts(self, stage_name: str) -> None:
