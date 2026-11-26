@@ -221,4 +221,8 @@ The GitHub Actions workflow installs PySide6 and performs headless GUI and
 application-entry-point smoke tests on Linux, macOS, and Windows with Python
 3.11. A separate CLI-only matrix runs the unit and integration suite on Python
 3.9, 3.10, 3.12, and 3.13. The desktop jobs also build the source and wheel
-distributions, install the wheel, and smoke-test its application entry point.
+distributions, install the wheel, and smoke-test its application entry point. A
+separate integration job checks out a pinned upstream JOREK revision, runs the
+full test suite without source-dependent skips, generates the real model matrix,
+and dry-runs a model-303/MUMPS build plan. This is not a full Fortran compilation
+or an HPC runtime test.
