@@ -6,11 +6,12 @@ import unittest
 from pathlib import Path
 
 try:
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QPlainTextEdit
     from jorek_build_studio.stage_logs import StageLogDialog
     QT_AVAILABLE = True
 except ImportError:
     QApplication = None
+    QPlainTextEdit = None
     StageLogDialog = None
     QT_AVAILABLE = False
 
@@ -141,11 +142,11 @@ class StageLogDialogTests(unittest.TestCase):
             dialog.wrap_check.setChecked(True)
             self.assertEqual(
                 dialog.editor.lineWrapMode(),
-                dialog.editor.LineWrapMode.WidgetWidth)
+                QPlainTextEdit.LineWrapMode.WidgetWidth)
             dialog.wrap_check.setChecked(False)
             self.assertEqual(
                 dialog.editor.lineWrapMode(),
-                dialog.editor.LineWrapMode.NoWrap)
+                QPlainTextEdit.LineWrapMode.NoWrap)
             dialog.close()
 
     def test_log_statistics_report_bytes_chars_lines_words_and_max_line(self):
