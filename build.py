@@ -1859,14 +1859,18 @@ def cmd_preflight(args) -> int:
         features = jorek.FeatureSet()
         _apply_feature_args(features, args)
         selected_solver = "all" if build_kind == "full" else getattr(args, "solver", "mumps")
-        if selected_solver in ("pastix5", "pastix6", "all") and features.enabled("int64"):
+        bundled_solvers = ("mumps", "pastix5", "pastix6", "strumpack", "all")
+        if selected_solver in bundled_solvers and features.enabled("int64"):
             raise BuildError(
-                "the bundled PaStiX 5/6 adapters are currently built with 32-bit "
-                "integer interfaces to match JOREK's default USE_INTSIZE64=0. "
-                "Disable the int64 feature or supply a separately built, ABI-matched "
-                "solver prefix; refusing to mix 64-bit JOREK integers with 32-bit PaStiX.")
-        if selected_solver in ("pastix5", "pastix6", "all"):
-            return ["PaStiX 5/6 and JOREK use compatible 32-bit solver integer interfaces."]
+                "the bundled direct-solver stack (MUMPS, PaStiX 5/6, STRUMPACK, "
+                "ScaLAPACK and METIS) is currently built with 32-bit integer "
+                "interfaces to match JOREK's default USE_INTSIZE64=0. Disable the "
+                "int64 feature or supply a separately built, ABI-matched solver "
+                "prefix; refusing to mix 64-bit JOREK integers with 32-bit solver libraries.")
+        if selected_solver in bundled_solvers:
+            return [
+                "The selected bundled solver stack and JOREK use compatible 32-bit integer interfaces."
+            ]
         return CheckResult("skipped", [
             "The selected solver backend does not use the bundled PaStiX adapters."])
 
