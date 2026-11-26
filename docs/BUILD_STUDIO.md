@@ -111,7 +111,10 @@ prefixes, extracted dependency trees, primary/fallback mirrors, IMAS and
 Catalyst prefixes, full-build solver prefixes, debug mode, source retention,
 verification policy, and the Everything preset. The same tab can configure a
 previously built suite run, including its model/variant/program selectors,
-standard input file, and arguments such as --mpi -np 8.
+standard input file, and arguments such as --mpi -np 8. The suite verifier emits
+a machine-readable portability report covering executable format, architecture,
+non-system dynamic dependencies, macOS signature status, and a launcher info
+smoke test.
 
 ### Dependencies
 
@@ -125,10 +128,13 @@ Fortran support.
 
 ### Build
 
-Preview the matrix, start a build, verify a generated suite, or cancel the
-current builder process. Output is displayed in the window and written to a
-persistent timestamped log file. The build driver's own logs remain available
-in its work directory.
+Preview the matrix, start a build, verify a generated suite, run a suite, or
+cancel the current builder process. Verification invokes build.py verify --json
+and displays a structured report covering executable format, architecture,
+non-system dynamic dependencies, macOS signature status, and the launcher info
+smoke test. Output is displayed in the window and written to a persistent
+timestamped log file. The build driver's own logs remain available in its work
+directory.
 
 ### History
 

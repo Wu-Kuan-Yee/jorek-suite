@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,13 @@ from jorek_build_studio.config import (
     build_arguments, load_config, normalize_config, save_config, validate_config,
 )
 from jorek_build_studio.legacy import import_legacy_text
+
+SRC = Path(__file__).resolve().parents[1] / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+import jorek
+from portability import host_compatibility, inspect_binary
 
 
 class ConfigTests(unittest.TestCase):
@@ -80,6 +88,11 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("--with-deps", argv)
         self.assertEqual(argv[argv.index("--toolchain-prefix") + 1], "/tmp/toolchain")
 
+    def test_verify_command_requests_json_report(self):
+        cfg = normalize_config({"work_dir": "/tmp/work"})
+        argv = build_arguments(cfg, "verify")
+        self.assertEqual(argv[-1], "--json")
+
     def test_run_command_preserves_suite_arguments_without_a_shell(self):
         cfg = normalize_config({
             "work_dir": "/tmp/work",
@@ -95,7 +108,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_builder_help_exposes_family_toggle_for_matrix_build_and_full(self):
         script = Path(__file__).resolve().parents[1] / "build.py"
-        for command in ("matrix", "build", "full"):
+        for command in ("matrix", "build", "full", "verify"):
             result = subprocess.run(
                 [sys.executable, str(script), command, "--help"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -176,6 +189,35 @@ class BackendTests(unittest.TestCase):
             self.assertTrue(data["model_toggle_defaults"]["303"]["with_TiTe"])
             self.assertEqual(data["dependencies"][0]["name"], "fftw")
             self.assertEqual(data["dependencies"][0]["license"], "BSD-3-Clause")
+
+    def test_portability_inspector_reads_elf_architecture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "fake-elf"
+            header = bytearray(64)
+            header[:4] = b"\x7fELF"
+            header[4] = 2
+            header[5] = 1
+            header[7] = 0
+            struct.pack_into("<HH", header, 16, 2, 62)
+            path.write_bytes(header)
+            info = inspect_binary(path)
+            self.assertEqual(info["format"], "ELF")
+            self.assertEqual(info["bits"], 64)
+            self.assertEqual(info["architectures"], ["x86_64"])
+            self.assertTrue(host_compatibility(info, "linux", "x86_64")["compatible"])
+
+    def test_static_verification_fails_closed_when_readelf_is_missing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "uninspected"
+            path.write_bytes(b"not a real executable")
+            original = jorek.which
+            try:
+                jorek.which = lambda _name: None
+                ok, details = jorek._verify_linux(path)
+            finally:
+                jorek.which = original
+            self.assertFalse(ok)
+            self.assertTrue(any("could not verify" in item for item in details))
 
     def test_doctor_json_parser(self):
         payload = {"platform": {"system": "Linux"}, "tools": {}}

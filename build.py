@@ -39,6 +39,7 @@ if str(SRC) not in sys.path:
 import common
 import deps
 import jorek
+import portability
 import solvers
 import suite
 from common import BuildError, Downloader, PlatformInfo, ensure_dir, human_bytes, read_json, run, which, write_json, write_text
@@ -1480,26 +1481,122 @@ def cmd_full(args) -> int:
 def cmd_verify(args) -> int:
     platform = _platform()
     target = Path(args.target) if args.target else (Path(args.work) / "dist" / ("jorek-suite" + platform.exe_suffix))
-    if not target.exists():
+    if not target.is_file():
         raise BuildError("no suite at %s; run 'build.py dist' first" % target)
-    print("Verifying %s" % target)
-    ok, offenders = jorek.verify_static(target, platform)
-    if ok:
-        print("  static dependency check: ok (system libraries only)")
+
+    try:
+        binary = portability.inspect_binary(target)
+    except (OSError, ValueError) as exc:
+        raise BuildError("cannot inspect suite binary %s: %s" % (target, exc)) from exc
+    host_match = portability.host_compatibility(binary, platform.system, platform.machine)
+    static_ok, offenders = jorek.verify_static(target, platform)
+
+    signature = {"status": "not_applicable", "details": ""}
+    signature_ok = True
+    if platform.is_macos:
+        codesign = which("codesign")
+        if not codesign:
+            signature = {"status": "unavailable", "details": "codesign is unavailable"}
+            signature_ok = False
+        else:
+            try:
+                proc = subprocess.run(
+                    [codesign, "--verify", "--verbose=2", str(target)],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    check=False, timeout=20)
+                details = proc.stdout.decode("utf-8", "replace").strip()
+                signature_ok = proc.returncode == 0
+                signature = {"status": "valid" if signature_ok else "invalid",
+                             "details": details}
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                signature_ok = False
+                signature = {"status": "error", "details": str(exc)}
+
+    suite_info = {"status": "not_run", "data": None, "details": ""}
+    if host_match["compatible"]:
+        try:
+            proc = subprocess.run(
+                [str(target), "--json", "--info"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                check=False, timeout=20)
+            output = proc.stdout.decode("utf-8", "replace").strip()
+            if proc.returncode == 0:
+                try:
+                    suite_info = {"status": "passed", "data": json.loads(output), "details": ""}
+                except json.JSONDecodeError:
+                    suite_info = {"status": "passed_legacy_text", "data": None,
+                                  "details": output[:4000]}
+            else:
+                suite_info = {"status": "failed", "data": None, "details": output[:4000]}
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            suite_info = {"status": "error", "data": None, "details": str(exc)}
     else:
-        print("  static dependency check: FAILED")
+        suite_info["details"] = "not executed because the artifact format/architecture does not match this host"
+
+    info_ok = suite_info["status"] in ("passed", "passed_legacy_text")
+    portable = bool(host_match["compatible"] and static_ok and signature_ok and info_ok)
+    report = {
+        "schema_version": 1,
+        "artifact": {
+            "path": str(target.resolve()),
+            "size_bytes": target.stat().st_size,
+            "sha256": common.sha256_file(target),
+        },
+        "build_host": {
+            "system": platform.system,
+            "release": __import__("platform").release(),
+            "architecture": platform.machine,
+            "libc": platform.libc,
+            "target_triple": platform.triple,
+        },
+        "binary": binary,
+        "host_compatibility": host_match,
+        "static_dependency_check": {
+            "status": "passed" if static_ok else "failed",
+            "non_system_dependencies_or_errors": offenders,
+        },
+        "code_signature": signature,
+        "suite_info_smoke_test": suite_info,
+        "cpu_baseline": {
+            "status": "not_encoded",
+            "details": "The executable does not reliably encode the compiler's minimum CPU baseline. "
+                       "The builder does not add -march=native/-mcpu=native by default, but custom "
+                       "compiler wrappers may add target-specific flags.",
+        },
+        "kernel_compatibility": {
+            "status": "not_certified",
+            "details": "Binary metadata cannot prove compatibility with every kernel release. "
+                       "Validate on the oldest supported kernel for this target.",
+        },
+        "portable_on_build_host": portable,
+        "limitations": [
+            "This report checks the current build host, not every machine with the same architecture.",
+            "The target needs a writable temporary/cache directory for single-file extraction.",
+            "Multi-node MPI execution still depends on cluster launcher, network, and scheduler configuration.",
+        ],
+    }
+
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print("Artifact: %s" % target)
+        print("  format: %s" % binary.get("format"))
+        print("  architecture(s): %s" % ", ".join(binary.get("architectures", [])))
+        print("  host compatibility: %s" % ("PASS" if host_match["compatible"] else "FAIL"))
+        print("  static dependency check: %s" % ("PASS" if static_ok else "FAIL"))
         for item in offenders:
             print("    " + item)
-    if platform.is_macos:
-        proc = subprocess.run(["codesign", "--verify", "--verbose=2", str(target)],
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
-        print("  code signature: %s" % ("ok" if proc.returncode == 0 else "FAILED"))
-        if proc.returncode != 0:
-            ok = False
-            print(proc.stdout.decode("utf-8", "replace"))
-    proc = subprocess.run([str(target), "--info"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
-    print(proc.stdout.decode("utf-8", "replace").strip())
-    return 0 if ok else 1
+        print("  code signature: %s" % signature["status"])
+        print("  suite info smoke test: %s" % suite_info["status"])
+        if binary.get("minimum_glibc_version"):
+            print("  minimum GLIBC symbol version: %s" % binary["minimum_glibc_version"])
+        if binary.get("minimum_os_version"):
+            print("  minimum OS version: %s" % binary["minimum_os_version"])
+        print("  portable on this build host: %s" % ("PASS" if portable else "FAIL"))
+        print("  CPU baseline: not encoded; see report limitations")
+        if suite_info.get("details"):
+            print(suite_info["details"])
+    return 0 if portable else 1
 
 
 def cmd_run(args) -> int:
@@ -1825,6 +1922,7 @@ def make_parser() -> argparse.ArgumentParser:
           build.py verify --work /big/build build/dist/jorek-suite
         """)
     p.add_argument("target", nargs="?", metavar="SUITE", help="suite path to verify (default: WORK/dist/jorek-suite)")
+    p.add_argument("--json", action="store_true", help="emit a machine-readable portability report")
     p.set_defaults(func=cmd_verify)
 
     p = _add_subparser(sub, "run",

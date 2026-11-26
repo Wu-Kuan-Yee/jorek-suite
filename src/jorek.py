@@ -1067,7 +1067,7 @@ WINDOWS_SYSTEM_DLLS = {
 def verify_static(path: Path, platform: PlatformInfo) -> Tuple[bool, List[str]]:
     """Return (ok, offending dynamic dependencies)."""
     path = Path(path)
-    if not path.exists():
+    if not path.is_file():
         return False, ["missing executable"]
     if platform.is_linux:
         return _verify_linux(path)
@@ -1077,16 +1077,16 @@ def verify_static(path: Path, platform: PlatformInfo) -> Tuple[bool, List[str]]:
         return _verify_windows(path)
     if platform.is_bsd:
         return _verify_bsd(path)
-    return True, []
+    return False, ["unsupported platform; could not verify"]
 
 
 def _verify_linux(path: Path) -> Tuple[bool, List[str]]:
     readelf = which("readelf")
     if not readelf:
-        return True, ["readelf unavailable; could not verify"]
+        return False, ["readelf unavailable; could not verify"]
     proc = subprocess.run([readelf, "-d", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if proc.returncode != 0:
-        return True, ["readelf failed; could not verify"]
+        return False, ["readelf failed; could not verify"]
     text = proc.stdout.decode("utf-8", "replace")
     needed = re.findall(r"\(NEEDED\)\s+Shared library:\s+\[([^\]]+)\]", text)
     offending = [x for x in needed if not _is_system_linux(x)]
@@ -1104,9 +1104,12 @@ def _is_system_linux(name: str) -> bool:
 
 
 def _verify_macos(path: Path) -> Tuple[bool, List[str]]:
-    proc = subprocess.run(["otool", "-L", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    otool = which("otool")
+    if not otool:
+        return False, ["otool unavailable; could not verify"]
+    proc = subprocess.run([otool, "-L", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if proc.returncode != 0:
-        return True, ["otool unavailable; could not verify"]
+        return False, ["otool failed; could not verify"]
     lines = proc.stdout.decode("utf-8", "replace").splitlines()[1:]
     offending = []
     for line in lines:
@@ -1123,8 +1126,10 @@ def _verify_macos(path: Path) -> Tuple[bool, List[str]]:
 def _verify_windows(path: Path) -> Tuple[bool, List[str]]:
     objdump = which("objdump") or which("x86_64-w64-mingw32-objdump")
     if not objdump:
-        return True, ["objdump unavailable; could not verify"]
+        return False, ["objdump unavailable; could not verify"]
     proc = subprocess.run([objdump, "-p", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    if proc.returncode != 0:
+        return False, ["objdump failed; could not verify"]
     text = proc.stdout.decode("utf-8", "replace")
     dlls = re.findall(r"DLL Name:\s*(\S+)", text)
     offending = [dll for dll in dlls if dll.lower() not in WINDOWS_SYSTEM_DLLS and not dll.lower().startswith("api-ms-win-")]
@@ -1132,10 +1137,15 @@ def _verify_windows(path: Path) -> Tuple[bool, List[str]]:
 
 
 def _verify_bsd(path: Path) -> Tuple[bool, List[str]]:
-    proc = subprocess.run(["ldd", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    ldd = which("ldd")
+    if not ldd:
+        return False, ["ldd unavailable; could not verify"]
+    proc = subprocess.run([ldd, str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     text = proc.stdout.decode("utf-8", "replace")
     if "not a dynamic executable" in text or "statically linked" in text:
         return True, []
+    if proc.returncode != 0:
+        return False, ["ldd failed; could not verify"]
     deps = re.findall(r"=>\s+(\S+)", text)
     offending = [d for d in deps if not d.startswith(("/usr/lib", "/lib", "/usr/local/lib"))]
     return not offending, offending

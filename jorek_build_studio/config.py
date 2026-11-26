@@ -231,6 +231,7 @@ def build_arguments(config: Dict[str, Any], command: Optional[str] = None) -> Li
         argv.append("verify")
         if cfg.get("output"):
             argv.append(str(cfg["output"]))
+        argv.append("--json")
         return argv
     if action == "run":
         argv.append("run")

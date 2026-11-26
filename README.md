@@ -332,7 +332,7 @@ An optional minimal Qt frontend is available for the existing builder. The
 CLI remains the build engine; the GUI provides configuration, model/dependency
 inspection, model-family overrides, parameter-matrix preview, task logs and
 history, advanced dependency/source controls, suite verification and execution,
-a safe legacy-script importer, and contextual CLI help.
+a safe legacy-script importer, contextual CLI help, and a host-side portability report for generated suites.
 
 Install and launch from the repository root:
 

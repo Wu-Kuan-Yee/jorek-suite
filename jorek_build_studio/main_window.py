@@ -1033,6 +1033,8 @@ class MainWindow(QMainWindow):
             self._show_matrix_result()
         elif self.task_kind == "doctor" and exit_code == 0:
             self._show_doctor_result()
+        elif self.task_kind == "verify":
+            self._show_verify_result()
         if self.task_kind == "dependencies" and exit_code == 0:
             self.refresh_catalog(show_message=False)
 
@@ -1053,6 +1055,41 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 self.matrix_table.setItem(row, column, QTableWidgetItem(str(value)))
         self.statusBar().showMessage("Matrix preview: %d variants" % len(data), 8000)
+
+    def _show_verify_result(self) -> None:
+        try:
+            report = json.loads(self.task_output)
+        except json.JSONDecodeError as exc:
+            self.overview_text.setPlainText(
+                "Portability report could not be parsed:\n%s\n\n%s" % (exc, self.task_output[-4000:]))
+            return
+        checks = [
+            ("Artifact", report.get("artifact", {}).get("path", "")),
+            ("Format", report.get("binary", {}).get("format", "unknown")),
+            ("Architecture", ", ".join(report.get("binary", {}).get("architectures", []))),
+            ("Host compatibility", "PASS" if report.get("host_compatibility", {}).get("compatible") else "FAIL"),
+            ("Static dependencies", report.get("static_dependency_check", {}).get("status", "unknown").upper()),
+            ("Code signature", report.get("code_signature", {}).get("status", "unknown")),
+            ("Suite info smoke test", report.get("suite_info_smoke_test", {}).get("status", "unknown")),
+            ("Portable on build host", "PASS" if report.get("portable_on_build_host") else "FAIL"),
+            ("Minimum GLIBC", report.get("binary", {}).get("minimum_glibc_version") or "not detected"),
+            ("Minimum OS", report.get("binary", {}).get("minimum_os_version") or "not detected"),
+        ]
+        summary = "\n".join("%s: %s" % pair for pair in checks)
+        details = report.get("static_dependency_check", {}).get(
+            "non_system_dependencies_or_errors", [])
+        if details:
+            summary += "\n\nStatic dependency findings:\n" + "\n".join(
+                "  - " + str(item) for item in details)
+        limitations = report.get("limitations", [])
+        if limitations:
+            summary += "\n\nLimitations:\n" + "\n".join(
+                "  - " + str(item) for item in limitations)
+        self.overview_text.setPlainText(summary)
+        if report.get("portable_on_build_host"):
+            self.statusBar().showMessage("Portability checks passed on this build host", 10000)
+        else:
+            self.statusBar().showMessage("Portability checks did not pass; inspect the report", 10000)
 
     def _show_doctor_result(self) -> None:
         try:
