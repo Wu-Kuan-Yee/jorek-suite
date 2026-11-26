@@ -71,6 +71,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "verbose": False,
     "dry_run": False,
     "dep_action": "list",
+    "bootstrap_with_deps": True,
     "dep_only": "",
 }
 
@@ -102,7 +103,7 @@ def normalize_config(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     for key in ("offline", "force", "no_checksum", "allow_shared",
                 "require_full_static", "no_full_static", "keep_going",
                 "verbose", "dry_run", "fetch_source", "everything",
-                "no_verify", "keep_source", "debug", "no_build_solvers"):
+                "no_verify", "keep_source", "debug", "no_build_solvers", "bootstrap_with_deps"):
         result[key] = bool(result.get(key, False))
     for key in DEFAULT_CONFIG:
         if isinstance(DEFAULT_CONFIG[key], str) and result.get(key) is None:
@@ -144,6 +145,13 @@ def save_config(data: Dict[str, Any], path: Optional[Path] = None) -> Path:
     return target
 
 
+def _raw_lines(value: Any) -> List[str]:
+    if not value:
+        return []
+    source = value if isinstance(value, (list, tuple)) else str(value).splitlines()
+    return [str(item).strip() for item in source if str(item).strip()]
+
+
 def _lines(value: Any) -> List[str]:
     if not value:
         return []
@@ -181,7 +189,7 @@ def global_arguments(config: Dict[str, Any]) -> List[str]:
     for prefix in cfg["dep_prefixes"]:
         argv.extend(["--dep-prefix", str(prefix)])
     for key, option in (("sources", "--source"), ("urls", "--url"), ("mirrors", "--mirror")):
-        for item in _lines(cfg.get(key)):
+        for item in _raw_lines(cfg.get(key)):
             if "=" not in item:
                 raise ValueError("%s expects NAME=VALUE, got %r" % (option, item))
             argv.extend([option, item])
@@ -208,6 +216,11 @@ def build_arguments(config: Dict[str, Any], command: Optional[str] = None) -> Li
     argv = global_arguments(cfg)
     if action == "doctor":
         return argv + ["doctor", "--json"]
+    if action == "bootstrap":
+        argv.append("bootstrap")
+        if cfg.get("bootstrap_with_deps", True):
+            argv.append("--with-deps")
+        return argv
     if action == "deps":
         argv.extend(["deps", cfg["dep_action"]])
         for name in _lines(cfg.get("dep_only")):

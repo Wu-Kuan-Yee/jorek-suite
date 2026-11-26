@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Minimal Qt desktop frontend for the JOREK suite builder"
 readme = "docs/BUILD_STUDIO.md"
 requires-python = ">=3.9"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
 authors = [{ name = "JOREK Build Studio contributors" }]
 dependencies = []
 

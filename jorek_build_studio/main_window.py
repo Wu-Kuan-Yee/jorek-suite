@@ -349,6 +349,8 @@ class MainWindow(QMainWindow):
         self.dep_action_combo.addItems(["list", "graph", "fetch", "build", "verify"])
         self.dep_only_edit = QLineEdit()
         self.dep_only_edit.setPlaceholderText("Optional comma-separated dependency names")
+        self.bootstrap_deps_check = QCheckBox("Build the full core dependency profile during bootstrap")
+        self.bootstrap_deps_check.setChecked(True)
         form.addRow("Action", self.dep_action_combo)
         form.addRow("Only these dependencies", self.dep_only_edit)
         row = QHBoxLayout()
@@ -356,6 +358,8 @@ class MainWindow(QMainWindow):
         row.addWidget(_button("Refresh dependency catalogue", self.refresh_catalog, page))
         row.addStretch(1)
         outer.addWidget(controls)
+        outer.addWidget(self.bootstrap_deps_check)
+        row.addWidget(_button("Bootstrap toolchain", self.bootstrap_toolchain, page))
         outer.addLayout(row)
         self.dependency_table = QTableWidget(0, 5)
         self.dependency_table.setHorizontalHeaderLabels(
@@ -550,6 +554,7 @@ class MainWindow(QMainWindow):
         self.set_params_edit.setPlainText(cfg.get("set_params", ""))
         self.dep_action_combo.setCurrentText(cfg.get("dep_action", "list"))
         self.dep_only_edit.setText(cfg.get("dep_only", ""))
+        self.bootstrap_deps_check.setChecked(bool(cfg.get("bootstrap_with_deps", True)))
         self.jorek_url_edit.setText(cfg.get("jorek_url", ""))
         self.toolchain_prefix_edit.setText(cfg.get("toolchain_prefix", ""))
         self.source_dir_edit.setText(cfg.get("source_dir", ""))
@@ -597,6 +602,7 @@ class MainWindow(QMainWindow):
             "set_params": self.set_params_edit.toPlainText(),
             "dep_action": self.dep_action_combo.currentText(),
             "dep_only": self.dep_only_edit.text().strip(),
+            "bootstrap_with_deps": self.bootstrap_deps_check.isChecked(),
             "jorek_url": self.jorek_url_edit.text().strip(),
             "toolchain_prefix": self.toolchain_prefix_edit.text().strip(),
             "source_dir": self.source_dir_edit.text().strip(),
@@ -894,6 +900,22 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_TITLE, str(exc))
             return
         self._start_process(args, "run-suite")
+
+    def bootstrap_toolchain(self) -> None:
+        cfg = self._collect_config()
+        if not cfg["build_script"] or not Path(cfg["build_script"]).is_file():
+            QMessageBox.warning(self, APP_TITLE, "Select a valid build.py first.")
+            return
+        if not cfg.get("toolchain_prefix"):
+            answer = QMessageBox.question(
+                self, APP_TITLE,
+                "No private toolchain prefix is set. The bootstrap will use the "
+                "work directory's default dependency prefix. Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._start_process(build_arguments(cfg, "bootstrap"), "bootstrap")
 
     def run_dependency_action(self) -> None:
         cfg = self._collect_config()

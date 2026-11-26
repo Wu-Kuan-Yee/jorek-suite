@@ -118,6 +118,10 @@ standard input file, and arguments such as --mpi -np 8.
 List dependency recipes, inspect the dependency graph, fetch source archives,
 build the selected dependency closure, or verify static library installation.
 The optional dependency filter accepts comma-separated dependency names.
+Bootstrap toolchain builds the private dependency prefix and can also build the
+full core dependency profile. It requires a working host C and C++ compiler;
+without a host Fortran compiler, the bootstrap attempts to build GCC with
+Fortran support.
 
 ### Build
 

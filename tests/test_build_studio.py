@@ -61,6 +61,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--matrix") + 1], "models")
         self.assertEqual(argv[argv.index("--family-toggle") + 1], "with_TiTe=1")
 
+    def test_source_url_override_preserves_semicolons(self):
+        cfg = normalize_config({
+            "work_dir": "/tmp/work",
+            "urls": "fftw=https://mirror.invalid/archive.tar.gz?x=1;y=2",
+        })
+        argv = build_arguments(cfg, "deps")
+        self.assertIn("fftw=https://mirror.invalid/archive.tar.gz?x=1;y=2", argv)
+
+    def test_bootstrap_builds_selected_dependency_profile(self):
+        cfg = normalize_config({
+            "work_dir": "/tmp/work",
+            "toolchain_prefix": "/tmp/toolchain",
+            "bootstrap_with_deps": True,
+        })
+        argv = build_arguments(cfg, "bootstrap")
+        self.assertIn("bootstrap", argv)
+        self.assertIn("--with-deps", argv)
+        self.assertEqual(argv[argv.index("--toolchain-prefix") + 1], "/tmp/toolchain")
+
     def test_run_command_preserves_suite_arguments_without_a_shell(self):
         cfg = normalize_config({
             "work_dir": "/tmp/work",
@@ -139,7 +158,7 @@ class BackendTests(unittest.TestCase):
             (base / "build.py").write_text("print('placeholder')\n")
             (base / "src" / "jorek.py").write_text(
                 "MODELS = ('303',)\n"
-                "FAMILY_TOGGLES = {'303': ()}\n"
+                "FAMILY_TOGGLES = {'303': ('with_TiTe',)}\n"
                 "BOOLEAN_FEATURES = {'hdf5': ('USE_HDF5', '-DUSE_HDF5')}\n"
                 "DEFAULT_FEATURES = {'hdf5': True}\n",
                 encoding="utf-8",
