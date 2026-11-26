@@ -1471,6 +1471,7 @@ def cmd_preflight(args) -> int:
         args.root = str(root)
 
     selected_names = _preflight_dependency_names(args, build_kind)
+    effective_policy = {"value": args.deps}
     checks: List[VerificationCheck] = []
 
     def check_repository_revision():
@@ -1565,12 +1566,57 @@ def cmd_preflight(args) -> int:
         source_root = getattr(args, "source_dir", None)
         if source_root and not Path(source_root).expanduser().is_dir():
             raise BuildError("--source-dir is not a directory: %s" % source_root)
+        known = set(deps.DEPENDENCIES) | set(solvers.SOLVER_SOURCE_RECIPES)
+        unknown = (set(source_dirs) | set(url_overrides)) - known
+        if unknown:
+            raise BuildError("unknown source recipe override(s): %s" % ", ".join(sorted(unknown)))
         for name, values in url_overrides.items():
             if not name or any(not value.strip() for value in values):
                 raise BuildError("source URL override for %r contains an empty name or URL" % name)
+
+        inspected = []
+        def inspect_tree(name, recipe, path):
+            missing = [
+                relative for relative in getattr(recipe, "required_paths", ())
+                if not (path / relative).exists()
+            ]
+            missing_any = [
+                " or ".join(alternatives)
+                for alternatives in getattr(recipe, "required_any_paths", ())
+                if not any((path / relative).exists() for relative in alternatives)
+            ]
+            if missing or missing_any:
+                raise BuildError(
+                    "provided source tree for %s is incomplete: %s" %
+                    (name, ", ".join(missing + missing_any)))
+            inspected.append(name)
+
+        selected = set(selected_names)
+        if build_kind == "full" and not (
+                getattr(args, "no_build_solvers", False) or args.dep_prefix):
+            selected.update(solvers.SOLVER_SOURCE_RECIPES)
+        for name in sorted(selected):
+            recipe = (
+                deps.DEPENDENCIES.get(name) or
+                solvers.SOLVER_SOURCE_RECIPES.get(name)
+            )
+            if recipe is None:
+                continue
+            supplied = source_dirs.get(name)
+            if supplied is None and source_root:
+                for candidate in (
+                    Path(source_root).expanduser() / ("%s-%s" % (name, recipe.version)),
+                    Path(source_root).expanduser() / name,
+                ):
+                    if candidate.is_dir():
+                        supplied = candidate
+                        break
+            if supplied is not None:
+                inspect_tree(name, recipe, Path(supplied))
         return [
             "%d explicit source directories and %d URL/mirror overrides validated." %
             (len(source_dirs), len(url_overrides)),
+            "Required paths verified in %d supplied source tree(s)." % len(inspected),
         ]
 
     def check_dependency_plan():
@@ -1621,6 +1667,7 @@ def cmd_preflight(args) -> int:
             missing = _preflight_cache_check(order, args, source_dirs)
             if missing:
                 raise BuildError("offline source cache is incomplete: %s" % ", ".join(missing))
+        effective_policy["value"] = policy
         return [
             "Resolved %d dependencies in build order: %s" %
             (len(order), " -> ".join(item.name for item in order)),
@@ -1740,27 +1787,46 @@ def cmd_preflight(args) -> int:
                     label, proc.stdout.strip()[-500:]))
             first = next((line.strip() for line in proc.stdout.splitlines() if line.strip()), executable)
             details.append("%s compiler: %s (%s)" % (label, executable, first))
-        needs_cmake = (
-            build_kind == "full" and not getattr(args, "no_build_solvers", False)
-            and not args.dep_prefix
-        ) or any(
-            deps.DEPENDENCIES[name].builder in ("cmake", "cmake_bootstrap")
-            for name in selected_names
+
+        build_deps = effective_policy["value"] == "source"
+        build_solvers = (
+            build_kind == "full" and
+            not getattr(args, "no_build_solvers", False) and
+            not args.dep_prefix
         )
+        needs_cmake = build_solvers or (
+            build_deps and any(
+                deps.DEPENDENCIES[name].builder in ("cmake", "cmake_bootstrap")
+                for name in selected_names)
+        )
+        search = [str(work / "deps" / "bin")]
+        search.extend(str(Path(value).expanduser() / "bin")
+                      for value in (args.dep_prefix or []))
+        search.extend(os.environ.get("PATH", "").split(os.pathsep))
         if needs_cmake:
-            cmake = which("cmake", [str(work / "deps" / "bin")] + os.environ.get("PATH", "").split(os.pathsep))
-            if not cmake:
-                raise BuildError("CMake is required by the selected source build but was not found")
-            details.append("CMake: %s" % cmake)
-        if build_kind == "full" and not (args.no_build_solvers or args.dep_prefix):
+            cmake = which("cmake", search)
+            cmake_will_be_built = build_deps and "cmake" in selected_names
+            if not cmake and not cmake_will_be_built:
+                raise BuildError("CMake is required by the selected build plan but was not found or scheduled to be built")
+            details.append("CMake: %s" % (cmake or "scheduled from the selected dependency recipe"))
+        needs_git = build_solvers or (
+            build_deps and any(
+                deps.DEPENDENCIES[name].source_kind == "git"
+                for name in selected_names)
+        )
+        if needs_git:
             git = shutil.which("git")
             if not git:
-                raise BuildError("Git is required by the full solver source plan")
+                raise BuildError("Git is required by the selected source recipes")
             details.append("Git: %s" % git)
         make = which("make") or which("gmake")
         if not make:
             raise BuildError("a make implementation is required to build JOREK")
         details.append("Make: %s" % make)
+        ar = which("ar")
+        if not ar:
+            raise BuildError("an archiver (ar) is required to build static libraries")
+        details.append("Archiver: %s" % ar)
         return details
 
     def check_storage_paths():
