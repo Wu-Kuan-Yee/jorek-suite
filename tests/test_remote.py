@@ -75,13 +75,19 @@ class RemoteBuildStreamerTests(unittest.TestCase):
             )
             build_script = root / "build.py"
             build_script.write_text(
-                "import json\n"
-                "prefix = '@@JOREK_BUILD_EVENT@@'\n"
-                "start = {'event': 'stage_start', 'id': 'dependency:fixture_dep'}\n"
-                "finish = {'event': 'stage_finish', 'id': 'dependency:fixture_dep', 'status': 'completed'}\n"
-                "print(prefix + json.dumps(start), flush=True)\n"
-                "print('>> building fixture_dep 1.2.3', flush=True)\n"
-                "print(prefix + json.dumps(finish), flush=True)\n",
+                "# common.emit_build_event(\\"stage_start\\", id=\\"variant:\\" + name)\\n"
+                "import json\\n"
+                "prefix = '@@JOREK_BUILD_EVENT@@'\\n"
+                "start = {'event': 'stage_start', 'id': 'dependency:fixture_dep'}\\n"
+                "finish = {'event': 'stage_finish', 'id': 'dependency:fixture_dep', 'status': 'completed'}\\n"
+                "variant_start = {'event': 'stage_start', 'id': 'variant:fixture_variant'}\\n"
+                "variant_finish = {'event': 'stage_finish', 'id': 'variant:fixture_variant', 'status': 'completed'}\\n"
+                "print(prefix + json.dumps(start), flush=True)\\n"
+                "print('>> building fixture_dep 1.2.3', flush=True)\\n"
+                "print(prefix + json.dumps(finish), flush=True)\\n"
+                "print(prefix + json.dumps(variant_start), flush=True)\\n"
+                "print('>> building fixture_variant (model 600, solver mumps, programs main)', flush=True)\\n"
+                "print(prefix + json.dumps(variant_finish), flush=True)\\n",
                 encoding="utf-8",
             )
             command = [
@@ -94,6 +100,8 @@ class RemoteBuildStreamerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertIn("dependency:fixture_dep", result.stdout)
             self.assertNotIn("remote-fallback:dependency:fixture_dep", result.stdout)
+            self.assertIn("variant:fixture_variant", result.stdout)
+            self.assertNotIn("remote-fallback:variant:fixture_variant", result.stdout)
 
 
 class RemoteCommandTests(unittest.TestCase):
@@ -204,6 +212,8 @@ class RemoteCommandTests(unittest.TestCase):
                 if args.action == "dist":
                     print(">> building fixture_dep 1.2.3", flush=True)
                     print("fixture dependency compiler output", flush=True)
+                    print(">> building fixture_variant (model 600, solver pastix6, programs main)", flush=True)
+                    print("fixture JOREK variant compiler output", flush=True)
                     suite.parent.mkdir(parents=True, exist_ok=True)
                     suite.write_text("native-suite", encoding="utf-8")
                 elif args.action == "verify":
@@ -259,6 +269,20 @@ class RemoteCommandTests(unittest.TestCase):
                 str(Path(profile["remote_work"]) / "logs" / "fixture_dep.log"),
             )
             self.assertIn("fixture dependency compiler output", result.stdout)
+            variant_events = [
+                event for event in events
+                if event.get("id") == "remote-fallback:variant:fixture_variant"
+            ]
+            self.assertEqual(
+                [event.get("event") for event in variant_events],
+                ["stage_start", "stage_finish"],
+                result.stdout,
+            )
+            self.assertEqual(
+                variant_events[0].get("log_path"),
+                str(Path(profile["remote_work"]) / "logs" / "fixture_variant-make.log"),
+            )
+            self.assertIn("fixture JOREK variant compiler output", result.stdout)
             artifact = Path(profile["remote_work"]) / "dist" / "jorek-suite"
             self.assertEqual(artifact.read_text(encoding="utf-8"), "native-suite")
             transfer = Path(remote_artifact_path(profile))

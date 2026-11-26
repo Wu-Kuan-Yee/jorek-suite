@@ -200,9 +200,10 @@ child_env["PYTHONIOENCODING"] = "utf-8"
 child_env["PYTHONUNBUFFERED"] = "1"
 child_env["JOREK_BUILD_STUDIO_EVENTS"] = "1"
 
-# Newer pinned revisions emit dependency events natively. Detect that support
-# before launching so the legacy parser cannot create duplicate stage records.
+# Detect native stage events independently: some pinned revisions may support
+# dependency events but not JOREK-variant events (or vice versa).
 native_dependency_events = False
+native_variant_events = False
 if len(command) >= 2:
     build_script = os.path.abspath(command[1])
     deps_script = os.path.join(os.path.dirname(build_script), "src", "deps.py")
@@ -211,6 +212,14 @@ if len(command) >= 2:
             deps_source = handle.read()
         native_dependency_events = (
             "emit_build_event" in deps_source and '"dependency:"' in deps_source
+        )
+    except OSError:
+        pass
+    try:
+        with open(build_script, "r", encoding="utf-8", errors="replace") as handle:
+            build_source = handle.read()
+        native_variant_events = (
+            "emit_build_event" in build_source and '"variant:"' in build_source
         )
     except OSError:
         pass
@@ -257,39 +266,66 @@ def finish_fallback(status, error=""):
 
 
 def consume_line(raw):
-    global native_dependency_events, fallback_stage
+    global native_dependency_events, native_variant_events, fallback_stage
     line = raw.decode("utf-8", "replace").rstrip("\r\n")
     if line.startswith(PREFIX):
         try:
             event = json.loads(line[len(PREFIX):])
         except (TypeError, ValueError):
             event = {}
-        if (isinstance(event, dict) and
-                event.get("event") == "stage_start" and
-                str(event.get("id", "")).startswith("dependency:")):
-            native_dependency_events = True
-            finish_fallback("completed")
+        if isinstance(event, dict) and event.get("event") == "stage_start":
+            stage_id = str(event.get("id", ""))
+            if stage_id.startswith("dependency:"):
+                native_dependency_events = True
+                finish_fallback("completed")
+            elif stage_id.startswith("variant:"):
+                native_variant_events = True
+                finish_fallback("completed")
         write_bytes(raw)
         return
 
-    if not native_dependency_events:
-        match = re.match(r"^\s*>>\s+building\s+([A-Za-z0-9_.+-]+)\s+(\S+)", line)
-        if match:
-            finish_fallback("completed")
-            name, version = match.groups()
-            stage_id = "remote-fallback:dependency:" + name
-            remote_log = (
-                os.path.join(work_dir, "logs", name + ".log") if work_dir else ""
-            )
-            emit(
-                "stage_start",
-                id=stage_id,
-                label="%s %s" % (name, version),
-                category="Dependency",
-                phase="dependencies",
-                log_path=remote_log,
-            )
-            fallback_stage = {"id": stage_id, "name": name}
+    dependency_match = re.match(
+        r"^\s*>>\s+building\s+([A-Za-z0-9_.+-]+)\s+([^\s(][^\s]*)\s*$",
+        line,
+    )
+    variant_match = re.match(
+        r"^\s*>>\s+building\s+(\S+)\s+\(model\s+([^,]+),\s*solver\s+([^,]+),\s*programs\s+(.+)\)\s*$",
+        line,
+    )
+
+    if variant_match and not native_variant_events:
+        finish_fallback("completed")
+        name, model, solver, programs = (part.strip() for part in variant_match.groups())
+        stage_id = "remote-fallback:variant:" + name
+        remote_log = (
+            os.path.join(work_dir, "logs", name + "-make.log") if work_dir else ""
+        )
+        emit(
+            "stage_start",
+            id=stage_id,
+            label="%s (model %s, solver %s, programs %s)" % (
+                name, model, solver, programs),
+            category="JOREK variant",
+            phase="variants",
+            log_path=remote_log,
+        )
+        fallback_stage = {"id": stage_id, "name": name}
+    elif dependency_match and not native_dependency_events:
+        finish_fallback("completed")
+        name, version = dependency_match.groups()
+        stage_id = "remote-fallback:dependency:" + name
+        remote_log = (
+            os.path.join(work_dir, "logs", name + ".log") if work_dir else ""
+        )
+        emit(
+            "stage_start",
+            id=stage_id,
+            label="%s %s" % (name, version),
+            category="Dependency",
+            phase="dependencies",
+            log_path=remote_log,
+        )
+        fallback_stage = {"id": stage_id, "name": name}
 
     write_bytes(raw)
 
