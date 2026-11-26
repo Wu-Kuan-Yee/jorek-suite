@@ -1512,11 +1512,19 @@ class MainWindow(QMainWindow):
             return
 
         log_dir = self.config_path.parent / "logs"
+        preserve_stages = kind in ("remote-download", "remote-cleanup")
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             self.task_log_path = log_dir / ("%s-%s.log" % (stamp, kind))
             self.task_log = self.task_log_path.open("w", encoding="utf-8", errors="replace")
+            if not preserve_stages:
+                self._close_stage_log_handles()
+                self.stage_records = {}
+                self.stage_stack = []
+                self.stage_table.setRowCount(0)
+                self.task_stage_log_dir = log_dir / ("%s-%s-stages" % (stamp, kind))
+                self.task_stage_log_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             QMessageBox.critical(self, APP_TITLE, "Cannot create task log:\n%s" % exc)
             return
@@ -1525,14 +1533,21 @@ class MainWindow(QMainWindow):
         self.task_kind = kind
         self.task_started_at = datetime.now(timezone.utc)
         self.current_command = [str(program)] + list(args)
+        self.process_output_buffer = ""
+        self._cancel_requested = False
         self.log_view.clear()
         self.log_view.appendPlainText("$ " + " ".join(
             shlex.quote(part) for part in self.current_command))
         self.task_label.setText("Running: " + kind)
         self.log_path_label.setText(str(self.task_log_path))
         self.statusBar().showMessage("Running %s…" % kind)
+        if not preserve_stages:
+            self.progress_label.setText("Waiting for build progress")
+            self.progress_bar.setRange(0, 0)
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
+        if kind in ("build", "dependencies", "bootstrap"):
+            environment.insert("JOREK_BUILD_STUDIO_EVENTS", "1")
         self.process.setProcessEnvironment(environment)
         self.process.setWorkingDirectory(working_directory or os.getcwd())
         if os.name == "nt":
@@ -1544,31 +1559,271 @@ class MainWindow(QMainWindow):
             self.process.setArguments(["-c", runner, str(program)] + list(args))
         self.process.start()
 
-    def _read_process_output(self) -> None:
-        data = bytes(self.process.readAllStandardOutput())
-        if not data:
+    def _append_overview_output(self, text: str) -> None:
+        if not text:
             return
-        text = data.decode("utf-8", "replace")
-        if self.task_kind in ("matrix-preview", "doctor"):
-            self.task_output += text
-        else:
-            self.task_output = (self.task_output + text)[-1000000:]
         cursor = self.log_view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.log_view.setTextCursor(cursor)
         self.log_view.insertPlainText(text)
+
+    def _write_stage_output(self, text: str) -> None:
+        if not text or not self.stage_stack:
+            return
+        stage_id = self.stage_stack[-1]
+        handle = self.stage_log_handles.get(stage_id)
+        if handle:
+            try:
+                handle.write(text)
+                handle.flush()
+            except OSError as exc:
+                self._append_overview_output(
+                    "\n[Could not write detailed stage log %s: %s]\n" % (stage_id, exc))
+
+    def _consume_process_line(self, line: str) -> None:
         if self.task_log:
-            self.task_log.write(text)
+            self.task_log.write(line)
             self.task_log.flush()
+
+        stripped = line.rstrip("\r\n")
+        prefix = "@@JOREK_BUILD_EVENT@@"
+        if stripped.startswith(prefix):
+            try:
+                event = json.loads(stripped[len(prefix):])
+            except json.JSONDecodeError:
+                self._append_overview_output(line)
+            else:
+                self._handle_build_event(event)
+            return
+
+        if self.task_kind in ("matrix-preview", "doctor"):
+            self.task_output += line
+        else:
+            self.task_output = (self.task_output + line)[-1000000:]
+
+        if self.stage_stack:
+            self._write_stage_output(line)
+        else:
+            self._append_overview_output(line)
+
+    def _read_process_output(self) -> None:
+        data = bytes(self.process.readAllStandardOutput())
+        if not data:
+            return
+        self.process_output_buffer += data.decode("utf-8", "replace")
+        while "\n" in self.process_output_buffer:
+            line, self.process_output_buffer = self.process_output_buffer.split("\n", 1)
+            self._consume_process_line(line + "\n")
+
+    def _flush_process_output_buffer(self) -> None:
+        if self.process_output_buffer:
+            self._consume_process_line(self.process_output_buffer)
+            self.process_output_buffer = ""
+
+    def _handle_build_event(self, event: Dict[str, Any]) -> None:
+        event_type = str(event.get("event", ""))
+        if event_type == "phase_start":
+            phase = str(event.get("phase", ""))
+            label = str(event.get("label") or phase or "Build phase")
+            total = max(0, int(event.get("total") or 0))
+            self.current_phase = phase
+            self.progress_label.setText("%s — 0 / %d" % (label, total))
+            if total:
+                self.progress_bar.setRange(0, total)
+                self.progress_bar.setValue(0)
+            else:
+                self.progress_bar.setRange(0, 0)
+            return
+
+        if event_type == "phase_progress":
+            phase = str(event.get("phase", self.current_phase))
+            completed = max(0, int(event.get("completed") or 0))
+            total = max(0, int(event.get("total") or 0))
+            if total:
+                self.progress_bar.setRange(0, total)
+                self.progress_bar.setValue(min(completed, total))
+                self.progress_label.setText("%s — %d / %d" % (
+                    phase.replace("_", " ").title(), min(completed, total), total))
+            return
+
+        if event_type == "stage_start":
+            stage_id = str(event.get("id") or "stage-%d" % (len(self.stage_records) + 1))
+            label = str(event.get("label") or stage_id)
+            category = str(event.get("category") or "Build")
+            if self.task_stage_log_dir is None:
+                self.task_stage_log_dir = self.config_path.parent / "logs" / "stages"
+            safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", stage_id).strip("-")[:72] or "stage"
+            token = hashlib.sha1(stage_id.encode("utf-8")).hexdigest()[:10]
+            log_path = self.task_stage_log_dir / (safe + "-" + token + ".log")
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            old_handle = self.stage_log_handles.pop(stage_id, None)
+            if old_handle:
+                old_handle.close()
+            handle = log_path.open("w", encoding="utf-8", errors="replace")
+            handle.write("JOREK Build Studio — %s\nCategory: %s\nStage ID: %s\n\n" % (
+                label, category, stage_id))
+            handle.flush()
+            started = datetime.now(timezone.utc)
+            record = {
+                "id": stage_id,
+                "label": label,
+                "category": category,
+                "status": "running",
+                "log": str(log_path),
+                "remote_log_path": str(event.get("log_path") or ""),
+                "started_at": started,
+                "started_monotonic": __import__("time").monotonic(),
+                "elapsed_seconds": 0.0,
+                "error": "",
+            }
+            self.stage_records[stage_id] = record
+            self.stage_log_handles[stage_id] = handle
+            self.stage_stack.append(stage_id)
+            self._refresh_stage_table_row(stage_id)
+            self._append_overview_output(
+                "\n[%s] %s — started\n" % (category, label))
+            self.task_label.setText("Running: " + label)
+            self.build_views.setCurrentIndex(1)
+            return
+
+        if event_type == "stage_finish":
+            stage_id = str(event.get("id") or "")
+            record = self.stage_records.get(stage_id)
+            if not record:
+                return
+            status = str(event.get("status") or "completed")
+            record["status"] = status
+            record["error"] = str(event.get("error") or "")
+            record["finished_at"] = datetime.now(timezone.utc)
+            record["elapsed_seconds"] = max(
+                0.0, __import__("time").monotonic() -
+                float(record.get("started_monotonic", __import__("time").monotonic())))
+            handle = self.stage_log_handles.pop(stage_id, None)
+            if handle:
+                suffix = "\n\n[Stage %s after %.1f seconds]\n" % (
+                    status, record["elapsed_seconds"])
+                if record["error"]:
+                    suffix += "Error: " + record["error"] + "\n"
+                handle.write(suffix)
+                handle.flush()
+                handle.close()
+            if stage_id in self.stage_stack:
+                self.stage_stack = [
+                    item for item in self.stage_stack if item != stage_id]
+            dialog = self.stage_dialogs.get(record.get("log", ""))
+            if dialog:
+                dialog.set_running(False)
+            self._refresh_stage_table_row(stage_id)
+            self._append_overview_output(
+                "[%s] %s — %s (%.1f s)\n" % (
+                    record["category"], record["label"], status,
+                    record["elapsed_seconds"]))
+            return
+
+    def _refresh_stage_table_row(self, stage_id: str) -> None:
+        record = self.stage_records[stage_id]
+        row = record.get("_row")
+        if row is None:
+            row = self.stage_table.rowCount()
+            self.stage_table.insertRow(row)
+            record["_row"] = row
+        status = str(record.get("status", ""))
+        if status == "running":
+            elapsed = max(
+                0.0, __import__("time").monotonic() -
+                float(record.get("started_monotonic", __import__("time").monotonic())))
+        else:
+            elapsed = float(record.get("elapsed_seconds", 0.0))
+        values = [
+            record.get("label", ""),
+            record.get("category", ""),
+            status,
+            "%.1f s" % elapsed,
+            Path(record.get("log", "")).name,
+        ]
+        for column, value in enumerate(values):
+            item = self.stage_table.item(row, column)
+            if item is None:
+                item = QTableWidgetItem()
+                self.stage_table.setItem(row, column, item)
+            item.setText(str(value))
+            if column == 0:
+                item.setData(Qt.ItemDataRole.UserRole, stage_id)
+            elif column == 4:
+                item.setData(Qt.ItemDataRole.UserRole, record.get("log", ""))
+
+    def _open_stage_log(self, row: int, _column: int) -> None:
+        item = self.stage_table.item(row, 0)
+        stage_id = item.data(Qt.ItemDataRole.UserRole) if item else ""
+        record = self.stage_records.get(str(stage_id))
+        if record:
+            self._show_stage_log_dialog(
+                record.get("label", "Build stage"),
+                record.get("log", ""),
+                running=record.get("status") == "running")
+
+    def _open_selected_stage_log(self) -> None:
+        row = self.stage_table.currentRow()
+        if row >= 0:
+            self._open_stage_log(row, 0)
+
+    def _show_stage_log_dialog(self, title: str, path: str, running: bool = False) -> None:
+        if not path:
+            return
+        existing = self.stage_dialogs.get(path)
+        if existing is not None:
+            existing.set_running(running)
+            existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return
+        dialog = StageLogDialog(title, path, running=running, parent=self)
+        self.stage_dialogs[path] = dialog
+        dialog.destroyed.connect(
+            lambda _obj=None, key=path: self.stage_dialogs.pop(key, None))
+        dialog.show()
+
+    def _close_stage_log_handles(self) -> None:
+        for handle in list(self.stage_log_handles.values()):
+            try:
+                handle.flush()
+                handle.close()
+            except OSError:
+                pass
+        self.stage_log_handles.clear()
+
+    def _finalize_open_stages(self, status: str) -> None:
+        for stage_id in list(reversed(self.stage_stack)):
+            record = self.stage_records.get(stage_id)
+            if not record:
+                continue
+            record["status"] = status
+            record["finished_at"] = datetime.now(timezone.utc)
+            record["elapsed_seconds"] = max(
+                0.0, __import__("time").monotonic() -
+                float(record.get("started_monotonic", __import__("time").monotonic())))
+            handle = self.stage_log_handles.pop(stage_id, None)
+            if handle:
+                handle.write("\n\n[Stage %s after %.1f seconds]\n" % (
+                    status, record["elapsed_seconds"]))
+                handle.flush()
+                handle.close()
+            dialog = self.stage_dialogs.get(record.get("log", ""))
+            if dialog:
+                dialog.set_running(False)
+            self._refresh_stage_table_row(stage_id)
+        self.stage_stack = []
 
     def _process_error(self, error) -> None:
         self._read_process_output()
+        self._flush_process_output_buffer()
         message = "Process error: %s" % self.process.errorString()
-        self.log_view.appendPlainText(message)
+        self._append_overview_output(message + "\n")
         if self.task_log:
             self.task_log.write("\n" + message + "\n")
             self.task_log.flush()
         if error == QProcess.ProcessError.FailedToStart:
+            self._finalize_open_stages("failed")
             if self.task_log:
                 self.task_log.flush()
                 self.task_log.close()
@@ -1583,8 +1838,13 @@ class MainWindow(QMainWindow):
 
     def _process_finished(self, exit_code: int, exit_status) -> None:
         self._read_process_output()
+        self._flush_process_output_buffer()
         completed_kind = self.task_kind
         succeeded = exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit
+        terminal_stage_status = (
+            "completed" if succeeded else
+            "cancelled" if self._cancel_requested else "failed")
+        self._finalize_open_stages(terminal_stage_status)
         if self.task_log:
             self.task_log.flush()
             self.task_log.close()
@@ -1593,7 +1853,8 @@ class MainWindow(QMainWindow):
             self.task_label.setText("Completed")
             self.statusBar().showMessage("Task completed successfully", 8000)
         else:
-            self.task_label.setText("Failed (exit %d)" % exit_code)
+            self.task_label.setText(
+                "Cancelled" if self._cancel_requested else "Failed (exit %d)" % exit_code)
             self.statusBar().showMessage("Task failed; inspect the complete log", 10000)
         self._record_task(exit_code, exit_status == QProcess.ExitStatus.NormalExit)
 
