@@ -40,7 +40,7 @@ from .config import (
 from .legacy import import_legacy_text
 from .stage_logs import StageLogDialog
 from .remote import (
-    RemoteProfileError, build_remote_command, connection_test_command,
+    RemoteProfileError, build_remote_command, build_remote_task_command, connection_test_command,
     parse_remote_overrides, remote_artifact_path, remote_repo_path,
     scp_arguments, ssh_arguments, validate_connection_profile, validate_profile,
 )
@@ -673,7 +673,10 @@ class MainWindow(QMainWindow):
         try:
             build_args = build_arguments(remote_cfg, action)
             verify_args = build_arguments(remote_cfg, "verify")
-            remote_command = build_remote_command(profile, build_args, verify_args)
+            task_id = uuid.uuid4().hex
+            remote_command = build_remote_task_command(
+                profile, build_args, verify_args, task_id,
+                heartbeat_timeout=DEFAULT_HEARTBEAT_TIMEOUT)
             remote_artifact = remote_artifact_path(profile)
             local_dir = Path(profile["artifact_dir"]).expanduser()
             safe_name = re.sub(
@@ -695,6 +698,7 @@ class MainWindow(QMainWindow):
             "build_args": build_args,
             "verify_args": verify_args,
             "remote_command": remote_command,
+            "task_id": task_id,
             "remote_artifact": remote_artifact,
             "local_artifact": local_artifact,
             "local_dir": local_dir,
@@ -724,6 +728,15 @@ class MainWindow(QMainWindow):
             "remote_jorek_source": profile.get("remote_jorek_root", "") or
                 "(fetch JOREK source automatically)",
             "remote_python": profile.get("python", "python3"),
+            "remote_task_id": plan["task_id"],
+            "remote_supervisor_directory": str(
+                PurePosixPath(profile["remote_root"]) / ".jorek-build-studio" / "tasks"),
+            "heartbeat_interval_seconds": HEARTBEAT_INTERVAL,
+            "disconnect_grace_period_seconds": DEFAULT_HEARTBEAT_TIMEOUT,
+            "disconnect_policy": (
+                "The detached remote supervisor terminates the complete build process "
+                "group if no GUI heartbeat is received within 120 seconds."
+            ),
             "remote_artifact_staging_path": plan["remote_artifact"],
             "local_artifact_path": str(plan["local_artifact"]),
             "ssh_command": shlex.join([plan["ssh"]] + plan["ssh_args"]),
@@ -811,11 +824,26 @@ class MainWindow(QMainWindow):
             return
         self.remote_artifact_path = plan["remote_artifact"]
         self.remote_ssh_executable = plan["ssh"]
+        self.remote_scp_executable = plan["scp"]
         self.remote_cleanup_args = plan["cleanup_args"]
         self.remote_download_args = plan["download_args"]
         self.remote_local_artifact = plan["local_artifact"]
+        self.remote_task_id = plan["task_id"]
+        self.remote_task_profile = dict(plan["profile"])
+        self.remote_task_terminal = False
+        self.remote_task_result = {}
+        self.remote_task_started_at = datetime.now(timezone.utc)
+        self.remote_log_offset = 0
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.remote_stream_buffer = ""
+        self.remote_task_log_path = None
+        self.remote_reconnect_delay = 5
+        self.remote_task_metadata_file = (
+            self.config_path.parent / "logs" / ("remote-task-%s.json" % self.remote_task_id))
         self._start_external_process(
-            plan["ssh"], plan["ssh_args"], "remote-build")
+            plan["ssh"], plan["ssh_args"], "remote-start")
+        if self.task_stage_log_dir is not None:
+            self._save_remote_task_metadata()
 
 
     def _build_dependencies_tab(self) -> None:
