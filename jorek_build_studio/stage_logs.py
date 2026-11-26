@@ -23,6 +23,8 @@ class LogHighlighter(QSyntaxHighlighter):
     def __init__(self, document):
         super().__init__(document)
         self.rules = [
+            (re.compile(r"(?i)(?:ignored|expected|non-fatal).*(?:error|failure)|(?:error|failure).*(?:ignored|expected|non-fatal)"),
+             "#aab2c0", None, False),
             (re.compile(r"(?i)\b(?:fatal error|cmake error|traceback|assertionerror|undefined reference|error:|error occurred)\b"),
              "#ff6b6b", "#3b171b", True),
             (re.compile(r"(?i)\bwarning\s*:"),
