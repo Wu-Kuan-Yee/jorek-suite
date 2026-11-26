@@ -233,8 +233,8 @@ class MainWindow(QMainWindow):
         for editor in (self.param_grid_edit, self.param_max_edit, self.set_params_edit):
             editor.setMaximumHeight(64)
             editor.setPlaceholderText("One NAME=VALUE expression per line")
-        self.param_grid_edit.setPlaceholderText("n_tor=1,3,5\\nn_plane=8,16,32")
-        self.param_max_edit.setPlaceholderText("n_tor=17\\nn_plane=64")
+        self.param_grid_edit.setPlaceholderText("n_tor=1,3,5\nn_plane=8,16,32")
+        self.param_max_edit.setPlaceholderText("n_tor=17\nn_plane=64")
         self.set_params_edit.setPlaceholderText("n_order=5")
         parameter_form.addRow("Cartesian parameter grid", self.param_grid_edit)
         parameter_form.addRow("Maximum-value expansion", self.param_max_edit)
