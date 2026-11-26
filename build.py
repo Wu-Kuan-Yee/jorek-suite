@@ -1796,11 +1796,22 @@ def cmd_preflight(args) -> int:
     return 0 if report["ok"] else 1
 
 
+def _run_build_preflight(args, build_kind: str) -> None:
+    preflight_args = copy.copy(args)
+    preflight_args.command = "preflight"
+    preflight_args.for_command = build_kind
+    preflight_args.expected_commit = ""
+    preflight_args.json = False
+    if cmd_preflight(preflight_args) != 0:
+        raise BuildError("build preflight failed; compilation was not started")
+
+
 def cmd_build(args) -> int:
     banner(args)
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
+    _run_build_preflight(args, "build")
     common.emit_build_event(
         "stage_plan", phase="preparation",
         stages=[
@@ -1875,6 +1886,7 @@ def cmd_dist(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
+    _run_build_preflight(args, "dist")
     common.emit_build_event(
         "stage_plan", phase="preparation",
         stages=[
@@ -2016,6 +2028,7 @@ def cmd_full(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
+    _run_build_preflight(args, "full")
     common.emit_build_event(
         "stage_plan", phase="preparation",
         stages=[{
@@ -2450,6 +2463,29 @@ def make_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
+    p = _add_subparser(sub, "preflight",
+        "verify a complete build plan before compiling",
+        "Run repository, configuration, dependency, solver, JOREK source, variant, toolchain and storage checks without compiling or installing packages.",
+        """
+        EXAMPLES
+          build.py preflight --for-command dist --model 600
+          build.py preflight --for-command full --expected-commit FULL_COMMIT_SHA --json
+        """)
+    p.add_argument("--for-command", choices=("build", "dist", "full"), required=True,
+                   help="build command whose complete configuration should be checked")
+    p.add_argument("--expected-commit", default="",
+                   help="require the build driver checkout to match this exact commit SHA")
+    p.add_argument("--json", action="store_true",
+                   help="emit a machine-readable verification report")
+    p.add_argument("--solver-prefix", default=None, metavar="DIR",
+                   help="existing solver prefix used by the full build")
+    p.add_argument("--no-build-solvers", action="store_true",
+                   help="verify an existing solver prefix instead of building solver sources")
+    _add_build_options(p, suite_io=True)
+    p._option_string_actions["--matrix"].default = None
+    p._option_string_actions["--programs"].default = None
+    p.set_defaults(func=cmd_preflight)
+
     p = _add_subparser(sub, "doctor",
         "diagnose host, toolchain, JOREK checkout and disk",
         "Inspect the host platform, compiler/tool availability, JOREK checkout and disk space. No files are modified.",
@@ -2635,7 +2671,7 @@ def make_parser() -> argparse.ArgumentParser:
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
             for name, subparser in action.choices.items():
-                _add_global_to_sub(subparser, include_build_options=name in ("matrix", "build", "dist", "full"))
+                _add_global_to_sub(subparser, include_build_options=name in ("matrix", "build", "dist", "full", "preflight"))
     return parser
 
 
@@ -2741,7 +2777,7 @@ def _postprocess_args(args) -> None:
     if args.command == "deps":
         args.deps_action = args.action
     # JOREK program names are resolved lazily by cmd_dist/build.
-    if args.command in ("build", "dist", "matrix", "full"):
+    if args.command in ("build", "dist", "matrix", "full", "preflight"):
         if args.command == "matrix" and not hasattr(args, "set_param"):
             args.set_param = []
         args._program_names = ["jorek2_main"]
