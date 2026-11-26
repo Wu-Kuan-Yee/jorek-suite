@@ -1709,33 +1709,27 @@ def cmd_preflight(args) -> int:
         ]
 
     def check_dependency_plan():
-        if build_kind != "full" and args.deps == "none" and not args.dep_prefix:
-            raise BuildError("--deps none requires at least one --dep-prefix")
-        if build_kind == "full":
-            if args.dep_prefix:
-                policy = "provided prefixes"
-                prefixes = [Path(value).expanduser() for value in args.dep_prefix]
-            elif args.deps == "system":
-                policy = "system"
-                prefixes = _system_static_prefixes(args)
-            else:
-                policy = "source"
-                prefixes = []
+        if args.dep_prefix:
+            policy = "provided prefixes"
+            prefixes = [Path(value).expanduser() for value in args.dep_prefix]
         elif args.deps == "none":
-            prefixes = [Path(value).expanduser() for value in (args.dep_prefix or [])]
-            missing = _preflight_check_static_libraries(selected_names, prefixes)
-            if missing:
-                raise BuildError(
-                    "the supplied dependency prefixes are incomplete; missing: %s" %
-                    ", ".join(missing))
-            return ["Dependency building is disabled; all selected static libraries are present."]
+            policy = "none"
+            prefixes = []
+        elif args.deps == "system":
+            policy = "system"
+            prefixes = _system_static_prefixes(args)
+        elif build_kind == "full":
+            policy = "source"
+            prefixes = []
         else:
             probe = copy.copy(args)
             _wait_for_deps_policy(probe)
             policy = probe.deps
             prefixes = [Path(value).expanduser() for value in (probe.dep_prefix or [])]
             if policy == "system":
-                prefixes.extend(path for path in _system_static_prefixes(probe) if path not in prefixes)
+                prefixes.extend(
+                    path for path in _system_static_prefixes(probe)
+                    if path not in prefixes)
 
         order = deps.DepManager(None).resolve(selected_names)
         unsupported = [
@@ -1744,25 +1738,50 @@ def cmd_preflight(args) -> int:
             if not item.supports(platform) and not item.optional
         ]
         if unsupported:
-            raise BuildError("selected dependencies do not support this platform: %s" % ", ".join(unsupported))
-        if policy in ("system", "provided prefixes"):
-            missing = _preflight_check_static_libraries(selected_names, prefixes)
-            if missing:
-                raise BuildError(
-                    "selected dependency prefixes are incomplete; missing: %s" %
-                    ", ".join(missing))
-        elif getattr(args, "offline", False):
-            source_dirs, _urls = _source_options(args)
-            missing = _preflight_cache_check(order, args, source_dirs)
-            if missing:
-                raise BuildError("offline source cache is incomplete: %s" % ", ".join(missing))
-        effective_policy["value"] = policy
-        return [
+            raise BuildError(
+                "selected dependencies do not support this platform: %s" %
+                ", ".join(unsupported))
+
+        details = [
             "Resolved %d dependencies in build order: %s" %
             (len(order), " -> ".join(item.name for item in order)),
             "Effective dependency policy: %s" % policy,
             "All selected dependencies support %s." % platform.system,
         ]
+        if policy in ("system", "provided prefixes"):
+            missing = _preflight_check_static_libraries(selected_names, prefixes)
+            if missing:
+                raise BuildError(
+                    "selected dependency prefixes are incomplete: %s" %
+                    ", ".join(missing))
+            details.append(
+                "All declared static libraries and headers are present in the selected prefixes.")
+        elif policy == "none":
+            if prefixes:
+                missing = _preflight_check_static_libraries(selected_names, prefixes)
+                if missing:
+                    raise BuildError(
+                        "--deps none was given, but the supplied prefixes are incomplete: %s" %
+                        ", ".join(missing))
+                details.append(
+                    "Dependency building is disabled; supplied prefixes contain all declared artifacts.")
+            else:
+                details.append(
+                    "Dependency building and prefix checks are disabled by --deps none.")
+                details.append(
+                    "External libraries are assumed to be available through the host environment; "
+                    "their presence cannot be verified without an explicit --dep-prefix.")
+                effective_policy["value"] = policy
+                return CheckResult("warning", details)
+        elif getattr(args, "offline", False):
+            source_dirs, _urls = _source_options(args)
+            missing = _preflight_cache_check(order, args, source_dirs)
+            if missing:
+                raise BuildError(
+                    "offline source cache is incomplete: %s" % ", ".join(missing))
+
+        effective_policy["value"] = policy
+        return details
 
     def check_solver_plan():
         if build_kind != "full":
