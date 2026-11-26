@@ -468,7 +468,10 @@ class MainWindow(QMainWindow):
             "reused remotely; enter remote-specific compiler and prefix paths in "
             "the JSON override field. Supported keys include cc, cxx, fc, "
             "toolchain_prefix, mpi_prefix, solver_prefix, source_dir, imas_root, "
-            "catalyst_root and dep_prefixes.")
+            "catalyst_root and dep_prefixes. The GUI sends a heartbeat every 15 seconds; "
+            "the configurable disconnect grace period defaults to 120 seconds. If the "
+            "connection is not restored before it expires, the remote supervisor stops "
+            "the build process group.")
         note.setWordWrap(True)
         outer.addWidget(note)
 
