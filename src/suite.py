@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import shlex
 import struct
 import subprocess
 import sys
@@ -431,7 +432,7 @@ class SuiteBuilder:
 def _run(argv: Sequence[str]) -> None:
     command = list(map(str, argv))
     if os.environ.get("JOREK_BUILD_STUDIO_EVENTS") == "1":
-        print("  + " + " ".join(command), flush=True)
+        print("  + " + shlex.join(command), flush=True)
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
         chunks = []
