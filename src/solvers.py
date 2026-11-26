@@ -22,6 +22,7 @@ from common import (
     read_text,
     run,
     write_text,
+    emit_build_event,
 )
 
 
@@ -380,8 +381,35 @@ class SolverBuild:
                          prefix / "include" / "pastix_fortran.h")
 
     def build(self) -> None:
-        self.hwloc()
-        self.gklib_metis()
-        self.pastix6()
-        self.strumpack()
-        self.pastix5()
+        stages = [
+            ("hwloc", "Build hwloc", self.hwloc),
+            ("gklib-metis", "Build GKlib and METIS", self.gklib_metis),
+            ("pastix6", "Build PaStiX 6", self.pastix6),
+            ("strumpack", "Build STRUMPACK", self.strumpack),
+            ("pastix5", "Build PaStiX 5", self.pastix5),
+        ]
+        emit_build_event(
+            "phase_start", phase="solvers", label="Solver backends",
+            total=len(stages))
+        completed = 0
+        for name, label, builder in stages:
+            stage_id = "solver:" + name
+            emit_build_event(
+                "stage_start", id=stage_id, label=label,
+                category="Solver", phase="solvers",
+                log_path=str(self.log(name)))
+            status = "completed"
+            error = ""
+            try:
+                builder()
+            except Exception as exc:
+                status = "failed"
+                error = str(exc)
+                raise
+            finally:
+                emit_build_event(
+                    "stage_finish", id=stage_id, status=status, error=error)
+                completed += 1
+                emit_build_event(
+                    "phase_progress", phase="solvers",
+                    completed=completed, total=len(stages))
