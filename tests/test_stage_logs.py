@@ -6,8 +6,9 @@ import unittest
 from pathlib import Path
 
 try:
+    from PySide6.QtGui import QTextDocument
     from PySide6.QtWidgets import QApplication, QPlainTextEdit
-    from jorek_build_studio.stage_logs import StageLogDialog
+    from jorek_build_studio.stage_logs import LogHighlighter, StageLogDialog
     QT_AVAILABLE = True
 except ImportError:
     QApplication = None
@@ -22,6 +23,29 @@ class StageLogDialogTests(unittest.TestCase):
     def setUpClass(cls):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         cls.app = QApplication.instance() or QApplication([])
+
+    def test_gnu_ar_ignored_modifier_diagnostics_are_highlighted_as_warnings(self):
+        messages = (
+            "/usr/bin/ar: `u' modifier ignored because `D' is the default (see `U')",
+            "/usr/bin/ar: `u' 修饰符被忽略，因为 `D' 为默认（参见 `U'）",
+        )
+        for message in messages:
+            with self.subTest(message=message):
+                document = QTextDocument()
+                highlighter = LogHighlighter(document)
+                document.setPlainText(message)
+                highlighter.rehighlight()
+                self.app.processEvents()
+
+                formats = document.begin().layout().formats()
+                warning_formats = [
+                    item.format for item in formats
+                    if item.format.foreground().color().name() == "#ffca68"
+                ]
+                self.assertTrue(warning_formats)
+                self.assertEqual(
+                    warning_formats[0].background().color().name(), "#352b16")
+                self.assertIsNotNone(highlighter)
 
     def test_live_log_follows_appended_output(self):
         with tempfile.TemporaryDirectory() as temporary:
