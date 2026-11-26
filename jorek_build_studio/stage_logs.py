@@ -102,6 +102,7 @@ class StageLogDialog(QDialog):
             if tail:
                 self.editor.moveCursor(QTextCursor.MoveOperation.End)
                 self.editor.insertPlainText(tail)
+            self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
             self.timer.stop()
         self.editor.ensureCursorVisible()
 
