@@ -834,6 +834,7 @@ class MainWindow(QMainWindow):
 
     def _build_build_tab(self) -> None:
         page = QWidget()
+        self.build_page = page
         outer = QVBoxLayout(page)
         actions = QHBoxLayout()
         actions.addWidget(_button("Preview matrix", self.preview_matrix, page))
@@ -1567,6 +1568,8 @@ class MainWindow(QMainWindow):
         self.log_view.appendPlainText("$ " + " ".join(
             shlex.quote(part) for part in self.current_command))
         self.task_label.setText("Running: " + kind)
+        if kind in ("build", "dependencies", "bootstrap", "remote-build"):
+            self.tabs.setCurrentWidget(self.build_page)
         self.log_path_label.setText(str(self.task_log_path))
         self.statusBar().showMessage("Running %s…" % kind)
         if not preserve_stages:
