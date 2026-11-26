@@ -84,6 +84,22 @@ WORK_DEFAULT = HERE / "build"
 JOREK_GIT_URL = "https://github.com/iterorganization/JOREK.git"
 
 
+def _tracked_stage(stage_id: str, label: str, category: str, callback,
+                   log_path: Optional[Path] = None, phase: str = ""):
+    """Run one visible build stage and report its terminal state to the GUI."""
+    common.emit_build_event(
+        "stage_start", id=stage_id, label=label, category=category,
+        phase=phase, log_path=str(log_path) if log_path else "")
+    try:
+        result = callback()
+    except BaseException as exc:
+        common.emit_build_event(
+            "stage_finish", id=stage_id, status="failed", error=str(exc))
+        raise
+    common.emit_build_event("stage_finish", id=stage_id, status="completed")
+    return result
+
+
 def _ensure_jorek_source(args) -> Path:
     """Validate --root; with --fetch-source clone into the unified source tree."""
     work = Path(args.work).expanduser()
@@ -110,9 +126,15 @@ def _ensure_jorek_source(args) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     url = getattr(args, "jorek_url", None) or JOREK_GIT_URL
     print("JOREK source not found; cloning %s into %s" % (url, target))
-    run([git, "clone", "--depth", "1", url, str(target)])
-    if not (target / "jorek2_main.f90").exists():
-        raise BuildError("cloned source at %s does not look like JOREK" % target)
+    def clone_source():
+        run([git, "clone", "--depth", "1", url, str(target)],
+            log=work / "logs" / "jorek-source.log")
+        if not (target / "jorek2_main.f90").exists():
+            raise BuildError("cloned source at %s does not look like JOREK" % target)
+        return target
+    _tracked_stage(
+        "source:jorek", "Fetch JOREK source", "Source",
+        clone_source, work / "logs" / "jorek-source.log")
     args.root = str(target)
     return target
 
@@ -709,9 +731,24 @@ def _collect_variants(args, platform: PlatformInfo, toolchain) -> List[BuiltVari
         for spec in unique:
             print("  %-58s model=%s solver=%s params=%s" % (spec.name, spec.model, spec.features.solver, ",".join(spec.param_tokens())))
         return []
+    common.emit_build_event(
+        "phase_start", phase="variants", label="JOREK variants",
+        total=len(unique))
     results = []
+    completed = 0
     for spec in unique:
-        results.append(build_one(args, spec, platform, toolchain))
+        log_path = Path(args.work) / "logs" / (spec.name + "-make.log")
+        try:
+            result = _tracked_stage(
+                "variant:" + spec.name, spec.name, "JOREK variant",
+                lambda spec=spec: build_one(args, spec, platform, toolchain),
+                log_path, phase="variants")
+            results.append(result)
+        finally:
+            completed += 1
+            common.emit_build_event(
+                "phase_progress", phase="variants",
+                completed=completed, total=len(unique))
     return results
 
 
@@ -733,8 +770,9 @@ def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, L
     obj = objdir / ("jorek_suite" + platform.exe_suffix + ".o")
     puff_obj = objdir / ("puff" + platform.exe_suffix + ".o")
     include = HERE / "src"
-    run([cc] + flags + ["-I", str(include), "-c", str(include / "jorek_suite.c"), "-o", str(obj)])
-    run([cc] + flags + ["-I", str(include), "-c", str(include / "puff.c"), "-o", str(puff_obj)])
+    log = work / "logs" / "suite-launcher.log"
+    run([cc] + flags + ["-I", str(include), "-c", str(include / "jorek_suite.c"), "-o", str(obj)], log=log)
+    run([cc] + flags + ["-I", str(include), "-c", str(include / "puff.c"), "-o", str(puff_obj)], log=log)
     if platform.is_macos:
         return obj, [obj, puff_obj]
     exe = objdir / ("jorek-suite" + platform.exe_suffix)
@@ -742,7 +780,8 @@ def _compile_launcher(args, platform: PlatformInfo, work: Path) -> Tuple[Path, L
     if platform.is_linux or platform.is_bsd or platform.is_windows:
         link_flags.append("-static")
     run([cc] + link_flags + [str(obj), str(puff_obj), "-o", str(exe)] +
-        (["-mconsole"] if platform.is_windows else []))
+        (["-mconsole"] if platform.is_windows else []),
+        log=work / "logs" / "suite-launcher.log")
     return exe, [obj, puff_obj]
 
 
@@ -757,7 +796,8 @@ def _compile_runtime_tool(args, platform: PlatformInfo, work: Path) -> Path:
     flags = ["-O2", "-std=c++17", "-Wall", "-Wextra"]
     if platform.is_linux or platform.is_bsd or platform.is_windows:
         flags.append("-static")
-    run([cxx] + flags + [str(source), "-o", str(output)])
+    run([cxx] + flags + [str(source), "-o", str(output)],
+        log=Path(args.work) / "logs" / "jorek-tool.log")
     return output
 
 
@@ -950,7 +990,11 @@ def _copy_pe_private_deps(binary: Path, directory: Path) -> None:
 
 
 def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> Path:
-    launcher, objects = _compile_launcher(args, platform, Path(args.work))
+    work = Path(args.work)
+    launcher, objects = _tracked_stage(
+        "suite:launcher", "Compile suite launcher", "Packaging",
+        lambda: _compile_launcher(args, platform, work),
+        work / "logs" / "suite-launcher.log")
     output = Path(args.output) if args.output else (Path(args.work) / "dist" / ("jorek-suite" + platform.exe_suffix))
     remove = getattr(args, "remove_tools", False)
     builder = suite.SuiteBuilder(
@@ -974,15 +1018,26 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
         builder.add_helper(helper_name, helper_path)
     for rel, path in _runtime_payloads(Path(args.root)):
         builder.add_helper(rel, path)
-    tool = _compile_runtime_tool(args, platform, Path(args.work))
+    tool = _tracked_stage(
+        "suite:runtime-tool", "Compile JOREK runtime helper", "Packaging",
+        lambda: _compile_runtime_tool(args, platform, work),
+        work / "logs" / "jorek-tool.log")
     builder.add_helper("bin/jorek-tool" + platform.exe_suffix, tool)
     output.parent.mkdir(parents=True, exist_ok=True)
-    if platform.is_macos:
-        cc = os.environ.get("CC") or which("cc") or "cc"
-        builder.build_macho_section(output, [cc], objects)
-    else:
-        builder.build(output)
-    ok, offenders = jorek.verify_static(output, platform)
+    def package_suite():
+        if platform.is_macos:
+            cc = os.environ.get("CC") or which("cc") or "cc"
+            builder.build_macho_section(output, [cc], objects)
+        else:
+            builder.build(output)
+        return output
+    _tracked_stage(
+        "suite:archive", "Assemble single-file suite", "Packaging",
+        package_suite, work / "logs" / "suite-archive.log")
+    ok, offenders = _tracked_stage(
+        "suite:verify", "Verify packaged suite", "Verification",
+        lambda: jorek.verify_static(output, platform),
+        work / "logs" / "suite-verify.log")
     if not ok and not getattr(args, "allow_shared", False):
         raise BuildError("suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
     print("")
