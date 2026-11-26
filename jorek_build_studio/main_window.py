@@ -857,8 +857,18 @@ class MainWindow(QMainWindow):
         self.remote_stream_buffer = ""
         self.remote_task_log_path = None
         self.remote_reconnect_delay = 5
+        metadata_dir = self.config_path.parent / "logs"
         self.remote_task_metadata_file = (
-            self.config_path.parent / "logs" / ("remote-task-%s.json" % self.remote_task_id))
+            metadata_dir / ("remote-task-%s.json" % self.remote_task_id))
+        # The GUI runs one task at a time. Retire stale recovery records from
+        # previously completed tasks before registering this new task.
+        try:
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            for stale in metadata_dir.glob("remote-task-*.json"):
+                if stale != self.remote_task_metadata_file:
+                    stale.unlink(missing_ok=True)
+        except OSError:
+            pass
         self._start_external_process(
             plan["ssh"], plan["ssh_args"], "remote-start")
         if self.task_stage_log_dir is not None:
@@ -988,7 +998,11 @@ class MainWindow(QMainWindow):
     def _offer_remote_task_recovery(self) -> None:
         log_dir = self.config_path.parent / "logs"
         try:
-            pending = sorted(log_dir.glob("remote-task-*.json"))
+            pending = sorted(
+                log_dir.glob("remote-task-*.json"),
+                key=lambda item: item.stat().st_mtime if item.exists() else 0,
+                reverse=True,
+            )
         except OSError:
             return
         if not pending:
