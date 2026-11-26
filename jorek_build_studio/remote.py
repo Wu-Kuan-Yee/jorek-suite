@@ -398,6 +398,43 @@ def _remote_stage(stage_id: str, label: str, category: str, command: str) -> str
     )
 
 
+def _preflight_build_args(
+    build_args: List[str], expected_commit: str,
+) -> List[str]:
+    """Reuse the exact build options while replacing dist/full with preflight."""
+    value_options = {
+        "--work", "--jobs", "--root", "--jorek-url", "--cc", "--cxx", "--fc",
+        "--mpi-prefix", "--toolchain-prefix", "--source-dir", "--ima-root",
+        "--imas-root", "--catalyst-root", "--dep-prefix", "--source", "--url",
+        "--mirror", "--deps", "--profile", "--solver", "--model", "--matrix",
+        "--programs", "--family-toggle", "--param-grid", "--param-max", "--set",
+        "--solver-prefix", "--output", "--compression",
+    }
+    args = list(build_args)
+    action_index = None
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token in value_options:
+            index += 2
+            continue
+        if token in ("dist", "full"):
+            action_index = index
+            break
+        index += 1
+    if action_index is None:
+        raise RemoteProfileError(
+            "remote build preflight supports the dist and full build commands only")
+    action = args[action_index]
+    args[action_index] = "preflight"
+    args.extend([
+        "--for-command", action,
+        "--expected-commit", str(expected_commit),
+        "--json",
+    ])
+    return args
+
+
 def build_remote_command(
     profile: Dict[str, Any],
     build_args: List[str],
@@ -422,22 +459,11 @@ def build_remote_command(
         [python, repo + "/build.py"] + list(verify_args))
     suite_source = str(PurePosixPath(str(profile["remote_work"])) / "dist" / "jorek-suite")
     transfer_path = remote_artifact_path(profile)
-    source_path = str(PurePosixPath(repo) / "src")
-    audit_script = (
-        "import deps; item=deps.DEPENDENCIES.get('pastix6'); "
-        "source_kind=getattr(item, 'source_kind', 'archive') if item else 'missing'; "
-        "git_ref=getattr(item, 'git_ref', '') if item else ''; "
-        "submodules=bool(getattr(item, 'git_submodules', False)) if item else False; "
-        "print('PaStiX 6.3.2 recipe: source_kind=%s, git_ref=%s, recursive_submodules=%s' "
-        "% (source_kind, git_ref, submodules)); "
-        "assert item is not None and source_kind == 'git' and git_ref == 'v6.3.2' "
-        "and submodules, "
-        "'Pinned commit does not contain the recursive PaStiX 6.3.2 source fix. "
-        "Update the pinned repository commit to a revision containing that fix.'"
-    )
-    audit_command = (
-        "PYTHONPATH=" + shlex.quote(source_path) + " " +
-        shlex.join([python, "-c", audit_script])
+    preflight_args = _preflight_build_args(build_args, commit)
+    preflight_command = (
+        "PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 "
+        "JOREK_BUILD_STUDIO_EVENTS=1 " +
+        shlex.join([python, repo + "/build.py"] + preflight_args)
     )
     repository_command = (
         "if [ ! -d " + shlex.quote(repo + "/.git") + " ]; then "
@@ -458,8 +484,8 @@ def build_remote_command(
                 "category": "Remote preparation",
             },
             {
-                "id": "remote:source-audit",
-                "label": "Verify pinned PaStiX build recipe",
+                "id": "remote:preflight",
+                "label": "Verify complete remote build plan",
                 "category": "Remote preparation",
             },
             {
@@ -486,8 +512,8 @@ def build_remote_command(
             "remote:repository", "Fetch and pin jorek-suite repository",
             "Remote preparation", repository_command),
         _remote_stage(
-            "remote:source-audit", "Verify pinned PaStiX build recipe",
-            "Remote preparation", audit_command),
+            "remote:preflight", "Verify complete remote build plan",
+            "Remote preparation", preflight_command),
         _remote_stage(
             "remote:build", "Build JOREK suite on remote host",
             "Remote build", build_command),
