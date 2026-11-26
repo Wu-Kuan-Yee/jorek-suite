@@ -167,12 +167,36 @@ confirmation before connecting.
 
 A build checks out a pinned full commit SHA, runs the selected packaged (dist)
 or full-solver build, runs the remote portability verifier, and downloads the
-artifact only after verification succeeds. Remote stage events and compiler
-output are streamed over SSH into the same per-stage log interface used by
-local builds. Build-only mode is not offered here because it does not produce
-the single-file suite that this workflow transfers. Enter machine-specific
-paths as JSON overrides. The local machine needs OpenSSH ssh and scp; the
-remote machine needs Git, Python 3, and a working native compiler/MPI/dependency
+artifact only after verification succeeds. The build runs under a detached
+remote supervisor, not as a foreground child of the SSH connection. The
+supervisor stores a task ID, state, heartbeat, complete output transcript, and
+process-group ID below:
+
+```
+<remote_root>/.jorek-build-studio/tasks/<task-id>/
+```
+
+The GUI sends a heartbeat every 15 seconds. If no heartbeat is received for
+120 seconds, the supervisor treats the GUI as disconnected, sends SIGTERM to
+the complete build process group, waits up to five seconds, and then sends
+SIGKILL to any remaining members. The same process-group termination is used
+for an explicit Cancel request. The SSH log stream can disconnect and reconnect
+without restarting the build; the GUI resumes from the last completely
+received log frame. If the GUI itself exits or the computer loses power, the
+remote lease still expires and stops the build. When Build Studio is opened
+again, it offers to resume monitoring a task recorded in its local recovery
+metadata. A completed task's remote transcript and state are retained so that
+a later reconnect can recover the final output and status.
+
+Remote stage events and compiler output are streamed into the same per-stage
+log interface used by local builds. The remote supervisor also retains the
+complete raw transcript independently of the GUI. Remote task directories are
+not automatically deleted; remove old task directories from the path above
+when their logs are no longer needed. Build-only mode is not offered here
+because it does not produce the single-file suite that this workflow transfers.
+Enter machine-specific paths as JSON overrides. The local machine needs
+OpenSSH ssh and scp; the remote machine needs Git, Python 3, and a POSIX
+process model, in addition to a working native compiler/MPI/dependency
 environment. Configure public-key or agent authentication in OpenSSH; the
 builder uses batch mode and does not prompt for passwords. Strict host-key
 checking is enabled by default; pre-populate known_hosts or deliberately
@@ -210,13 +234,18 @@ Configuration writes use a temporary file followed by an atomic replace.
 - The GUI does not delete build directories automatically.
 - A full solver build can be very large; inspect the matrix and available disk
   space first.
-- Cancelling sends a terminate signal to the build driver and escalates to a
-  kill if it does not stop. Depending on the operating system and the active
-  compiler/MPI child process, verify that no orphaned compiler processes remain.
+- Local cancellation sends a terminate signal to the build driver and
+  escalates to a kill if it does not stop.
+- Remote cancellation is delivered to the detached supervisor, which
+  terminates the build process group rather than merely killing the local SSH
+  client. If the network is unavailable, the 120-second heartbeat lease is the
+  fallback cleanup mechanism.
+- The supervisor controls the build's process group. A build script that
+  deliberately daemonizes descendants into a different session can escape
+  process-group cleanup; ordinary compiler, linker, make, and dependency
+  subprocesses remain in the managed group.
 - A dry run is useful for checking arguments and variant plans, but it does
   not validate the resulting executable.
-- Remote cancellation terminates the local SSH client. If the connection
-  drops during a remote build, inspect the remote process list before retrying.
 - Signed release installers, artifact SBOM generation, and exhaustive
   target-side portability certification remain future work.
 
