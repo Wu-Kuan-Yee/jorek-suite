@@ -391,6 +391,14 @@ class SolverBuild:
         emit_build_event(
             "phase_start", phase="solvers", label="Solver backends",
             total=len(stages))
+        emit_build_event(
+            "stage_plan", phase="solvers",
+            stages=[{
+                "id": "solver:" + name,
+                "label": label,
+                "category": "Solver",
+                "log_path": str(self.log(name)),
+            } for name, label, _builder in stages])
         completed = 0
         for name, label, builder in stages:
             stage_id = "solver:" + name
