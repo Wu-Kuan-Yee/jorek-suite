@@ -342,10 +342,15 @@ register(
         builder="metis",
         required_paths=("CMakeLists.txt", "include/metis.h", "include/CMakeLists.txt"),
         recipe_revision="1"),
-    dep("parmetis", "4.0.3", "https://github.com/KarypisLab/ParMETIS/archive/refs/tags/v4.0.3.tar.gz",
+    dep("parmetis", "4.0.3", "https://github.com/KarypisLab/ParMETIS.git",
         license="ParMETIS-license (non-commercial)", homepage="https://github.com/KarypisLab/ParMETIS",
         deps=("metis", "mpich"), static_libs=("libparmetis.a",), includes=("parmetis.h",),
-        builder="parmetis", note="The ParMETIS licence is not OSI-approved; review it before redistribution."),
+        builder="parmetis", source_kind="git",
+        git_ref="fc99804e3f043dd951e37775e30db697444816b8",
+        required_paths=("Makefile", "CMakeLists.txt", "include/parmetis.h",
+                        "libparmetis/CMakeLists.txt", "programs/CMakeLists.txt"),
+        recipe_revision="1",
+        note="Pinned to the official 4.0.3 source commit. The ParMETIS licence is not OSI-approved; review it before redistribution."),
     dep("scotch", "6.1.2", "https://gitlab.inria.fr/scotch/scotch/-/archive/v6.1.2/scotch-v6.1.2.tar.gz",
         license="CeCILL-C", homepage="https://www.labri.fr/perso/pelegrin/scotch/",
         deps=("mpich",), static_libs=("libscotch.a", "libscotcherr.a", "libesmumps.a",
@@ -552,6 +557,14 @@ class BuildContext:
             return False
         if data.get("version") != dep.version or data.get("url") != dep.url:
             return False
+        # Source identity is part of the build recipe.  Preserve compatibility
+        # with older archive stamps while invalidating stale Git checkouts.
+        if data.get("source_kind", "archive") != dep.source_kind:
+            return False
+        if dep.source_kind == "git" and (
+                data.get("git_ref", "") != dep.git_ref or
+                bool(data.get("git_submodules", False)) != dep.git_submodules):
+            return False
         if (dep.recipe_revision and
                 data.get("recipe_revision") != dep.recipe_revision):
             return False
@@ -564,7 +577,13 @@ class BuildContext:
         return True
 
     def mark_built(self, dep: Dependency) -> None:
-        value = {"name": dep.name, "version": dep.version, "url": dep.url, "time": _now()}
+        value = {
+            "name": dep.name, "version": dep.version, "url": dep.url,
+            "source_kind": dep.source_kind, "time": _now(),
+        }
+        if dep.source_kind == "git":
+            value["git_ref"] = dep.git_ref
+            value["git_submodules"] = dep.git_submodules
         if dep.recipe_revision:
             value["recipe_revision"] = dep.recipe_revision
         self.stamps[dep.name] = value
@@ -679,15 +698,24 @@ def _clone_git_source(
                 (dep.name, ", ".join(missing)))
         print("  %-18s reusing offline Git checkout at %s" % (dep.name, actual))
         return destination
+
+    # A full object ID is not a branch or tag, so --branch/--depth cannot be
+    # used for it.  Clone the repository history, then detach at the exact
+    # commit.  Named branches and tags retain the faster shallow-clone path.
+    pinned_commit = bool(re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", dep.git_ref))
     failures: List[str] = []
     for url in urls:
         if destination.exists():
             shutil.rmtree(destination)
-        args = [git, "clone", "--depth", "1"]
-        if dep.git_ref:
-            args.extend(["--branch", dep.git_ref])
-        if dep.git_submodules:
-            args.extend(["--recurse-submodules", "--shallow-submodules"])
+        args = [git, "clone"]
+        if pinned_commit:
+            args.append("--no-checkout")
+        else:
+            args.extend(["--depth", "1"])
+            if dep.git_ref:
+                args.extend(["--branch", dep.git_ref])
+            if dep.git_submodules:
+                args.extend(["--recurse-submodules", "--shallow-submodules"])
         args.extend([url, str(destination)])
         env = ctx.build_env(dep)
         env["GIT_TERMINAL_PROMPT"] = "0"
@@ -697,6 +725,27 @@ def _clone_git_source(
             failures.append("%s: git clone exited with status %d" % (
                 url, result.returncode))
             continue
+
+        if pinned_commit:
+            checkout = run(
+                [git, "-C", str(destination), "checkout", "--detach", dep.git_ref],
+                cwd=ctx.work, env=env, log=ctx.log_path(dep.name), check=False)
+            if checkout.returncode != 0:
+                failures.append(
+                    "%s: could not check out pinned commit %s" % (url, dep.git_ref))
+                shutil.rmtree(destination, ignore_errors=True)
+                continue
+            if dep.git_submodules:
+                submodules = run(
+                    [git, "-C", str(destination), "submodule", "update",
+                     "--init", "--recursive"],
+                    cwd=ctx.work, env=env, log=ctx.log_path(dep.name), check=False)
+                if submodules.returncode != 0:
+                    failures.append(
+                        "%s: recursive submodule checkout failed at %s" %
+                        (url, dep.git_ref))
+                    shutil.rmtree(destination, ignore_errors=True)
+                    continue
 
         missing = [
             relative for relative in dep.required_paths
@@ -1159,9 +1208,19 @@ def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
 
 def build_parmetis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     env = ctx.build_env(dep)
-    run([ctx.make, "config", "shared=0", "prefix=%s" % ctx.prefix], cwd=src, env=env,
+    compiler = which("mpicc", ctx.path) or "mpicc"
+    # ParMETIS's Makefile enables SHARED whenever the variable is set at all;
+    # passing shared=0 therefore enables shared-library mode.  Omit it to use
+    # the upstream static default, and point both prerequisites at our prefix.
+    run([
+        ctx.make, "config",
+        "cc=%s" % compiler,
+        "prefix=%s" % ctx.prefix,
+        "gklib_path=%s" % ctx.prefix,
+        "metis_path=%s" % ctx.prefix,
+    ], cwd=src, env=env, log=ctx.log_path(dep.name))
+    run([ctx.make, "-j%d" % max(1, ctx.jobs)], cwd=src, env=env,
         log=ctx.log_path(dep.name))
-    run([ctx.make, "-j%d" % max(1, ctx.jobs)], cwd=src, env=env, log=ctx.log_path(dep.name))
     run([ctx.make, "install"], cwd=src, env=env, log=ctx.log_path(dep.name))
 
 
