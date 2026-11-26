@@ -1186,7 +1186,9 @@ def build_pastix5(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         "-DBLAS_LIBRARIES=%s" % (ctx.prefix / "lib" / "libopenblas.a"),
         "-DLAPACK_LIBRARIES=%s" % (ctx.prefix / "lib" / "libopenblas.a"),
         "-DBLA_VENDOR=OpenBLAS",
-        "-DMETIS_LIBRARIES=%s;-lm" % (ctx.prefix / "lib" / "libmetis.a"),
+        "-DMETIS_LIBRARIES=%s;%s;-lm" % (
+            ctx.prefix / "lib" / "libmetis.a",
+            ctx.prefix / "lib" / "libGKlib.a"),
         "-DMETIS_INCLUDE_DIRS=%s" % (ctx.prefix / "include"),
         "-DHWLOC_DIR=%s" % ctx.prefix,
         "-DHWLOC_LIBRARIES=%s;-lm" % (ctx.prefix / "lib" / "libhwloc.a"),
