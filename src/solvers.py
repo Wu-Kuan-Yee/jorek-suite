@@ -199,10 +199,10 @@ class SolverBuild:
                 source = destination
                 break
             if source is None:
-                raise BuildError("could not clone %s:\\n  %s" % (
-                    recipe.name, "\\n  ".join(failures)))
+                raise BuildError("could not clone %s:\n  %s" % (
+                    recipe_name, "\n  ".join(failures)))
         else:
-            urls = list(self.url_overrides.get(recipe.directory, [])) + [recipe.url]
+            urls = list(self.url_overrides.get(directory, [])) + [recipe.url]
             archive = self.downloader.fetch(urls, filename)
             destination = ensure_dir(self.work / "src" / directory)
             source = extract_archive(archive, destination)
@@ -213,7 +213,7 @@ class SolverBuild:
         ]
         missing_alternatives = [
             " or ".join(alternatives)
-            for alternatives in recipe.required_any_paths
+            for alternatives in getattr(recipe, "required_any_paths", ())
             if not any((source / relative).exists() for relative in alternatives)
         ]
         if missing or missing_alternatives:
