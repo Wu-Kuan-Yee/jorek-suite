@@ -949,10 +949,10 @@ class MakeBuilder:
                 pass
         if layout.platform.is_macos:
             lines.append("LIBS += -lxml2 -llzma -framework IOKit -framework CoreFoundation -framework OpenCL")
-        # PaStiX 6 bundles a private SCOTCH copy whose graph.c exports the same
-        # symbols as the standalone SCOTCH used by MUMPS.  Both definitions are
-        # equivalent; permit the duplicate when several direct solvers are
-        # linked into one executable.
+        # Several solver backends can pull overlapping graph-ordering
+        # support objects (METIS/GKlib) into one static executable.  Permit
+        # equivalent duplicate definitions when multiple direct solvers are
+        # deliberately linked together.
         if solver == "all":
             lines.append("LIBS += -Wl,--allow-multiple-definition")
         if self.full_static and not layout.platform.is_macos:
