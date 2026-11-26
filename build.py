@@ -1551,7 +1551,7 @@ def cmd_preflight(args) -> int:
         return [
             "Validated %d source recipes used by the full-solver build path." %
             len(solvers.SOLVER_SOURCE_RECIPES),
-            "PaStiX 6 uses the same authoritative dependency recipe as the dist build path.",
+            "Shared source records are reused across dependency and solver build paths.",
         ]
 
     def check_source_overrides():
@@ -1658,8 +1658,7 @@ def cmd_preflight(args) -> int:
             raise BuildError("the selected solver source recipes are unsupported on this platform")
         return [
             "Full solver source plan: %s" % ", ".join(sorted(solvers.SOLVER_SOURCE_RECIPES)),
-            "PaStiX 6 is pinned to %s and uses recursive submodules." %
-            solvers.SOLVER_SOURCE_RECIPES["pastix6"].git_ref,
+            "All selected solver source recipes have validated acquisition metadata and required source paths.",
         ]
 
     def check_jorek_source():
