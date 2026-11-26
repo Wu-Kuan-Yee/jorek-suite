@@ -71,6 +71,8 @@ class Dependency:
     git_ref: str = ""
     git_submodules: bool = False
     required_paths: Tuple[str, ...] = ()
+    required_any_paths: Tuple[Tuple[str, ...], ...] = ()
+    filename: str = ""
     recipe_revision: str = ""
 
     def supports(self, platform: PlatformInfo) -> bool:
@@ -349,6 +351,20 @@ register(
         deps=("scalapack",), static_libs=("libdmumps.a", "libzmumps.a",
                                                              "libmumps_common.a", "libpord.a"),
         includes=("dmumps_struc.h", "mumps_compat.h"), builder="mumps"),
+    dep("pastix5", "5.2.3", "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
+        license="CeCILL-C", homepage="https://solverstack.gitlabpages.inria.fr/pastix/",
+        deps=("mpich", "openblas", "metis", "hwloc"),
+        static_libs=("pastix5/lib/libpastix.a",),
+        includes=("pastix5/pastix_fortran.h",),
+        builder="pastix5", platforms=("linux", "bsd", "macos"),
+        install=False, filename="pastix-5.2.3.tar.bz2",
+        required_any_paths=(
+            ("CMakeLists.txt", "src/CMakeLists.txt"),
+            ("common/src/pastix_fortran.h", "src/common/src/pastix_fortran.h"),
+        ),
+        recipe_revision="1",
+        note="Legacy JOREK USE_PASTIX adapter; installed in an isolated pastix5 prefix "
+             "so it cannot collide with PaStiX 6."),
     dep("pastix6", "6.3.2", "https://gitlab.inria.fr/solverstack/pastix.git",
         license="CeCILL-C", homepage="https://solverstack.gitlabpages.inria.fr/pastix/",
         deps=("mpich", "openblas", "scalapack", "metis", "hwloc"),
@@ -552,19 +568,33 @@ def _now() -> str:
 
 
 def _find_in_prefix(prefix: Path, name: str) -> Optional[Path]:
+    # Allow explicitly namespaced artefacts such as pastix5/lib/libpastix.a.
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    direct = prefix / relative
+    if direct.is_file():
+        return direct
     for candidate in (prefix / "lib" / name, prefix / "lib64" / name, prefix / "bin" / name):
         if candidate.exists():
             return candidate
     hits = list((prefix / "lib").rglob(name)) if (prefix / "lib").exists() else []
+    if hits:
+        return hits[0]
+    # Solver-specific private prefixes are intentionally nested below deps.
+    hits = list(prefix.rglob(name)) if prefix.exists() else []
     return hits[0] if hits else None
 
 
 def _find_header_in_prefix(prefix: Path, name: str) -> Optional[Path]:
-    candidate = prefix / "include" / name
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    candidate = prefix / "include" / relative
     if candidate.is_file():
         return candidate
     include = prefix / "include"
-    hits = list(include.rglob(name)) if include.is_dir() else []
+    hits = list(include.rglob(relative.name)) if include.is_dir() else []
     return hits[0] if hits else None
 
 
@@ -1111,6 +1141,91 @@ def build_dierckx(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     run([ctx.ar, "rcs", str(archive)] + objects, env=env, log=ctx.log_path(dep.name))
 
 
+def build_pastix5(ctx: BuildContext, dep: Dependency, src: Path) -> None:
+    """Build legacy PaStiX 5 in a private prefix, separate from PaStiX 6."""
+    root = src / "src" if (src / "src" / "CMakeLists.txt").exists() else src
+    required_any = getattr(dep, "required_any_paths", ())
+    missing = [
+        " or ".join(alternatives)
+        for alternatives in required_any
+        if not any((src / relative).exists() for relative in alternatives)
+    ]
+    if missing:
+        raise BuildError(
+            "PaStiX 5 source tree is incomplete; missing: %s" %
+            ", ".join(missing))
+    cmake = ctx.cmake or which("cmake", ctx.path)
+    if not cmake:
+        raise BuildError("CMake is required to build PaStiX 5")
+    prefix = ctx.prefix / "pastix5"
+    build_dir = ctx.work / "build" / "pastix5-5.2.3"
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    mpicc = which("mpicc", ctx.path) or ctx.cc
+    mpifc = which("mpifort", ctx.path) or ctx.fc
+    args = [
+        cmake, "-S", str(root), "-B", str(build_dir),
+        "-DCMAKE_INSTALL_PREFIX=%s" % prefix,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DPASTIX_WITH_MPI=ON",
+        "-DPASTIX_WITH_MULTITHREAD=ON",
+        "-DPASTIX_INT64=OFF",
+        "-DPASTIX_ORDERING_METIS=ON",
+        "-DPASTIX_ORDERING_SCOTCH=OFF",
+        "-DPASTIX_ORDERING_PTSCOTCH=OFF",
+        "-DPASTIX_DISTRIBUTED=OFF",
+        "-DPASTIX_BUILD_EXAMPLES=OFF",
+        "-DCMAKE_C_FLAGS=-Wno-implicit-function-declaration",
+        "-DCMAKE_C_COMPILER=%s" % mpicc,
+        "-DCMAKE_Fortran_COMPILER=%s" % mpifc,
+        "-DBLAS_LIBRARIES=%s" % (ctx.prefix / "lib" / "libopenblas.a"),
+        "-DLAPACK_LIBRARIES=%s" % (ctx.prefix / "lib" / "libopenblas.a"),
+        "-DBLA_VENDOR=OpenBLAS",
+        "-DMETIS_LIBRARIES=%s;-lm" % (ctx.prefix / "lib" / "libmetis.a"),
+        "-DMETIS_INCLUDE_DIRS=%s" % (ctx.prefix / "include"),
+        "-DHWLOC_DIR=%s" % ctx.prefix,
+        "-DHWLOC_LIBRARIES=%s;-lm" % (ctx.prefix / "lib" / "libhwloc.a"),
+        "-DCMAKE_PREFIX_PATH=%s" % ctx.prefix,
+    ]
+    env = ctx.build_env(dep)
+    run(args, cwd=root, env=env, log=ctx.log_path(dep.name))
+    run([cmake, "--build", str(build_dir), "--parallel",
+         str(max(1, ctx.jobs)), "--target", "pastix"],
+        env=env, log=ctx.log_path(dep.name))
+    libdir = ensure_dir(prefix / "lib")
+    incdir = ensure_dir(prefix / "include")
+    library = build_dir / "libpastix.a"
+    if not library.is_file():
+        raise BuildError("PaStiX 5 did not produce %s" % library)
+    shutil.copy2(library, libdir / "libpastix.a")
+    murge = build_dir / "libpastix_murge.a"
+    if murge.is_file():
+        shutil.copy2(murge, libdir / "libpastix_murge.a")
+    header_top = build_dir / "sopalin" / "src" / "pastix_fortran.h.top"
+    header_inc = root / "common" / "src" / "pastix_fortran.inc"
+    if header_top.is_file() and header_inc.is_file():
+        header = (
+            header_top.read_text(encoding="utf-8", errors="replace")
+            + "#define MURGE_COEF_KIND 8\n"
+            + "#define MURGE_REAL_KIND 8\n"
+            + "#define MURGE_INTS_KIND 4\n"
+            + "#define MURGE_INTL_KIND 8\n"
+            + header_inc.read_text(encoding="utf-8", errors="replace")
+        )
+        write_text(incdir / "pastix_fortran.h", header)
+    else:
+        candidates = (
+            root / "common" / "src" / "pastix_fortran.h",
+            root / "src" / "common" / "src" / "pastix_fortran.h",
+        )
+        header_source = next((item for item in candidates if item.is_file()), None)
+        if header_source is None:
+            raise BuildError("PaStiX 5 did not provide pastix_fortran.h")
+        shutil.copy2(header_source, incdir / "pastix_fortran.h")
+
+
 def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     missing = [
         relative for relative in dep.required_paths
@@ -1195,6 +1310,7 @@ BUILDERS = {
     "boost": build_boost,
     "dierckx": build_dierckx,
     "pastix": build_pastix,
+    "pastix5": build_pastix5,
     "strumpack": build_strumpack,
     "imas": build_imas,
     "catalyst": build_catalyst,
@@ -1209,6 +1325,7 @@ def validate_source_recipe(
     git_ref: str = "",
     git_submodules: bool = False,
     required_paths: Sequence[str] = (),
+    required_any_paths: Sequence[Sequence[str]] = (),
 ) -> List[str]:
     """Validate source-acquisition metadata without knowing a package's name."""
     errors: List[str] = []
@@ -1229,6 +1346,13 @@ def validate_source_recipe(
         path = Path(str(relative))
         if path.is_absolute() or ".." in path.parts or not str(relative).strip():
             errors.append("%s has unsafe required path %r" % (prefix, relative))
+    for alternatives in required_any_paths or ():
+        if not alternatives:
+            errors.append("%s has an empty required-any path group" % prefix)
+        for relative in alternatives:
+            path = Path(str(relative))
+            if path.is_absolute() or ".." in path.parts or not str(relative).strip():
+                errors.append("%s has unsafe required-any path %r" % (prefix, relative))
     return errors
 
 
@@ -1241,7 +1365,8 @@ def validate_dependency_registry() -> List[str]:
                 key, item.name))
         errors.extend(validate_source_recipe(
             item.name, item.version, item.url, item.source_kind,
-            item.git_ref, item.git_submodules, item.required_paths))
+            item.git_ref, item.git_submodules, item.required_paths,
+            item.required_any_paths))
         if item.builder not in BUILDERS:
             errors.append("%s references unknown builder %r" % (item.name, item.builder))
         if len(set(item.deps)) != len(item.deps):
@@ -1420,10 +1545,15 @@ class DepManager:
             relative for relative in item.required_paths
             if not (src / relative).exists()
         ]
-        if missing_source:
+        missing_any = [
+            " or ".join(alternatives)
+            for alternatives in item.required_any_paths
+            if not any((src / relative).exists() for relative in alternatives)
+        ]
+        if missing_source or missing_any:
             raise BuildError(
                 "%s source is incomplete; missing required paths: %s" %
-                (item.name, ", ".join(missing_source)))
+                (item.name, ", ".join(missing_source + missing_any)))
         try:
             builder(ctx, item, src)
         except BuildError:
@@ -1464,6 +1594,8 @@ def core_dependencies(profile: str = "standard", solver: str = "mumps",
         names.extend(["scalapack", "metis", "mumps"])
     if solver in ("pastix6", "all"):
         names.extend(["scalapack", "metis", "hwloc", "pastix6"])
+    if solver == "pastix5":
+        names.extend(["metis", "hwloc", "pastix5"])
     if solver in ("strumpack", "all"):
         names.extend(["scalapack", "metis", "parmetis", "strumpack"])
     if profile in ("full", "complete"):
