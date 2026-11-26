@@ -1465,10 +1465,27 @@ def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     cmake = ctx.cmake or which("cmake", ctx.path)
     if not cmake:
         raise BuildError("cmake is required to build STRUMPACK")
-    build_dir = ensure_dir(ctx.work / "build" / ("%s-%s" % (dep.name, dep.version)))
+
+    # STRUMPACK's MPI build requires ScaLAPACK.  Its CMake project does not
+    # reliably discover a custom static ScaLAPACK archive via find_package(),
+    # so provide the exact archives built by this dependency stack.  Do the
+    # same for BLAS/LAPACK and METIS to avoid silently mixing host libraries
+    # with the private build prefix.
+    blas = _lib_path(ctx, "libopenblas.a")
+    scalapack = _lib_path(ctx, "libscalapack.a")
+    metis = _lib_path(ctx, "libmetis.a")
+    metis_header = _find_header_in_prefix(ctx.prefix, "metis.h")
+    if not metis_header:
+        raise BuildError("METIS header metis.h was not found in %s" % ctx.prefix)
+
+    build_dir = ctx.work / "build" / ("%s-%s" % (dep.name, dep.version))
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    ensure_dir(build_dir)
     args = [
         cmake, "-S", str(src), "-B", str(build_dir),
         "-DCMAKE_INSTALL_PREFIX=%s" % ctx.prefix,
+        "-DCMAKE_PREFIX_PATH=%s" % ctx.prefix,
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
         "-DSTRUMPACK_USE_MPI=ON",
@@ -1476,11 +1493,27 @@ def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         "-DSTRUMPACK_USE_CUDA=OFF",
         "-DSTRUMPACK_USE_HIP=OFF",
         "-DSTRUMPACK_BUILD_TESTS=OFF",
+        "-DTPL_BLAS_LIBRARIES=%s" % blas,
+        "-DTPL_LAPACK_LIBRARIES=%s" % blas,
+        "-DTPL_SCALAPACK_LIBRARIES=%s" % scalapack,
+        "-DTPL_METIS_PREFIX=%s" % ctx.prefix,
+        "-DTPL_METIS_INCLUDE_DIRS=%s" % metis_header.parent,
+        "-DTPL_METIS_LIBRARY_DIR=%s" % Path(metis).parent,
+        "-DTPL_METIS_LIBRARIES=%s" % metis,
+        # Keep optional backends deterministic and consistent with the
+        # dependencies selected for this JOREK build.
+        "-DTPL_ENABLE_SLATE=OFF",
+        "-DTPL_ENABLE_PARMETIS=OFF",
+        "-DTPL_ENABLE_SCOTCH=OFF",
+        "-DTPL_ENABLE_PTSCOTCH=OFF",
+        "-DTPL_ENABLE_BPACK=OFF",
+        "-DTPL_ENABLE_ZFP=OFF",
     ]
     run(args, cwd=src, env=ctx.build_env(dep), log=ctx.log_path(dep.name))
     run([cmake, "--build", str(build_dir), "--parallel", str(max(1, ctx.jobs))],
         env=ctx.build_env(dep), log=ctx.log_path(dep.name))
-    run([cmake, "--install", str(build_dir)], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    run([cmake, "--install", str(build_dir)],
+        env=ctx.build_env(dep), log=ctx.log_path(dep.name))
 
 
 def build_imas(ctx: BuildContext, dep: Dependency, src: Path) -> None:
