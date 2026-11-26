@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QTextCursor
+from PySide6.QtGui import QColor, QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -2059,6 +2059,33 @@ class MainWindow(QMainWindow):
                     phase.replace("_", " ").title(), min(completed, total), total))
             return
 
+        if event_type == "stage_plan":
+            planned_stages = event.get("stages", [])
+            if not isinstance(planned_stages, list):
+                return
+            for planned in planned_stages:
+                if not isinstance(planned, dict):
+                    continue
+                stage_id = str(planned.get("id") or "").strip()
+                if not stage_id:
+                    continue
+                record = self.stage_records.get(stage_id, {})
+                if record.get("status") not in (None, "queued"):
+                    continue
+                record.update({
+                    "id": stage_id,
+                    "label": str(planned.get("label") or stage_id),
+                    "category": str(planned.get("category") or "Build"),
+                    "status": "queued",
+                    "log": record.get("log", ""),
+                    "remote_log_path": str(planned.get("log_path") or ""),
+                    "elapsed_seconds": 0.0,
+                    "error": "",
+                })
+                self.stage_records[stage_id] = record
+                self._refresh_stage_table_row(stage_id)
+            return
+
         if event_type == "stage_start":
             stage_id = str(event.get("id") or "stage-%d" % (len(self.stage_records) + 1))
             label = str(event.get("label") or stage_id)
@@ -2094,7 +2121,8 @@ class MainWindow(QMainWindow):
                     "[Warning] Detailed log could not be created for %s: %s\n" % (
                         label, exc))
             started = datetime.now(timezone.utc)
-            record = {
+            record = self.stage_records.get(stage_id, {})
+            record.update({
                 "id": stage_id,
                 "label": label,
                 "category": category,
@@ -2105,13 +2133,12 @@ class MainWindow(QMainWindow):
                 "started_monotonic": time.monotonic(),
                 "elapsed_seconds": 0.0,
                 "error": "",
-            }
+            })
             self.stage_records[stage_id] = record
             if handle:
                 self.stage_log_handles[stage_id] = handle
             self.stage_stack.append(stage_id)
             self._refresh_stage_table_row(stage_id)
-            self.stage_table.scrollToBottom()
             if not self.stage_elapsed_timer.isActive():
                 self.stage_elapsed_timer.start()
             self._append_overview_output(
@@ -2169,6 +2196,15 @@ class MainWindow(QMainWindow):
             self.stage_table.insertRow(row)
             record["_row"] = row
         status = str(record.get("status", ""))
+        status_display, status_color = {
+            "queued": ("○ Waiting", "#888888"),
+            "running": ("● Running", "#1565c0"),
+            "completed": ("✓ Completed", "#2e7d32"),
+            "failed": ("✕ Failed", "#c62828"),
+            "cancelled": ("■ Cancelled", "#777777"),
+            "skipped": ("– Skipped", "#777777"),
+            "not_run": ("— Not run", "#888888"),
+        }.get(status, (status or "Unknown", "#555555"))
         if status == "running":
             elapsed = max(
                 0.0, time.monotonic() -
@@ -2178,18 +2214,25 @@ class MainWindow(QMainWindow):
         values = [
             record.get("label", ""),
             record.get("category", ""),
-            status,
+            status_display,
             "%.1f s" % elapsed,
-            Path(record["log"]).name if record.get("log") else "(unavailable)",
+            Path(record["log"]).name if record.get("log") else "(not created yet)",
         ]
+        queued = status in ("queued", "not_run")
         for column, value in enumerate(values):
             item = self.stage_table.item(row, column)
             if item is None:
                 item = QTableWidgetItem()
                 self.stage_table.setItem(row, column, item)
             item.setText(str(value))
+            item.setForeground(QColor(status_color))
+            item.setFlags(
+                Qt.ItemFlag.NoItemFlags if queued else
+                Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
             if column == 0:
                 item.setData(Qt.ItemDataRole.UserRole, stage_id)
+            elif column == 2:
+                item.setToolTip("Stage state: %s" % status)
             elif column == 4:
                 item.setData(Qt.ItemDataRole.UserRole, record.get("log", ""))
                 tooltip = "Local log: %s" % record.get("log", "")
@@ -2206,7 +2249,7 @@ class MainWindow(QMainWindow):
         item = self.stage_table.item(row, 0)
         stage_id = item.data(Qt.ItemDataRole.UserRole) if item else ""
         record = self.stage_records.get(str(stage_id))
-        if record:
+        if record and record.get("status") not in ("queued", "not_run") and record.get("log"):
             self._show_stage_log_dialog(
                 record.get("label", "Build stage"),
                 record.get("log", ""),
@@ -2263,6 +2306,10 @@ class MainWindow(QMainWindow):
                 dialog.set_running(False)
             self._refresh_stage_table_row(stage_id)
         self.stage_stack = []
+        for stage_id, record in self.stage_records.items():
+            if record.get("status") == "queued":
+                record["status"] = "not_run"
+                self._refresh_stage_table_row(stage_id)
         self.stage_elapsed_timer.stop()
         self._close_stage_log_handles()
 
