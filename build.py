@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import argparse
 import copy
+import contextlib
+import io
 import json
 import os
 import platform
@@ -43,6 +45,7 @@ import portability
 import solvers
 import suite
 from common import BuildError, Downloader, PlatformInfo, ensure_dir, human_bytes, read_json, run, which, write_json, write_text
+from verification import CheckResult, VerificationCheck, run_checks
 
 
 VERSION = "1.0.0"
@@ -1372,6 +1375,425 @@ def cmd_matrix(args) -> int:
     print("")
     print("Total: %d variants" % len(specs))
     return 0
+
+
+def _preflight_dependency_names(args, build_kind: str) -> List[str]:
+    include_dierckx = getattr(args, "programs", "main") == "all"
+    solver = "mumps" if build_kind == "full" else getattr(args, "solver", "mumps")
+    return deps.core_dependencies(
+        getattr(args, "profile", "full"), solver,
+        include_dierckx=include_dierckx)
+
+
+def _preflight_check_static_libraries(
+    names: Sequence[str], prefixes: Sequence[Path],
+) -> List[str]:
+    missing = []
+    for name in names:
+        item = deps.DEPENDENCIES[name]
+        for library in item.static_libs:
+            if not _static_available(prefixes, library):
+                missing.append("%s: %s" % (name, library))
+    return missing
+
+
+def _preflight_cache_check(
+    order: Sequence[deps.Dependency], args, source_dirs: Dict[str, Path],
+) -> List[str]:
+    missing = []
+    cache = Path(args.work).expanduser() / "downloads"
+    source_root = Path(args.source_dir).expanduser() if getattr(args, "source_dir", None) else None
+    for item in order:
+        supplied = source_dirs.get(item.name)
+        if supplied and supplied.is_dir():
+            continue
+        if source_root and any(
+                (source_root / candidate).is_dir()
+                for candidate in ("%s-%s" % (item.name, item.version), item.name)):
+            continue
+        if item.source_kind == "git":
+            candidate = Path(args.work).expanduser() / "src" / (
+                "%s-%s" % (item.name, item.version))
+            if not (candidate / ".git").is_dir():
+                missing.append("%s: Git checkout is not cached" % item.name)
+        else:
+            filename = "%s-%s-%s" % (
+                item.name, item.version,
+                os.path.basename(item.url.split("?", 1)[0]))
+            if not (cache / filename).is_file():
+                missing.append("%s: %s" % (item.name, filename))
+    return missing
+
+
+def cmd_preflight(args) -> int:
+    """Validate the selected build plan without compiling or installing anything."""
+    build_kind = args.for_command
+    platform = _platform()
+    work = Path(args.work).expanduser()
+    if build_kind == "full":
+        if args.matrix is None:
+            args.matrix = "one" if args.model else "maximal"
+        if not args.programs:
+            args.programs = "most"
+    else:
+        if args.matrix is None:
+            args.matrix = "one"
+        if not args.programs:
+            args.programs = "main"
+    if not hasattr(args, "_program_names"):
+        args._program_names = ["jorek2_main"]
+    for name, value in (
+        ("set_param", []), ("family_toggle", []), ("enable", []),
+        ("disable", []), ("param_grid", []), ("param_max", []),
+    ):
+        if not hasattr(args, name):
+            setattr(args, name, value)
+
+    root = _find_jorek_root(
+        work, Path(args.root).expanduser() if getattr(args, "root", None) else None)
+    if root:
+        args.root = str(root)
+
+    selected_names = _preflight_dependency_names(args, build_kind)
+    checks: List[VerificationCheck] = []
+
+    def check_repository_revision():
+        expected = str(getattr(args, "expected_commit", "") or "").strip().lower()
+        git = shutil.which("git")
+        if not git:
+            if expected:
+                raise BuildError("git is required to verify the pinned build repository")
+            return CheckResult("warning", ["Git is unavailable; repository revision was not inspected."])
+        proc = subprocess.run(
+            [git, "rev-parse", "HEAD"], cwd=str(HERE),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", check=False, timeout=10)
+        if proc.returncode != 0:
+            if expected:
+                raise BuildError("the build script is not running inside the pinned Git checkout: %s" % proc.stdout.strip())
+            return CheckResult("warning", ["No Git checkout detected; exact source revision is unavailable."])
+        actual = proc.stdout.strip().lower()
+        details = ["Build repository HEAD: %s" % actual]
+        if expected and actual != expected:
+            raise BuildError(
+                "build repository commit mismatch: expected %s, running %s" %
+                (expected, actual))
+        if expected:
+            status = subprocess.run(
+                [git, "status", "--porcelain"], cwd=str(HERE),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                check=False, timeout=10)
+            if status.returncode != 0:
+                raise BuildError("could not inspect the pinned repository working tree")
+            if status.stdout.strip():
+                raise BuildError(
+                    "the pinned repository working tree is not clean; refusing to build modified code")
+            details.append("Pinned commit matches exactly and the working tree is clean.")
+        else:
+            details.append("No remote commit was requested; local HEAD is informational.")
+        return details
+
+    def check_build_options():
+        errors = []
+        if args.jobs < 1:
+            errors.append("--jobs must be at least 1")
+        if not 0 <= int(args.compression) <= 9:
+            errors.append("--compression must be between 0 and 9")
+        if args.no_full_static and args.require_full_static:
+            errors.append("--no-full-static conflicts with --require-full-static")
+        if build_kind == "full" and not (
+                platform.is_linux or platform.is_macos or platform.is_bsd):
+            errors.append("the full solver builder supports Linux, macOS and BSD only")
+        if errors:
+            raise BuildError("\n".join(errors))
+        return [
+            "Build command: %s" % build_kind,
+            "Platform: %s" % platform.summary(),
+            "Parallel jobs: %d" % args.jobs,
+            "Dependency policy: %s" % args.deps,
+            "Solver selection: %s" % ("all (full suite)" if build_kind == "full" else args.solver),
+            "Work directory: %s" % work,
+        ]
+
+    def check_dependency_catalog():
+        errors = deps.validate_dependency_registry()
+        if errors:
+            raise BuildError("\n".join(errors))
+        git_sources = sum(item.source_kind == "git" for item in deps.DEPENDENCIES.values())
+        return [
+            "Validated %d dependency records and their complete prerequisite graph." %
+            len(deps.DEPENDENCIES),
+            "%d dependency source recipes use Git; all builders and graph edges are registered." %
+            git_sources,
+        ]
+
+    def check_solver_catalog():
+        errors = solvers.validate_solver_source_recipes()
+        if errors:
+            raise BuildError("\n".join(errors))
+        return [
+            "Validated %d source recipes used by the full-solver build path." %
+            len(solvers.SOLVER_SOURCE_RECIPES),
+            "PaStiX 6 uses the same authoritative dependency recipe as the dist build path.",
+        ]
+
+    def check_source_overrides():
+        source_dirs, url_overrides = _source_options(args)
+        invalid = [
+            "%s=%s" % (name, path)
+            for name, path in source_dirs.items() if not path.is_dir()
+        ]
+        if invalid:
+            raise BuildError("provided source directories do not exist: %s" % ", ".join(invalid))
+        source_root = getattr(args, "source_dir", None)
+        if source_root and not Path(source_root).expanduser().is_dir():
+            raise BuildError("--source-dir is not a directory: %s" % source_root)
+        for name, values in url_overrides.items():
+            if not name or any(not value.strip() for value in values):
+                raise BuildError("source URL override for %r contains an empty name or URL" % name)
+        return [
+            "%d explicit source directories and %d URL/mirror overrides validated." %
+            (len(source_dirs), len(url_overrides)),
+        ]
+
+    def check_dependency_plan():
+        if args.deps == "none" and not args.dep_prefix:
+            raise BuildError("--deps none requires at least one --dep-prefix")
+        if build_kind == "full":
+            if args.dep_prefix:
+                policy = "provided prefixes"
+                prefixes = [Path(value).expanduser() for value in args.dep_prefix]
+            elif args.deps == "system":
+                policy = "system"
+                prefixes = _system_static_prefixes(args)
+            else:
+                policy = "source"
+                prefixes = []
+        elif args.deps == "none":
+            return ["Dependency building is disabled; supplied prefixes will be used."]
+        else:
+            probe = copy.copy(args)
+            _wait_for_deps_policy(probe)
+            policy = probe.deps
+            prefixes = [Path(value).expanduser() for value in (probe.dep_prefix or [])]
+            if policy == "system":
+                prefixes.extend(path for path in _system_static_prefixes(probe) if path not in prefixes)
+
+        order = deps.DepManager(None).resolve(selected_names)
+        unsupported = [
+            "%s (%s)" % (item.name, platform.system)
+            for item in order
+            if not item.supports(platform) and not item.optional
+        ]
+        if unsupported:
+            raise BuildError("selected dependencies do not support this platform: %s" % ", ".join(unsupported))
+        if policy in ("system", "provided prefixes"):
+            missing = _preflight_check_static_libraries(selected_names, prefixes)
+            if missing:
+                raise BuildError(
+                    "selected dependency prefixes are incomplete; missing: %s" %
+                    ", ".join(missing))
+        elif getattr(args, "offline", False):
+            source_dirs, _urls = _source_options(args)
+            missing = _preflight_cache_check(order, args, source_dirs)
+            if missing:
+                raise BuildError("offline source cache is incomplete: %s" % ", ".join(missing))
+        return [
+            "Resolved %d dependencies in build order: %s" %
+            (len(order), " -> ".join(item.name for item in order)),
+            "Effective dependency policy: %s" % policy,
+            "All selected dependencies support %s." % platform.system,
+        ]
+
+    def check_solver_plan():
+        if build_kind != "full":
+            return CheckResult("skipped", ["The selected build command does not invoke the full solver stack."])
+        if args.no_build_solvers or args.dep_prefix:
+            solver_prefix = Path(args.solver_prefix).expanduser() if args.solver_prefix else work / "solvers"
+            prefixes = [solver_prefix] + [Path(value).expanduser() for value in (args.dep_prefix or [])]
+            required = []
+            for relative in (
+                "lib/libhwloc.a", "lib/libGKlib.a", "lib/libmetis.a",
+                "lib/libpastix.a", "lib/libpastix_kernels.a", "lib/libspm.a",
+                "lib/libstrumpack.a", "pastix5/lib/libpastix.a",
+            ):
+                if not any((prefix / relative).is_file() for prefix in prefixes):
+                    required.append(relative)
+            if required:
+                raise BuildError(
+                    "the selected full build reuses an existing solver prefix, but required "
+                    "artifacts are missing: %s" % ", ".join(required))
+            return [
+                "Existing full-solver artifacts are present in the supplied prefixes.",
+                "No solver source downloads or builds will be attempted.",
+            ]
+        errors = solvers.validate_solver_source_recipes()
+        if errors:
+            raise BuildError("\n".join(errors))
+        if not (platform.is_linux or platform.is_macos or platform.is_bsd):
+            raise BuildError("the selected solver source recipes are unsupported on this platform")
+        return [
+            "Full solver source plan: %s" % ", ".join(sorted(solvers.SOLVER_SOURCE_RECIPES)),
+            "PaStiX 6 is pinned to %s and uses recursive submodules." %
+            solvers.SOLVER_SOURCE_RECIPES["pastix6"].git_ref,
+        ]
+
+    def check_jorek_source():
+        if root:
+            required = [root / "jorek2_main.f90", root / "Makefile", root / "models"]
+            missing = [str(path) for path in required if not path.exists()]
+            if missing:
+                raise BuildError("JOREK source tree is incomplete: %s" % ", ".join(missing))
+            models = jorek.discover_models(root)
+            if not models:
+                raise BuildError("no JOREK models were discovered under %s" % (root / "models"))
+            return [
+                "JOREK source: %s" % root,
+                "Discovered %d models: %s" % (
+                    len(models), ", ".join(sorted(models)[:20]) +
+                    (" ..." if len(models) > 20 else "")),
+            ]
+        if getattr(args, "fetch_source", False):
+            if not shutil.which("git"):
+                raise BuildError("--fetch-source was requested, but Git is unavailable")
+            if not str(getattr(args, "jorek_url", "")).strip():
+                raise BuildError("--fetch-source requires a non-empty --jorek-url")
+            return CheckResult(
+                "warning",
+                ["JOREK source is not present yet; the build command will fetch it from %s." %
+                 args.jorek_url])
+        raise BuildError(
+            "JOREK source was not found. Set --root or enable --fetch-source.")
+
+    def check_variant_plan():
+        if not root:
+            return CheckResult("skipped", [
+                "Variant expansion will be checked after the requested JOREK source checkout is fetched."])
+        plan_args = copy.copy(args)
+        plan_args.root = str(root)
+        plan_args.dry_run = True
+        plan_args.json = False
+        if build_kind == "full":
+            plan_args.solver = "all"
+            plan_args.matrix = args.matrix or ("one" if args.model else "maximal")
+            plan_args.programs = args.programs or "most"
+        else:
+            plan_args.solver = args.solver
+            plan_args.matrix = args.matrix or "one"
+            plan_args.programs = args.programs or "main"
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            _collect_variants(plan_args, platform, None)
+        lines = [line.strip() for line in captured.getvalue().splitlines() if line.strip()]
+        summary = next((line for line in lines if line.startswith("Planned variants")), "")
+        if not summary:
+            raise BuildError("variant planner did not produce a plan")
+        details = [summary, "Model, feature, family-toggle and parameter combinations validated."]
+        if build_kind == "full":
+            pastix5_args = copy.copy(plan_args)
+            pastix5_args.solver = "pastix5"
+            pastix5_args.programs = "main"
+            with contextlib.redirect_stdout(captured := io.StringIO()):
+                _collect_variants(pastix5_args, platform, None)
+            p5_summary = next(
+                (line.strip() for line in captured.getvalue().splitlines()
+                 if line.strip().startswith("Planned variants")), "")
+            if not p5_summary:
+                raise BuildError("PaStiX 5 variant planner did not produce a plan")
+            details.append("PaStiX 5: " + p5_summary)
+        return details
+
+    def check_toolchain():
+        cc, cxx, fc, mpifc = _find_compilers(args, platform)
+        tools = {"C": cc, "C++": cxx, "Fortran": fc, "MPI Fortran": mpifc}
+        details = []
+        for label, executable in tools.items():
+            proc = subprocess.run(
+                [executable, "--version"], stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                errors="replace", check=False, timeout=15)
+            if proc.returncode != 0:
+                raise BuildError("%s compiler failed its --version probe: %s" % (
+                    label, proc.stdout.strip()[-500:]))
+            first = next((line.strip() for line in proc.stdout.splitlines() if line.strip()), executable)
+            details.append("%s compiler: %s (%s)" % (label, executable, first))
+        needs_cmake = (
+            build_kind == "full" and not args.no_build_solvers and not args.dep_prefix
+        ) or any(
+            deps.DEPENDENCIES[name].builder in ("cmake", "cmake_bootstrap")
+            for name in selected_names
+        )
+        if needs_cmake:
+            cmake = which("cmake", [str(work / "deps" / "bin")] + os.environ.get("PATH", "").split(os.pathsep))
+            if not cmake:
+                raise BuildError("CMake is required by the selected source build but was not found")
+            details.append("CMake: %s" % cmake)
+        if build_kind == "full" and not (args.no_build_solvers or args.dep_prefix):
+            git = shutil.which("git")
+            if not git:
+                raise BuildError("Git is required by the full solver source plan")
+            details.append("Git: %s" % git)
+        make = which("make") or which("gmake")
+        if not make:
+            raise BuildError("a make implementation is required to build JOREK")
+        details.append("Make: %s" % make)
+        return details
+
+    def check_storage_paths():
+        for label, path in (
+            ("work directory", work),
+            ("output directory", Path(args.output).expanduser().parent if args.output else work / "dist"),
+        ):
+            probe = path
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            if not probe.is_dir():
+                raise BuildError("%s parent is not a directory: %s" % (label, probe))
+            if not os.access(str(probe), os.W_OK | os.X_OK):
+                raise BuildError("%s is not writable: %s" % (label, probe))
+        return ["Work and output locations have writable existing parent directories."]
+
+    checks.extend([
+        VerificationCheck("repository-revision", "Verify pinned build repository", "Repository",
+                          check_repository_revision),
+        VerificationCheck("build-options", "Validate build configuration", "Configuration",
+                          check_build_options),
+        VerificationCheck("dependency-catalog", "Validate dependency recipe catalog", "Dependencies",
+                          check_dependency_catalog),
+        VerificationCheck("solver-catalog", "Validate solver source recipe catalog", "Solvers",
+                          check_solver_catalog),
+        VerificationCheck("source-overrides", "Validate source directories and mirrors", "Sources",
+                          check_source_overrides),
+        VerificationCheck("dependency-plan", "Resolve dependency graph and artifacts", "Dependencies",
+                          check_dependency_plan),
+        VerificationCheck("solver-plan", "Validate solver build plan", "Solvers",
+                          check_solver_plan),
+        VerificationCheck("jorek-source", "Validate JOREK source checkout", "JOREK source",
+                          check_jorek_source),
+        VerificationCheck("variant-plan", "Validate JOREK model and variant matrix", "JOREK variants",
+                          check_variant_plan),
+        VerificationCheck("toolchain", "Probe compiler and build tools", "Toolchain",
+                          check_toolchain),
+        VerificationCheck("storage", "Check work and output locations", "Environment",
+                          check_storage_paths),
+    ])
+    report = run_checks(
+        checks, work / "logs" / "preflight",
+        context={
+            "build_command": build_kind,
+            "platform": platform.summary(),
+            "work": str(work),
+            "repository": str(HERE),
+            "expected_commit": str(getattr(args, "expected_commit", "") or ""),
+            "jorek_root": str(root) if root else "",
+            "dependencies": selected_names,
+            "solver": "all" if build_kind == "full" else args.solver,
+        },
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if report["ok"] else 1
 
 
 def cmd_build(args) -> int:
