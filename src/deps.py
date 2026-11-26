@@ -1499,36 +1499,36 @@ def patch_strumpack_static_link_order(src: Path) -> bool:
         return False
 
     original_mpi = (
-        "if(STRUMPACK_USE_MPI)\\n"
-        "  target_link_libraries(strumpack PUBLIC\\n"
-        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
-        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
-        "endif()\\n"
+        "if(STRUMPACK_USE_MPI)\n"
+        "  target_link_libraries(strumpack PUBLIC\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+        "endif()\n"
     )
     original_openmp = (
-        "if(OpenMP_FOUND)\\n"
-        "  # if(OpenMP_C_FOUND)\\n"
-        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\\n"
-        "  # endif()\\n"
-        "  if(OpenMP_CXX_FOUND)\\n"
-        "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\\n"
-        "  endif()\\n"
-        "  # if(OpenMP_Fortran_FOUND)\\n"
-        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\\n"
-        "  # endif()\\n"
-        "endif()\\n"
+        "if(OpenMP_FOUND)\n"
+        "  # if(OpenMP_C_FOUND)\n"
+        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\n"
+        "  # endif()\n"
+        "  if(OpenMP_CXX_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\n"
+        "  endif()\n"
+        "  # if(OpenMP_Fortran_FOUND)\n"
+        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\n"
+        "  # endif()\n"
+        "endif()\n"
     )
     original_scalapack = (
-        "if(STRUMPACK_USE_MPI)\\n"
-        "  if(SCALAPACK_FOUND)\\n"
-        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
-        "  endif()\\n"
-        "endif()\\n"
+        "if(STRUMPACK_USE_MPI)\n"
+        "  if(SCALAPACK_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+        "  endif()\n"
+        "endif()\n"
     )
     original_blas = (
-        "if(BLAS_FOUND)\\n"
-        "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\\n"
-        "endif()\\n"
+        "if(BLAS_FOUND)\n"
+        "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\n"
+        "endif()\n"
     )
     expected_blocks = (
         ("MPI", original_mpi),
@@ -1549,19 +1549,19 @@ def patch_strumpack_static_link_order(src: Path) -> bool:
     content = content.replace(original_mpi, "", 1)
     content = content.replace(original_openmp, "", 1)
     replacement = (
-        marker + "\\n"
-        "if(STRUMPACK_USE_MPI)\\n"
-        "  if(SCALAPACK_FOUND)\\n"
-        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
-        "  endif()\\n"
-        "  target_link_libraries(strumpack PUBLIC\\n"
-        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
-        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
-        "endif()\\n"
+        marker + "\n"
+        "if(STRUMPACK_USE_MPI)\n"
+        "  if(SCALAPACK_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+        "  endif()\n"
+        "  target_link_libraries(strumpack PUBLIC\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+        "endif()\n"
     )
     content = content.replace(original_scalapack, replacement, 1)
     content = content.replace(
-        original_blas, original_blas + "\\n" + original_openmp, 1)
+        original_blas, original_blas + "\n" + original_openmp, 1)
 
     marker_at = content.index(marker)
     scalapack_at = content.find(
