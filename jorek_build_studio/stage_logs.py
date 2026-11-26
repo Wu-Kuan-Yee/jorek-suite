@@ -78,31 +78,30 @@ class StageLogDialog(QDialog):
         try:
             with self.path.open("rb") as handle:
                 handle.seek(self.offset)
-                while True:
-                    data = handle.read(262144)
-                    if not data:
-                        break
-                    self.offset += len(data)
-                    text = self.decoder.decode(data, final=False)
-                    if text:
-                        cursor = self.editor.textCursor()
-                        cursor.movePosition(QTextCursor.MoveOperation.End)
-                        self.editor.setTextCursor(cursor)
-                        self.editor.insertPlainText(text)
-                    # A live log is polled incrementally; a completed log is
-                    # drained fully so large historical logs are not truncated.
-                    if self.running:
-                        break
+                data = handle.read(262144)
         except OSError as exc:
             self.status_label.setText("Cannot read log: %s" % exc)
             return
+        if data:
+            self.offset += len(data)
+            text = self.decoder.decode(data, final=False)
+            if text:
+                cursor = self.editor.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                self.editor.setTextCursor(cursor)
+                self.editor.insertPlainText(text)
 
-        if not self.running:
+        if not self.running and self.offset < size:
+            self.status_label.setText("Loading remaining log data…")
+            if not self.timer.isActive():
+                self.timer.start()
+        elif not self.running:
             tail = self.decoder.decode(b"", final=True)
             if tail:
                 self.editor.moveCursor(QTextCursor.MoveOperation.End)
                 self.editor.insertPlainText(tail)
             self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            self.status_label.setText("Log complete")
             self.timer.stop()
         self.editor.ensureCursorVisible()
 
