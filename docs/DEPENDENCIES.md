@@ -34,7 +34,7 @@ pre-populated cache.
 | MPICH | 4.3.0 | BSD-like | MPI |
 | OpenBLAS | 0.3.30 | BSD-3-Clause | BLAS/LAPACK |
 | LAPACK | 3.12.1 | BSD-3-Clause | reference fallback |
-| ScaLAPACK | 2.2.0 | BSD-3-Clause | distributed dense algebra |
+| ScaLAPACK | 2.2.0 | BSD-3-Clause | distributed dense algebra; BLACS is bundled in `libscalapack.a` |
 | FFTW | 3.3.10 | GPL-2.0-or-later | toroidal FFTs |
 | HDF5 | 1.14.6 | BSD-3-Clause | parallel restart/output |
 | METIS | 5.2.1 | Apache-2.0 | fill-reducing ordering |
@@ -42,7 +42,8 @@ pre-populated cache.
 | ParMETIS | 4.0.3 | ParMETIS terms | distributed ordering |
 | SCOTCH | 6.1.2 | CeCILL-C | ordering/partitioning |
 | MUMPS | 5.7.3 | CeCILL-C | sparse direct solver |
-| PaStiX | 6.3.2 | CeCILL-C | sparse direct solver |
+| PaStiX 5 | 5.2.3 | CeCILL-C | legacy JOREK `USE_PASTIX` / optional MURGE adapter; isolated prefix |
+| PaStiX 6 | 6.3.2 | CeCILL-C | modern JOREK `USE_PASTIX6` adapter; METIS ordering, 32-bit indices |
 | STRUMPACK | 7.1.0 | BSD-3-Clause | sparse direct solver |
 | Boost | 1.87.0 | BSL-1.0 | Boost.Math Bessel K |
 | Fitpack/Dierckx | SciPy 1.14.1 sources | BSD-3-Clause | `eqdsk2jorek` regridding |
@@ -69,3 +70,23 @@ pre-populated cache.
 The feature switches remain in the generated configuration; they are not
 silently deleted.  The build simply refuses to invent a library it cannot
 legally fetch.
+
+
+### BLACS
+
+ScaLAPACK 2.0 and later incorporate BLACS into the ScaLAPACK library. This
+project builds ScaLAPACK 2.2.0, so separate legacy `mpiblacs` and
+`mpiblacs-patch` packages are not downloaded. The MUMPS link configuration
+uses `libscalapack.a` as its BLACS provider. A separate BLACS build should
+only be added for a deliberately selected legacy ScaLAPACK/BLACS toolchain.
+
+### PaStiX integer ABI
+
+The bundled PaStiX 5 and PaStiX 6 builds currently use 32-bit solver indices,
+matching JOREK's default `USE_INTSIZE64=0`. PaStiX 5 is installed below a
+private `pastix5/` prefix because both major versions export
+`libpastix.a`; this prevents one version from overwriting the other. The
+JOREK makefile adapter selects the matching include files, libraries and
+feature switches for each version. Enabling JOREK's `int64` feature with a
+bundled PaStiX backend is rejected during preflight rather than allowing an
+integer-ABI mismatch to reach the compiler or linker.
