@@ -15,6 +15,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from common import BUILD_EVENT_PREFIX, emit_build_event, run
+from suite import _run as suite_run
 
 
 class BuildEventTests(unittest.TestCase):
@@ -55,6 +56,19 @@ class BuildEventTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("quiet-stdout", output.getvalue())
         self.assertIn("quiet-stderr", output.getvalue())
+
+    def test_suite_packaging_commands_stream_output_in_build_studio(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('packaging-stdout', flush=True); "
+            "print('packaging-stderr', file=sys.stderr, flush=True)",
+        ]
+        with patch.dict(os.environ, {"JOREK_BUILD_STUDIO_EVENTS": "1"}):
+            with contextlib.redirect_stdout(output):
+                suite_run(command)
+        self.assertIn("packaging-stdout", output.getvalue())
+        self.assertIn("packaging-stderr", output.getvalue())
 
     def test_run_streams_merged_output_and_writes_complete_log(self):
         with tempfile.TemporaryDirectory() as temporary:
