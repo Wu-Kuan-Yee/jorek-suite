@@ -185,6 +185,24 @@ class StageLogDialogTests(unittest.TestCase):
             self.assertEqual(dialog.match_label.text(), "3 / 3")
             dialog.close()
 
+    def test_regex_search_supports_multiline_and_dotall_modes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "multiline.log"
+            path.write_bytes(b"alpha\nbeta\n")
+            dialog = StageLogDialog("multiline stage", str(path), running=False)
+            dialog.regex_check.setChecked(True)
+            dialog.search_edit.setText("alpha.*beta")
+            self.app.processEvents()
+            self.assertEqual(len(dialog.matches), 0)
+            dialog.dotall_check.setChecked(True)
+            self.app.processEvents()
+            self.assertEqual(len(dialog.matches), 1)
+            dialog.search_edit.setText("^beta$")
+            dialog.multiline_check.setChecked(True)
+            self.app.processEvents()
+            self.assertEqual(len(dialog.matches), 1)
+            dialog.close()
+
     def test_regex_search_reports_invalid_expression(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "invalid-regex.log"
