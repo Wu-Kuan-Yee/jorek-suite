@@ -24,15 +24,17 @@ class RecipeCatalogTests(unittest.TestCase):
     def test_entire_solver_source_catalog_is_consistent(self):
         self.assertEqual(solvers.validate_solver_source_recipes(), [])
 
-    def test_full_and_dist_paths_share_the_exact_pastix6_recipe(self):
-        self.assertIs(
-            solvers.SOLVER_SOURCE_RECIPES["pastix6"],
-            deps.DEPENDENCIES["pastix6"],
-        )
-        recipe = solvers.SOLVER_SOURCE_RECIPES["pastix6"]
-        self.assertEqual(recipe.source_kind, "git")
-        self.assertEqual(recipe.git_ref, "v6.3.2")
-        self.assertTrue(recipe.git_submodules)
+    def test_full_and_dist_paths_share_common_dependency_recipes(self):
+        for name in ("hwloc", "gklib", "metis", "pastix6", "strumpack"):
+            with self.subTest(name=name):
+                self.assertIs(
+                    solvers.SOLVER_SOURCE_RECIPES[name],
+                    deps.DEPENDENCIES[name],
+                )
+        pastix = solvers.SOLVER_SOURCE_RECIPES["pastix6"]
+        self.assertEqual(pastix.source_kind, "git")
+        self.assertEqual(pastix.git_ref, "v6.3.2")
+        self.assertTrue(pastix.git_submodules)
 
     def test_source_recipe_validation_is_package_agnostic(self):
         errors = deps.validate_source_recipe(
