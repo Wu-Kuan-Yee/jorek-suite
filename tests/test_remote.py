@@ -41,6 +41,14 @@ class RemoteCommandTests(unittest.TestCase):
         profile["remote_work"] = "relative/work"
         self.assertTrue(any("remote_work" in item for item in validate_profile(profile)))
 
+    def test_profile_requires_local_artifact_directory_and_valid_host_key_policy(self):
+        profile = dict(PROFILE)
+        profile["artifact_dir"] = ""
+        self.assertTrue(any("local artifact directory" in item for item in validate_profile(profile)))
+        profile["artifact_dir"] = PROFILE["artifact_dir"]
+        profile["host_key_policy"] = "accept-any"
+        self.assertTrue(any("host key policy" in item for item in validate_profile(profile)))
+
     def test_connection_test_does_not_require_build_metadata(self):
         profile = {"destination": "builder@example.invalid", "port": 22}
         self.assertEqual(validate_connection_profile(profile), [])

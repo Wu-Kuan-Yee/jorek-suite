@@ -380,7 +380,8 @@ class MainWindow(QMainWindow):
         self.remote_python_edit = QLineEdit("python3")
         self.remote_repo_url_edit = QLineEdit(
             "https://github.com/Wu-Kuan-Yee/jorek-suite.git")
-        self.remote_branch_edit = QLineEdit("feature/build-studio-gui")
+        self.remote_branch_edit = QLineEdit(
+            self._local_git_branch() or "feature/build-studio-gui")
         self.remote_commit_edit = QLineEdit(self._local_git_commit())
         self.remote_artifact_dir_edit = QLineEdit(
             str(Path.home() / "JOREK-artifacts"))
@@ -440,6 +441,17 @@ class MainWindow(QMainWindow):
         outer.addStretch(1)
         page.setWidget(content)
         self.tabs.addTab(page, "Remote")
+
+    def _local_git_branch(self) -> str:
+        try:
+            script = Path(default_build_script()).resolve()
+            result = subprocess.run(
+                ["git", "-C", str(script.parent), "branch", "--show-current"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, check=False, timeout=5)
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
 
     def _local_git_commit(self) -> str:
         try:

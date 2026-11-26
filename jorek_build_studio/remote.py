@@ -85,19 +85,27 @@ def validate_connection_profile(profile: Dict[str, Any]) -> List[str]:
             raise ValueError
     except (TypeError, ValueError):
         errors.append("SSH port must be an integer between 1 and 65535")
+    policy = str(profile.get("host_key_policy", "yes")).strip() or "yes"
+    if policy not in ("yes", "accept-new", "no"):
+        errors.append("host key policy must be yes, accept-new, or no")
     return errors
 
 
 def validate_profile(profile: Dict[str, Any]) -> List[str]:
     errors = validate_connection_profile(profile)
+    if not str(profile.get("name", "")).strip():
+        errors.append("profile name is required")
+    if not str(profile.get("artifact_dir", "")).strip():
+        errors.append("local artifact directory is required")
     for key in ("remote_root", "remote_work"):
         value = str(profile.get(key, "")).strip()
         if not value or not value.startswith("/"):
             errors.append("%s must be an absolute POSIX path" % key)
     if not str(profile.get("repo_url", "")).strip():
         errors.append("repository URL is required")
-    if not str(profile.get("branch", "")).strip():
-        errors.append("repository branch is required")
+    branch = str(profile.get("branch", "")).strip()
+    if not branch or branch.startswith("-"):
+        errors.append("repository branch is required and must not start with '-'")
     commit = str(profile.get("commit", "")).strip()
     if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", commit):
         errors.append("pin the remote build to a full 40- or 64-character commit SHA")
