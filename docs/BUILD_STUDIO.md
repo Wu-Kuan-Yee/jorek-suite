@@ -176,8 +176,10 @@ process-group ID below:
 <remote_root>/.jorek-build-studio/tasks/<task-id>/
 ```
 
-The GUI sends a heartbeat every 15 seconds. If no heartbeat is received for
-120 seconds, the supervisor treats the GUI as disconnected, sends SIGTERM to
+The GUI sends a heartbeat every 15 seconds. The Remote tab's Disconnect
+grace period setting defaults to 120 seconds and can be configured per SSH
+profile from 10 seconds to one hour. If no heartbeat is received for the
+configured period, the supervisor treats the GUI as disconnected, sends SIGTERM to
 the complete build process group, waits up to five seconds, and then sends
 SIGKILL to any remaining members. The same process-group termination is used
 for an explicit Cancel request. The SSH log stream can disconnect and reconnect
