@@ -1498,9 +1498,9 @@ def cmd_preflight(args) -> int:
         errors = []
         if args.jobs < 1:
             errors.append("--jobs must be at least 1")
-        if not 0 <= int(args.compression) <= 9:
+        if not 0 <= int(getattr(args, "compression", 9)) <= 9:
             errors.append("--compression must be between 0 and 9")
-        if args.no_full_static and args.require_full_static:
+        if getattr(args, "no_full_static", False) and getattr(args, "require_full_static", False):
             errors.append("--no-full-static conflicts with --require-full-static")
         if build_kind == "full" and not (
                 platform.is_linux or platform.is_macos or platform.is_bsd):
@@ -1610,7 +1610,8 @@ def cmd_preflight(args) -> int:
         if build_kind != "full":
             return CheckResult("skipped", ["The selected build command does not invoke the full solver stack."])
         if args.no_build_solvers or args.dep_prefix:
-            solver_prefix = Path(args.solver_prefix).expanduser() if args.solver_prefix else work / "solvers"
+            solver_prefix_value = getattr(args, "solver_prefix", None)
+            solver_prefix = Path(solver_prefix_value).expanduser() if solver_prefix_value else work / "solvers"
             prefixes = [solver_prefix] + [Path(value).expanduser() for value in (args.dep_prefix or [])]
             required = []
             for relative in (
@@ -1719,7 +1720,8 @@ def cmd_preflight(args) -> int:
             first = next((line.strip() for line in proc.stdout.splitlines() if line.strip()), executable)
             details.append("%s compiler: %s (%s)" % (label, executable, first))
         needs_cmake = (
-            build_kind == "full" and not args.no_build_solvers and not args.dep_prefix
+            build_kind == "full" and not getattr(args, "no_build_solvers", False)
+            and not args.dep_prefix
         ) or any(
             deps.DEPENDENCIES[name].builder in ("cmake", "cmake_bootstrap")
             for name in selected_names
@@ -1743,7 +1745,8 @@ def cmd_preflight(args) -> int:
     def check_storage_paths():
         for label, path in (
             ("work directory", work),
-            ("output directory", Path(args.output).expanduser().parent if args.output else work / "dist"),
+            ("output directory", Path(args.output).expanduser().parent
+             if getattr(args, "output", None) else work / "dist"),
         ):
             probe = path
             while not probe.exists() and probe != probe.parent:
