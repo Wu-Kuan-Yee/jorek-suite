@@ -846,6 +846,196 @@ class MainWindow(QMainWindow):
             self._save_remote_task_metadata()
 
 
+    def _save_remote_task_metadata(self) -> None:
+        path = self.remote_task_metadata_file
+        if path is None or not self.remote_task_id or not self.remote_task_profile:
+            return
+        payload = {
+            "task_id": self.remote_task_id,
+            "profile": self.remote_task_profile,
+            "started_at": (
+                self.remote_task_started_at.isoformat()
+                if self.remote_task_started_at else datetime.now(timezone.utc).isoformat()),
+            "remote_artifact": str(getattr(self, "remote_artifact_path", "")),
+            "local_artifact": str(getattr(self, "remote_local_artifact", "")),
+            "heartbeat_timeout": DEFAULT_HEARTBEAT_TIMEOUT,
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.name != "nt":
+                os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        except OSError as exc:
+            self._append_overview_output(
+                "[Warning] Remote task recovery metadata could not be saved: %s\n" % exc)
+
+    def _clear_remote_task_metadata(self) -> None:
+        path = self.remote_task_metadata_file
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self.remote_task_metadata_file = None
+
+    def _send_remote_cancel_out_of_band(self) -> bool:
+        if not self.remote_task_id or not self.remote_task_profile:
+            return False
+        ssh = getattr(self, "remote_ssh_executable", None) or shutil.which("ssh")
+        if not ssh:
+            return False
+        try:
+            command = remote_task_cancel_command(
+                self.remote_task_profile, self.remote_task_id)
+            args = ssh_arguments(self.remote_task_profile, command)
+            options = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "close_fds": True,
+            }
+            if os.name != "nt":
+                options["start_new_session"] = True
+            subprocess.Popen([ssh] + args, **options)
+            return True
+        except (OSError, ValueError, RemoteProfileError):
+            return False
+
+    def _start_remote_attach(self) -> None:
+        if (not self.remote_task_id or not self.remote_task_profile or
+                self.remote_task_terminal):
+            return
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            return
+        ssh = getattr(self, "remote_ssh_executable", None) or shutil.which("ssh")
+        if not ssh:
+            self._schedule_remote_reconnect()
+            return
+        try:
+            command = remote_task_attach_command(
+                self.remote_task_profile, self.remote_task_id, self.remote_log_offset)
+            args = ssh_arguments(self.remote_task_profile, command)
+        except (ValueError, RemoteProfileError) as exc:
+            self._append_overview_output(
+                "[Remote reconnect] Could not prepare SSH attach: %s\n" % exc)
+            self._schedule_remote_reconnect()
+            return
+        self.remote_ssh_executable = ssh
+        self._start_external_process(ssh, args, "remote-attach")
+        if self.process.state() == QProcess.ProcessState.Running:
+            self.remote_heartbeat_timer.start()
+
+    def _send_remote_heartbeat(self) -> None:
+        if (self.task_kind == "remote-attach" and
+                self.process.state() == QProcess.ProcessState.Running):
+            self.process.write(b"\n")
+
+    def _schedule_remote_reconnect(self) -> None:
+        if self.remote_task_terminal or not self.remote_task_id:
+            return
+        if not self.remote_reconnect_timer.isActive():
+            delay = max(1, int(self.remote_reconnect_delay))
+            self.task_label.setText("Remote disconnected — reconnecting")
+            self.statusBar().showMessage(
+                "SSH connection lost; retrying in %d seconds. The remote supervisor "
+                "will terminate the build if heartbeats are absent for 120 seconds." % delay)
+            self.remote_reconnect_timer.start(delay * 1000)
+            self.remote_reconnect_delay = min(60, delay * 2)
+
+    def _reconnect_remote_task(self) -> None:
+        if self.remote_task_terminal or not self.remote_task_id:
+            return
+        if self.process.state() == QProcess.ProcessState.NotRunning:
+            self._start_remote_attach()
+
+    def _offer_remote_task_recovery(self) -> None:
+        log_dir = self.config_path.parent / "logs"
+        try:
+            pending = sorted(log_dir.glob("remote-task-*.json"))
+        except OSError:
+            return
+        if not pending:
+            return
+        path = pending[-1]
+        try:
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(metadata, dict):
+            return
+        task_id = str(metadata.get("task_id", ""))
+        profile = metadata.get("profile")
+        if not task_id or not isinstance(profile, dict):
+            return
+        answer = QMessageBox.question(
+            self, APP_TITLE,
+            "A remote build task was active when JOREK Build Studio last closed.\n\n"
+            "Task ID: %s\nRemote host: %s\n\n"
+            "Resume monitoring and recover its logs? If you choose No, Build Studio "
+            "will request cancellation; if that cannot reach the host, the remote "
+            "120-second heartbeat timeout will still stop the task." %
+            (task_id, profile.get("destination", "unknown")),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        self.remote_task_metadata_file = path
+        self.remote_task_id = task_id
+        self.remote_task_profile = dict(profile)
+        self.remote_task_terminal = False
+        self.remote_task_result = {}
+        try:
+            self.remote_task_started_at = datetime.fromisoformat(
+                str(metadata.get("started_at", "")))
+        except ValueError:
+            self.remote_task_started_at = datetime.now(timezone.utc)
+        self.remote_artifact_path = str(metadata.get("remote_artifact", ""))
+        self.remote_local_artifact = Path(
+            str(metadata.get("local_artifact", "")))
+        self.remote_ssh_executable = shutil.which("ssh")
+        self.remote_scp_executable = shutil.which("scp")
+        if self.remote_scp_executable and self.remote_artifact_path:
+            self.remote_download_args = scp_arguments(
+                self.remote_task_profile, self.remote_artifact_path,
+                str(self.remote_local_artifact))
+        else:
+            self.remote_download_args = None
+        if self.remote_artifact_path:
+            self.remote_cleanup_args = ssh_arguments(
+                self.remote_task_profile,
+                "rm -f " + shlex.quote(self.remote_artifact_path))
+        self.remote_log_offset = 0
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.remote_stream_buffer = ""
+        self.remote_task_log_path = None
+        self.remote_reconnect_delay = 5
+        self._cancel_requested = False
+        self._close_stage_log_handles()
+        self.stage_records = {}
+        self.stage_stack = []
+        self.stage_table.setRowCount(0)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        self.task_stage_log_dir = log_dir / (stamp + "-remote-recovered-stages")
+        self.task_stage_log_dir.mkdir(parents=True, exist_ok=True)
+        self.tabs.setCurrentWidget(self.build_page)
+        if answer == QMessageBox.StandardButton.Yes:
+            if not self.remote_ssh_executable:
+                QMessageBox.warning(self, APP_TITLE, "OpenSSH ssh was not found in PATH.")
+                self._schedule_remote_reconnect()
+                return
+            self._save_remote_task_metadata()
+            self._start_remote_attach()
+        else:
+            self._send_remote_cancel_out_of_band()
+            self._clear_remote_task_metadata()
+            self.remote_task_id = ""
+            self.remote_task_profile = None
+
     def _build_dependencies_tab(self) -> None:
         page = QWidget()
         outer = QVBoxLayout(page)
