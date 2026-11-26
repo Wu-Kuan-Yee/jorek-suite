@@ -69,7 +69,7 @@ class BuildEventTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 result = _captured_run(command)
         self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, b"probe-stdout\n")
+        self.assertEqual(result.stdout.replace(b"\r\n", b"\n"), b"probe-stdout\n")
         self.assertIn("probe-stdout", output.getvalue())
         self.assertIn("probe-stderr", output.getvalue())
 
