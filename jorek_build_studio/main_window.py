@@ -479,8 +479,10 @@ class MainWindow(QMainWindow):
             "connection is not restored before it expires, the remote supervisor stops "
             "the build process group. Remote builds use the exact pinned commit and do "
             "not automatically follow later branch updates. After updating this local "
-            "checkout, use 'Use local HEAD' and save the profile. A remote source audit "
-            "checks the PaStiX recursive-submodule recipe before any expensive build starts.")
+            "checkout, use 'Use local HEAD' and save the profile. A generic preflight "
+            "then validates the complete build plan: repository revision, configuration, "
+            "dependency graph and recipes, solver sources, JOREK models, variant matrix, "
+            "toolchain and writable build locations before compilation starts.")
         note.setWordWrap(True)
         outer.addWidget(note)
 
@@ -2237,6 +2239,7 @@ class MainWindow(QMainWindow):
             "queued": ("○ Waiting", "#888888"),
             "running": ("● Running", "#1565c0"),
             "completed": ("✓ Completed", "#2e7d32"),
+            "warning": ("⚠ Warning", "#ed6c02"),
             "failed": ("✕ Failed", "#c62828"),
             "cancelled": ("■ Cancelled", "#777777"),
             "skipped": ("– Skipped", "#777777"),
