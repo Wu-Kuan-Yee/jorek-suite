@@ -2217,13 +2217,22 @@ class MainWindow(QMainWindow):
 
     def _process_error(self, error) -> None:
         self._read_process_output()
-        self._flush_process_output_buffer()
+        if self.task_kind != "remote-attach":
+            self._flush_process_output_buffer()
         message = "Process error: %s" % self.process.errorString()
         self._append_overview_output(message + "\n")
         if self.task_log:
             self.task_log.write("\n" + message + "\n")
             self.task_log.flush()
         if error == QProcess.ProcessError.FailedToStart:
+            if self.task_kind == "remote-attach":
+                self.remote_heartbeat_timer.stop()
+                if self.task_log:
+                    self.task_log.flush()
+                    self.task_log.close()
+                    self.task_log = None
+                self._schedule_remote_reconnect()
+                return
             self._finalize_open_stages("failed")
             if self.task_log:
                 self.task_log.flush()
@@ -2239,9 +2248,40 @@ class MainWindow(QMainWindow):
 
     def _process_finished(self, exit_code: int, exit_status) -> None:
         self._read_process_output()
-        self._flush_process_output_buffer()
         completed_kind = self.task_kind
         succeeded = exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit
+
+        if completed_kind == "remote-start":
+            self._flush_process_output_buffer()
+            if self.task_log:
+                self.task_log.flush()
+                self.task_log.close()
+                self.task_log = None
+            if not succeeded:
+                self._append_overview_output(
+                    "[Remote supervisor] SSH start command ended unexpectedly; "
+                    "checking whether the remote task was created.\n")
+            self._start_remote_attach()
+            return
+
+        if completed_kind == "remote-attach":
+            self.remote_heartbeat_timer.stop()
+            # Discard an incomplete base64 frame. Its byte offset was not
+            # committed, so the next attach will replay it in full.
+            self.process_output_buffer = ""
+            if self.remote_task_terminal:
+                self._flush_remote_task_stream()
+                self._finish_remote_task()
+            else:
+                if self.task_log:
+                    self.task_log.flush()
+                    self.task_log.close()
+                    self.task_log = None
+                self.task_label.setText("Remote disconnected — reconnecting")
+                self._schedule_remote_reconnect()
+            return
+
+        self._flush_process_output_buffer()
         terminal_stage_status = (
             "completed" if succeeded else
             "cancelled" if self._cancel_requested else "failed")
@@ -2259,17 +2299,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Task failed; inspect the complete log", 10000)
         self._record_task(exit_code, exit_status == QProcess.ExitStatus.NormalExit)
 
-        if completed_kind == "remote-build":
-            if succeeded:
-                scp = shutil.which("scp")
-                if scp and getattr(self, "remote_download_args", None):
-                    self._start_external_process(
-                        scp, self.remote_download_args, "remote-download",
-                        working_directory=os.getcwd())
-                else:
-                    self.statusBar().showMessage(
-                        "Remote build verified, but scp is unavailable for download", 12000)
-            return
         if completed_kind == "remote-download":
             self.remote_download_succeeded = succeeded
             self.remote_download_log_path = self.task_log_path
@@ -2304,6 +2333,49 @@ class MainWindow(QMainWindow):
             self._show_verify_result()
         if self.task_kind == "dependencies" and exit_code == 0:
             self.refresh_catalog(show_message=False)
+
+    def _finish_remote_task(self) -> None:
+        result = dict(self.remote_task_result or {})
+        status = str(result.get("status") or "failed")
+        try:
+            exit_code = int(result.get("exit_code") if result.get("exit_code") is not None else 1)
+        except (TypeError, ValueError):
+            exit_code = 1
+        succeeded = status == "completed" and exit_code == 0
+        stage_status = (
+            "completed" if succeeded else
+            "cancelled" if status == "cancelled" else "failed")
+        self._finalize_open_stages(stage_status)
+        if self.task_log:
+            self.task_log.flush()
+            self.task_log.close()
+            self.task_log = None
+        self.remote_heartbeat_timer.stop()
+        self.remote_reconnect_timer.stop()
+        self.remote_task_terminal = True
+        if succeeded:
+            self.task_label.setText("Remote build completed")
+            self.statusBar().showMessage(
+                "Remote build and verification completed; downloading artifact…", 10000)
+        else:
+            self.task_label.setText(
+                "Remote build cancelled" if status == "cancelled" else "Remote build failed")
+            reason = str(result.get("reason") or "")
+            self.statusBar().showMessage(
+                "Remote task %s%s" % (
+                    status, (": " + reason) if reason else ""), 12000)
+        self._record_task(exit_code, succeeded)
+        if succeeded:
+            scp = getattr(self, "remote_scp_executable", None) or shutil.which("scp")
+            if scp and getattr(self, "remote_download_args", None):
+                self._start_external_process(
+                    scp, self.remote_download_args, "remote-download",
+                    working_directory=os.getcwd())
+            else:
+                self.statusBar().showMessage(
+                    "Remote build succeeded, but scp is unavailable for download", 12000)
+        else:
+            self._clear_remote_task_metadata()
 
     def _finish_remote_download(
         self, downloaded: bool, cleanup_succeeded: Optional[bool],
