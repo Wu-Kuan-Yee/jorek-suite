@@ -2191,12 +2191,11 @@ def _ensure_source_deps(args) -> None:
                                    include_dierckx=(getattr(args, "programs", "main") == "all"))
     marker = prefix / ".complete"
     wanted = "\n".join(sorted(names)) + "\n"
-    if marker.exists() and not args.force:
-        try:
-            if marker.read_text(encoding="utf-8") == wanted:
-                return
-        except OSError:
-            pass
+    # This marker records the completed dependency set, but it is not a
+    # trustworthy cache key: individual recipes and required artefacts can
+    # change while the dependency names stay identical.  Always let
+    # DepManager validate each dependency's version, recipe revision, stamp,
+    # and installed artefacts before deciding whether it can be reused.
     ctx = deps.BuildContext(
         prefix=prefix,
         work=Path(args.work),
