@@ -101,6 +101,9 @@ class StageLogDialogTests(unittest.TestCase):
             dialog.resize(620, 360)
             dialog.show()
             self.app.processEvents()
+            self.assertEqual(
+                dialog.editor.horizontalScrollBar().value(),
+                dialog.editor.horizontalScrollBar().minimum())
 
             dialog.scroll_to_bottom()
             dialog.scroll_to_right()
