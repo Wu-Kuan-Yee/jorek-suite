@@ -1530,12 +1530,10 @@ class DepManager:
             if item.source_kind == "git":
                 src = _clone_git_source(ctx, item, urls)
             elif item.source_kind == "archive":
-                archive = ctx.downloader.fetch(
-                    urls,
-                    "%s-%s-%s" % (
-                        item.name, item.version,
-                        os.path.basename(item.url.split("?")[0])),
-                    item.sha256)
+                filename = item.filename or "%s-%s-%s" % (
+                    item.name, item.version,
+                    os.path.basename(item.url.split("?")[0]))
+                archive = ctx.downloader.fetch(urls, filename, item.sha256)
                 src = _extract_root(ctx, item, archive)
             else:
                 raise BuildError(
