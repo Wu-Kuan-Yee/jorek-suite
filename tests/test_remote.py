@@ -297,6 +297,17 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("verify --json", command)
         self.assertIn("rev-parse HEAD", command)
 
+    def test_remote_preflight_preserves_full_build_action_after_profile_value(self):
+        command = build_remote_command(
+            PROFILE,
+            ["--profile", "full", "--work", "/scratch/build", "full",
+             "--solver-prefix", "/scratch/solvers", "--no-build-solvers"],
+            ["--work", "/scratch/build", "verify", "--json"],
+        )
+        self.assertIn("preflight --for-command full", command)
+        self.assertIn("--solver-prefix /scratch/solvers", command)
+        self.assertIn("--no-build-solvers", command)
+
     @unittest.skipIf(os.name == "nt", "remote command uses a POSIX shell")
     def test_remote_preflight_failure_prevents_build(self):
         with tempfile.TemporaryDirectory() as temporary:
