@@ -8,6 +8,7 @@ knowledge.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -34,6 +35,24 @@ IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 IS_BSD = any(sys.platform.startswith(x) for x in ("freebsd", "openbsd", "netbsd", "dragonfly"))
 EXE_SUFFIX = ".exe" if IS_WINDOWS else ""
+
+
+BUILD_EVENT_PREFIX = "@@JOREK_BUILD_EVENT@@"
+
+
+def emit_build_event(event: str, **payload) -> None:
+    """Emit a machine-readable progress event for the Build Studio frontend.
+
+    The protocol is opt-in so ordinary command-line output stays unchanged.
+    Events travel on stdout, which also works for SSH-based native builds.
+    """
+    if os.environ.get("JOREK_BUILD_STUDIO_EVENTS") != "1":
+        return
+    message = {"event": str(event)}
+    message.update(payload)
+    sys.stdout.write("\n" + BUILD_EVENT_PREFIX + json.dumps(
+        message, ensure_ascii=False, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
 
 
 class BuildError(RuntimeError):
@@ -116,45 +135,97 @@ def run(
     check: bool = True,
     input_text: Optional[str] = None,
 ) -> subprocess.CompletedProcess:
-    """Run a command with a merged environment and optional combined log."""
+    """Run a command while streaming merged output to stdout and its log.
+
+    Unlike subprocess.run(), this keeps the GUI's live log view responsive
+    during long compiler and dependency commands. The complete byte stream is
+    still returned in CompletedProcess.stdout for compatibility with callers.
+    """
     argv = [str(x) for x in argv]
     if dry_run:
-        print("  + " + _display_argv(argv))
+        print("  + " + _display_argv(argv), flush=True)
         return subprocess.CompletedProcess(argv, 0, b"", b"")
     env = env or {}
     full_env = os.environ.copy()
     if env:
         full_env.update({str(k): str(v) for k, v in env.items()})
-    if echo and not env.get("JOREK_QUIET"):
-        print("  + " + _display_argv(argv))
-    t0 = time.time()
-    proc = subprocess.run(
-        argv,
-        cwd=str(cwd) if cwd else None,
-        env=full_env,
-        input=input_text.encode() if input_text is not None else None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    elapsed = time.time() - t0
-    if log:
-        log.parent.mkdir(parents=True, exist_ok=True)
-        with open(log, "ab") as handle:
-            handle.write(("\n$ " + _display_argv(argv) + "\n").encode())
-            handle.write(proc.stdout)
-            handle.write(("\n[exit %d, %.1fs]\n" % (proc.returncode, elapsed)).encode())
-    if echo and proc.stdout and not env.get("JOREK_QUIET"):
-        text = proc.stdout.decode("utf-8", "replace")
-        if len(text) > 20000:
-            text = text[:10000] + "\n... [output truncated, see log] ...\n" + text[-8000:]
-        sys.stdout.write(text)
-        if not text.endswith("\n"):
-            sys.stdout.write("\n")
-    if check and proc.returncode != 0:
-        raise CommandError(argv, proc.returncode, log)
-    return proc
+    quiet = bool(env.get("JOREK_QUIET"))
+    if echo and not quiet:
+        print("  + " + _display_argv(argv), flush=True)
 
+    log_handle = None
+    proc = None
+    chunks = []
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    binary_stdout = getattr(sys.stdout, "buffer", None)
+    started = time.time()
+    try:
+        if log:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            log_handle = log.open("ab")
+            log_handle.write(("\n$ " + _display_argv(argv) + "\n").encode("utf-8"))
+            log_handle.flush()
+        proc = subprocess.Popen(
+            argv,
+            cwd=str(cwd) if cwd else None,
+            env=full_env,
+            stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+        )
+        if input_text is not None and proc.stdin is not None:
+            try:
+                proc.stdin.write(input_text.encode("utf-8"))
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+
+        stream = proc.stdout
+        while stream is not None:
+            reader = getattr(stream, "read1", stream.read)
+            chunk = reader(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if log_handle:
+                log_handle.write(chunk)
+                log_handle.flush()
+            if echo and not quiet:
+                if binary_stdout is not None:
+                    binary_stdout.write(chunk)
+                    binary_stdout.flush()
+                else:
+                    text = decoder.decode(chunk)
+                    if text:
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
+
+        tail = decoder.decode(b"", final=True) if binary_stdout is None else ""
+        if echo and not quiet and tail:
+            sys.stdout.write(tail)
+            sys.stdout.flush()
+        returncode = proc.wait()
+        elapsed = time.time() - started
+        if log_handle:
+            log_handle.write(("\n[exit %d, %.1fs]\n" % (returncode, elapsed)).encode("utf-8"))
+            log_handle.flush()
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        if proc is not None:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
+        if log_handle:
+            log_handle.close()
+
+    result = subprocess.CompletedProcess(argv, returncode, b"".join(chunks), b"")
+    if check and returncode != 0:
+        raise CommandError(argv, returncode, log)
+    return result
 
 def output(argv: Sequence[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> str:
     proc = subprocess.run(

@@ -47,8 +47,9 @@ class SuiteTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="jorek-suite-test-"))
         self.cc = cc()
-        self.payload_a = self.tmp / "payload-a"
-        self.payload_b = self.tmp / "payload-b"
+        executable_suffix = ".exe" if os.name == "nt" else ""
+        self.payload_a = self.tmp / ("payload-a" + executable_suffix)
+        self.payload_b = self.tmp / ("payload-b" + executable_suffix)
         source = self.tmp / "payload.c"
         source.write_text(PAYLOAD_C, encoding="utf-8")
         subprocess.run([self.cc, "-O2", str(source), "-o", str(self.payload_a)], check=True)
@@ -58,7 +59,7 @@ class SuiteTest(unittest.TestCase):
         subprocess.run([self.cc, "-O2", "-std=c99", "-D_POSIX_C_SOURCE=200809L",
                         "-I", str(SRC), "-c", str(SRC / "jorek_suite.c"), "-o", str(self.launcher_obj)], check=True)
         subprocess.run([self.cc, "-O2", "-I", str(SRC), "-c", str(SRC / "puff.c"), "-o", str(self.puff_obj)], check=True)
-        self.suite = self.tmp / "suite"
+        self.suite = self.tmp / ("suite.exe" if os.name == "nt" else "suite")
         builder = SuiteBuilder(self.tmp / "unused-launcher", jorek_version="test")
         v1 = builder.add_variant("model303-full", "303", ("hdf5", "mumps"), ("n_tor=3",), make_default=True)
         builder.add_program(v1, "jorek2_main", self.payload_a)
@@ -70,7 +71,7 @@ class SuiteTest(unittest.TestCase):
             builder.build_macho_section(self.suite, [self.cc], [self.launcher_obj, self.puff_obj])
         else:
             # Append mode requires a launcher executable, not an object file.
-            exe = self.tmp / "launcher"
+            exe = self.tmp / ("launcher.exe" if os.name == "nt" else "launcher")
             subprocess.run([self.cc, str(self.launcher_obj), str(self.puff_obj), "-o", str(exe)], check=True)
             builder.launcher = exe
             builder.build(self.suite)

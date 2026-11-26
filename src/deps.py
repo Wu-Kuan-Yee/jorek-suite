@@ -37,6 +37,7 @@ from common import (
     sha256_file,
     which,
     write_text,
+    emit_build_event,
 )
 
 
@@ -1101,18 +1102,47 @@ class DepManager:
 
     def build(self, names: Iterable[str], include_optional: bool = True) -> None:
         order = self.resolve(names)
+        emit_build_event(
+            "phase_start", phase="dependencies", label="Dependencies",
+            total=len(order))
+        completed = 0
         for item in order:
-            if not item.supports(self.ctx.platform):
-                if item.optional or self.optional:
-                    print("  skipping %s (unsupported on %s)" % (item.name, self.ctx.platform.system))
+            stage_id = "dependency:" + item.name
+            status = "completed"
+            error = ""
+            emit_build_event(
+                "stage_start", id=stage_id,
+                label="%s %s" % (item.name, item.version),
+                category="Dependency", phase="dependencies",
+                log_path=str(self.ctx.log_path(item.name)))
+            try:
+                if not item.supports(self.ctx.platform):
+                    if item.optional or self.optional:
+                        print("  skipping %s (unsupported on %s)" % (item.name, self.ctx.platform.system))
+                        status = "skipped"
+                        continue
+                    raise BuildError("%s does not support %s" % (item.name, self.ctx.platform.system))
+                if item.manual:
+                    print("  skipping manual dependency %s: %s" % (item.name, item.note))
+                    status = "skipped"
                     continue
-                raise BuildError("%s does not support %s" % (item.name, self.ctx.platform.system))
-            if item.manual:
-                print("  skipping manual dependency %s: %s" % (item.name, item.note))
-                continue
-            if item.name == "imas" and item.name not in names and not include_optional:
-                continue
-            self._build_one(item)
+                if item.name == "imas" and item.name not in names and not include_optional:
+                    status = "skipped"
+                    continue
+                self._build_one(item)
+            except Exception as exc:
+                status = "failed"
+                error = str(exc)
+                raise
+            finally:
+                emit_build_event(
+                    "stage_finish", id=stage_id, status=status,
+                    error=error)
+                completed += 1
+                emit_build_event(
+                    "phase_progress", phase="dependencies",
+                    completed=completed, total=len(order))
+
 
     def _build_one(self, item: Dependency) -> None:
         ctx = self.ctx

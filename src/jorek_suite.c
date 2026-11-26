@@ -1007,10 +1007,47 @@ static void js_print_features(Suite *s, Variant *v, int json) {
     }
 }
 
-static void js_print_info(Suite *s) {
+static void js_print_json_string(const char *value) {
+    const unsigned char *p = (const unsigned char *)(value ? value : "");
+    putchar('"');
+    for (; *p; ++p) {
+        switch (*p) {
+            case '"':  fputs("\\\"", stdout); break;
+            case '\\': fputs("\\\\", stdout); break;
+            case '\b': fputs("\\b", stdout); break;
+            case '\f': fputs("\\f", stdout); break;
+            case '\n': fputs("\\n", stdout); break;
+            case '\r': fputs("\\r", stdout); break;
+            case '\t': fputs("\\t", stdout); break;
+            default:
+                if (*p < 0x20) printf("\\u%04x", (unsigned int)*p);
+                else putchar((int)*p);
+                break;
+        }
+    }
+    putchar('"');
+}
+
+static void js_print_info(Suite *s, int json) {
     size_t i;
     uint64_t payload = 0;
     for (i = 0; i < s->nprograms; ++i) payload += s->programs[i].size;
+    if (json) {
+        fputs("{\"suite_version\":", stdout);
+        js_print_json_string(s->suite_version);
+        fputs(",\"jorek_version\":", stdout);
+        js_print_json_string(s->jorek_version);
+        fputs(",\"build_id\":", stdout);
+        js_print_json_string(s->build_id);
+        printf(",\"variant_count\":%lu,\"program_count\":%lu,\"group_count\":%lu,"
+               "\"helper_count\":%lu,\"payload_bytes\":%llu,\"file\":",
+               (unsigned long)s->nvariants, (unsigned long)s->nprograms,
+               (unsigned long)s->ngroups, (unsigned long)s->nhelpers,
+               (unsigned long long)payload);
+        js_print_json_string(s->path);
+        fputs("}\n", stdout);
+        return;
+    }
     printf("JOREK single-file suite\n");
     printf("  suite version : %s\n", s->suite_version);
     printf("  JOREK version : %s\n", s->jorek_version);
@@ -2000,7 +2037,7 @@ int main(int argc, char **argv) {
         }
     }
     if (opt_list) { js_print_variants(&suite, opt_json); return 0; }
-    if (opt_info) { js_print_info(&suite); return 0; }
+    if (opt_info) { js_print_info(&suite, opt_json); return 0; }
     if (opt_list_features) {
         Variant *v = NULL;
         if (opt_variant || opt_model || opt_features || opt_params) {
