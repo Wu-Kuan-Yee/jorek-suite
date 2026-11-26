@@ -676,7 +676,8 @@ class MainWindow(QMainWindow):
             self.overview_text.setPlainText("Checkout inspection failed:\n%s" % exc)
             return
         self.catalog = catalog
-        current_model = (self.model_combo.currentData() or self.model_combo.currentText()\n                        or self.config.get("model", "303"))
+        current_model = (self.model_combo.currentData() or self.model_combo.currentText()
+                        or self.config.get("model", "303"))
         self.model_combo.clear()
         self.model_combo.addItem("All models", "all")
         for model in catalog["models"]:
