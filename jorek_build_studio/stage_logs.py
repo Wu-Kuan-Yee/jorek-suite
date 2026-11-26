@@ -34,13 +34,17 @@ class LogHighlighter(QSyntaxHighlighter):
             # ordinary prose containing a translated word for "error" is not
             # accidentally promoted to an error.
             (re.compile(
-                r"(?i)\b(?:fatal error|cmake error|traceback|assertionerror|"
+                r"(?i)\b(?:fatal error|fatal:|cmake error|traceback|assertionerror|"
                 r"undefined reference|undefined symbol|unresolved external symbol|"
                 r"multiple definition|error occurred|linker command failed|"
-                r"collect2: error)\b|\berror\s*:|"
+                r"collect2: error)\b|\berror\s*(?::|#\s*\d+|\s+[A-Z]?\d+\b)|"
+                r"\b(?:cannot find|cannot open|cannot locate|no such file or directory|"
+                r"subcommand failed|build stopped)\b|"
+                r"\b(?:make|gmake|ninja)(?:\[\d+\])?\s*:\s*\*{1,}|"
                 r"(?:^|[\s:：])(?:致命错误|错误|エラー|오류|erreur|fehler|"
-                r"erro|ошибка|errore|fout|błąd|hata)\s*[：:]|"
+                r"erro|ошибка|errore|fout|błąd|hata|خطأ)\s*[：:]|"
                 r"(?:未定义的引用|未定义符号|未解析的外部符号|链接失败|"
+                r"找不到|无法打开|构建失败|子命令失败|"
                 r"致命なエラー|未解決の外部シンボル|정의되지 않은 참조|"
                 r"неопределённая ссылка)"),
              "#ff6b6b", "#3b171b", True),
@@ -82,9 +86,11 @@ class LogHighlighter(QSyntaxHighlighter):
             # Successful checks and build milestones, including localized
             # status text.  The muted "not found" rule above takes precedence.
             (re.compile(
-                r"(?i)\b(?:success|passed|completed|installed|found|configured)\b|"
+                r"(?i)\b(?:success|passed|completed|installed|found|configured|"
+                r"configuring done|generating done|built target|build succeeded|"
+                r"built successfully)\b|"
                 r"(?:成功|已完成|完成|已安装|安装成功|已找到|编译成功|"
-                r"构建成功|配置完成|检测通过|成功)"),
+                r"构建成功|配置完成|检测通过|目标已生成|编译完成|链接完成|成功)"),
              "#83d6a5", None, False),
         ]
 
