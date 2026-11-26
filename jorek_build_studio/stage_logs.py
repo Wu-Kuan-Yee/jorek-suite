@@ -13,7 +13,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QPushButton, QTextEdit, QVBoxLayout, QWidget,
 )
 
 
@@ -302,6 +302,7 @@ class StageLogDialog(QDialog):
 
     def update_search(self):
         query = self.search_edit.text()
+        old_position = self.editor.textCursor().selectionStart()
         self.matches = []
         self.match_index = -1
         self.editor.setExtraSelections([])
@@ -332,7 +333,7 @@ class StageLogDialog(QDialog):
             if found.isNull():
                 break
             self.matches.append((found.selectionStart(), found.selectionEnd()))
-            selection = QPlainTextEdit.ExtraSelection()
+            selection = QTextEdit.ExtraSelection()
             selection.cursor = found
             selection.format = fmt
             selections.append(selection)
@@ -344,7 +345,9 @@ class StageLogDialog(QDialog):
         self.editor.setExtraSelections(selections)
         self.match_label.setText("%s matches" % format(len(self.matches), ",d"))
         if self.matches:
-            self.match_index = 0
+            self.match_index = next(
+                (i for i, (start, _end) in enumerate(self.matches)
+                 if start >= old_position), 0)
             self._select_match(self.match_index)
 
     def _select_match(self, index):
@@ -394,8 +397,8 @@ class StageLogDialog(QDialog):
         if not filename:
             return
         try:
-            Path(filename).write_text(
-                self.editor.toPlainText(), encoding="utf-8", newline="")
+            with Path(filename).open("w", encoding="utf-8", newline="") as handle:
+                handle.write(self.editor.toPlainText())
         except OSError as exc:
             QMessageBox.warning(self, "Save build log", str(exc))
 
