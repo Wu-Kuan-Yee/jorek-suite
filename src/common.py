@@ -157,6 +157,7 @@ def run(
     proc = None
     chunks = []
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    binary_stdout = getattr(sys.stdout, "buffer", None)
     started = time.time()
     try:
         if log:
@@ -191,12 +192,16 @@ def run(
                 log_handle.write(chunk)
                 log_handle.flush()
             if echo and not quiet:
-                text = decoder.decode(chunk)
-                if text:
-                    sys.stdout.write(text)
-                    sys.stdout.flush()
+                if binary_stdout is not None:
+                    binary_stdout.write(chunk)
+                    binary_stdout.flush()
+                else:
+                    text = decoder.decode(chunk)
+                    if text:
+                        sys.stdout.write(text)
+                        sys.stdout.flush()
 
-        tail = decoder.decode(b"", final=True)
+        tail = decoder.decode(b"", final=True) if binary_stdout is None else ""
         if echo and not quiet and tail:
             sys.stdout.write(tail)
             sys.stdout.flush()
