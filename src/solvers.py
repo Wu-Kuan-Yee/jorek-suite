@@ -63,11 +63,22 @@ SOLVER_SOURCE_RECIPES = {
 }
 
 SOLVER_STAGE_ARTIFACTS = {
-    "hwloc": ("lib/libhwloc.a",),
-    "gklib-metis": ("lib/libGKlib.a", "lib/libmetis.a"),
-    "pastix6": ("lib/libpastix.a", "lib/libpastix_kernels.a", "lib/libspm.a"),
-    "strumpack": ("lib/libstrumpack.a",),
-    "pastix5": ("pastix5/lib/libpastix.a",),
+    "hwloc": ("lib/libhwloc.a", "include/hwloc.h"),
+    "gklib-metis": (
+        "lib/libGKlib.a", "lib/libmetis.a",
+        "include/GKlib.h", "include/metis.h",
+    ),
+    "pastix6": (
+        "lib/libpastix.a", "lib/libpastix_kernels.a", "lib/libspm.a",
+        "include/pastix.h", "include/spm.h",
+    ),
+    "strumpack": (
+        "lib/libstrumpack.a",
+        "include/StrumpackConfig.h", "include/StrumpackSparseSolverMPIDist.hpp",
+    ),
+    "pastix5": (
+        "pastix5/lib/libpastix.a", "pastix5/include/pastix_fortran.h",
+    ),
 }
 
 
