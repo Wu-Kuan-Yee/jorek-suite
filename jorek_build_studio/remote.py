@@ -183,6 +183,157 @@ def _remote_event_line(event: str, **payload) -> str:
         BUILD_EVENT_PREFIX + json.dumps(message, ensure_ascii=False, separators=(",", ":")))
 
 
+_REMOTE_BUILD_STREAMER = r'''
+import json
+import os
+import re
+import subprocess
+import sys
+
+PREFIX = "@@JOREK_BUILD_EVENT@@"
+command = sys.argv[1:]
+if not command:
+    raise SystemExit("remote build streamer: missing build command")
+
+child_env = os.environ.copy()
+child_env["PYTHONIOENCODING"] = "utf-8"
+child_env["PYTHONUNBUFFERED"] = "1"
+child_env["JOREK_BUILD_STUDIO_EVENTS"] = "1"
+
+# Newer pinned revisions emit dependency events natively. Detect that support
+# before launching so the legacy parser cannot create duplicate stage records.
+native_dependency_events = False
+if len(command) >= 2:
+    build_script = os.path.abspath(command[1])
+    deps_script = os.path.join(os.path.dirname(build_script), "src", "deps.py")
+    try:
+        with open(deps_script, "r", encoding="utf-8", errors="replace") as handle:
+            deps_source = handle.read()
+        native_dependency_events = (
+            "emit_build_event" in deps_source and '"dependency:"' in deps_source
+        )
+    except OSError:
+        pass
+
+work_dir = ""
+for index, argument in enumerate(command):
+    if argument == "--work" and index + 1 < len(command):
+        work_dir = command[index + 1]
+        break
+    if argument.startswith("--work="):
+        work_dir = argument.split("=", 1)[1]
+        break
+
+
+def write_bytes(data):
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is not None:
+        stream.write(data)
+        stream.flush()
+    else:
+        sys.stdout.write(data.decode("utf-8", "replace"))
+        sys.stdout.flush()
+
+
+def emit(event, **payload):
+    message = {"event": event}
+    message.update(payload)
+    encoded = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+    write_bytes(("\n" + PREFIX + encoded + "\n").encode("utf-8"))
+
+
+fallback_stage = None
+
+
+def finish_fallback(status, error=""):
+    global fallback_stage
+    if fallback_stage is None:
+        return
+    payload = {"id": fallback_stage["id"], "status": status}
+    if error:
+        payload["error"] = error
+    emit("stage_finish", **payload)
+    fallback_stage = None
+
+
+def consume_line(raw):
+    global native_dependency_events, fallback_stage
+    line = raw.decode("utf-8", "replace").rstrip("\r\n")
+    if line.startswith(PREFIX):
+        try:
+            event = json.loads(line[len(PREFIX):])
+        except (TypeError, ValueError):
+            event = {}
+        if (isinstance(event, dict) and
+                event.get("event") == "stage_start" and
+                str(event.get("id", "")).startswith("dependency:")):
+            native_dependency_events = True
+            finish_fallback("completed")
+        write_bytes(raw)
+        return
+
+    if not native_dependency_events:
+        match = re.match(r"^\s*>>\s+building\s+([A-Za-z0-9_.+-]+)\s+(\S+)", line)
+        if match:
+            finish_fallback("completed")
+            name, version = match.groups()
+            stage_id = "remote-fallback:dependency:" + name
+            remote_log = (
+                os.path.join(work_dir, "logs", name + ".log") if work_dir else ""
+            )
+            emit(
+                "stage_start",
+                id=stage_id,
+                label="%s %s" % (name, version),
+                category="Dependency",
+                phase="dependencies",
+                log_path=remote_log,
+            )
+            fallback_stage = {"id": stage_id, "name": name}
+
+    write_bytes(raw)
+
+
+process = subprocess.Popen(
+    command,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+    env=child_env,
+    bufsize=0,
+)
+stream = process.stdout
+buffer = bytearray()
+reader = getattr(stream, "read1", stream.read)
+while True:
+    chunk = reader(65536)
+    if not chunk:
+        break
+    buffer.extend(chunk)
+    while True:
+        newline = buffer.find(b"\n")
+        if newline < 0:
+            break
+        raw = bytes(buffer[:newline + 1])
+        del buffer[:newline + 1]
+        consume_line(raw)
+if buffer:
+    consume_line(bytes(buffer))
+
+return_code = process.wait()
+if return_code == 0:
+    finish_fallback("completed")
+else:
+    finish_fallback("failed", "remote build exited with status %d" % return_code)
+raise SystemExit(return_code)
+'''
+
+
+def _remote_build_runner(python: str, repo: str, build_args: List[str]) -> str:
+    """Stream a remote build and synthesize dependency events for older builders."""
+    command = [python, repo + "/build.py"] + list(build_args)
+    return shlex.join([python, "-u", "-c", _REMOTE_BUILD_STREAMER] + command)
+
+
 def _remote_stage(stage_id: str, label: str, category: str, command: str) -> str:
     """Wrap a remote shell command in start/success/failure progress events."""
     start = _remote_event_line(
@@ -216,8 +367,7 @@ def build_remote_command(
     qurl = shlex.quote(repo_url)
     qbranch = shlex.quote(branch)
     qcommit = shlex.quote(commit)
-    build_command = "PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join(
-        [python, repo + "/build.py"] + list(build_args))
+    build_command = _remote_build_runner(python, repo, build_args)
     verify_command = "PYTHONIOENCODING=utf-8 PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join(
         [python, repo + "/build.py"] + list(verify_args))
     suite_source = str(PurePosixPath(str(profile["remote_work"])) / "dist" / "jorek-suite")

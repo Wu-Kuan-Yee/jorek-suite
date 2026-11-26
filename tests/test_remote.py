@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -18,6 +19,7 @@ from jorek_build_studio.remote import (
     ssh_arguments,
     validate_connection_profile,
     validate_profile,
+    _REMOTE_BUILD_STREAMER,
 )
 
 
@@ -36,6 +38,61 @@ PROFILE = {
     "host_key_policy": "yes",
     "ssh_options": ["Compression=yes"],
 }
+
+
+class RemoteBuildStreamerTests(unittest.TestCase):
+    def test_legacy_dependency_failure_emits_failed_stage_finish(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "src").mkdir()
+            build_script = root / "build.py"
+            build_script.write_text(
+                "print('>> building fixture_dep 1.2.3', flush=True)\n"
+                "print('CMake configuration failed', flush=True)\n"
+                "raise SystemExit(7)\n",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable, "-u", "-c", _REMOTE_BUILD_STREAMER,
+                sys.executable, str(build_script), "--work", str(root / "work"), "dist",
+            ]
+            result = subprocess.run(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False, timeout=15)
+            self.assertEqual(result.returncode, 7, result.stdout)
+            self.assertIn('"event":"stage_finish"', result.stdout)
+            self.assertIn('"status":"failed"', result.stdout)
+            self.assertIn("remote build exited with status 7", result.stdout)
+
+    def test_native_dependency_events_are_not_duplicated_by_legacy_parser(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "src").mkdir()
+            (root / "src" / "deps.py").write_text(
+                'emit_build_event("stage_start", id="dependency:" + name)\n',
+                encoding="utf-8",
+            )
+            build_script = root / "build.py"
+            build_script.write_text(
+                "import json\n"
+                "prefix = '@@JOREK_BUILD_EVENT@@'\n"
+                "start = {'event': 'stage_start', 'id': 'dependency:fixture_dep'}\n"
+                "finish = {'event': 'stage_finish', 'id': 'dependency:fixture_dep', 'status': 'completed'}\n"
+                "print(prefix + json.dumps(start), flush=True)\n"
+                "print('>> building fixture_dep 1.2.3', flush=True)\n"
+                "print(prefix + json.dumps(finish), flush=True)\n",
+                encoding="utf-8",
+            )
+            command = [
+                sys.executable, "-u", "-c", _REMOTE_BUILD_STREAMER,
+                sys.executable, str(build_script), "--work", str(root / "work"), "dist",
+            ]
+            result = subprocess.run(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn('"id":"dependency:fixture_dep"', result.stdout)
+            self.assertNotIn("remote-fallback:dependency:fixture_dep", result.stdout)
 
 
 class RemoteCommandTests(unittest.TestCase):
@@ -83,7 +140,7 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("remote:repository", command)
         self.assertIn("remote:build", command)
         self.assertIn("remote:verify", command)
-        self.assertIn("JOREK_BUILD_STUDIO_EVENTS=1", command)
+        self.assertIn('child_env["JOREK_BUILD_STUDIO_EVENTS"] = "1"', command)
         self.assertIn("0123456789abcdef0123456789abcdef01234567", command)
         self.assertIn("'/srv/build studio/jorek-suite/build.py'", command)
         self.assertIn("'/scratch/jorek work'", command)
@@ -144,6 +201,8 @@ class RemoteCommandTests(unittest.TestCase):
                 args = parser.parse_args()
                 suite = Path(args.work) / "dist" / "jorek-suite"
                 if args.action == "dist":
+                    print(">> building fixture_dep 1.2.3", flush=True)
+                    print("fixture dependency compiler output", flush=True)
                     suite.parent.mkdir(parents=True, exist_ok=True)
                     suite.write_text("native-suite", encoding="utf-8")
                 elif args.action == "verify":
@@ -179,6 +238,26 @@ class RemoteCommandTests(unittest.TestCase):
             self.assertIn('"id":"remote:repository"', result.stdout)
             self.assertIn('"id":"remote:build"', result.stdout)
             self.assertIn('"id":"remote:verify"', result.stdout)
+            event_prefix = "@@JOREK_BUILD_EVENT@@"
+            events = [
+                json.loads(line[len(event_prefix):])
+                for line in result.stdout.splitlines()
+                if line.startswith(event_prefix)
+            ]
+            fallback_events = [
+                event for event in events
+                if event.get("id") == "remote-fallback:dependency:fixture_dep"
+            ]
+            self.assertEqual(
+                [event.get("event") for event in fallback_events],
+                ["stage_start", "stage_finish"],
+                result.stdout,
+            )
+            self.assertEqual(
+                fallback_events[0].get("log_path"),
+                str(Path(profile["remote_work"]) / "logs" / "fixture_dep.log"),
+            )
+            self.assertIn("fixture dependency compiler output", result.stdout)
             artifact = Path(profile["remote_work"]) / "dist" / "jorek-suite"
             self.assertEqual(artifact.read_text(encoding="utf-8"), "native-suite")
             transfer = Path(remote_artifact_path(profile))

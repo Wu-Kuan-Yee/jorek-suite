@@ -1696,8 +1696,12 @@ class MainWindow(QMainWindow):
             try:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 handle = log_path.open("w", encoding="utf-8", errors="replace")
-                handle.write("JOREK Build Studio — %s\nCategory: %s\nStage ID: %s\n\n" % (
-                    label, category, stage_id))
+                remote_log_path = str(event.get("log_path") or "")
+                header = "JOREK Build Studio — %s\nCategory: %s\nStage ID: %s\n" % (
+                    label, category, stage_id)
+                if remote_log_path:
+                    header += "Remote log: %s\n" % remote_log_path
+                handle.write(header + "\n")
                 handle.flush()
             except OSError as exc:
                 if handle:
@@ -1809,6 +1813,10 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, stage_id)
             elif column == 4:
                 item.setData(Qt.ItemDataRole.UserRole, record.get("log", ""))
+                tooltip = "Local log: %s" % record.get("log", "")
+                if record.get("remote_log_path"):
+                    tooltip += "\nRemote log: %s" % record["remote_log_path"]
+                item.setToolTip(tooltip)
 
     def _refresh_running_stage_rows(self) -> None:
         for stage_id, record in self.stage_records.items():
