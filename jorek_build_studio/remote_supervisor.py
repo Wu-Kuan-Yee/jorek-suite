@@ -295,7 +295,14 @@ def start_task(root, task_id, timeout, payload):
     open(os.path.join(directory, "output.log"), "ab").close()
     touch(os.path.join(directory, "heartbeat"))
     supervisor_log = os.path.join(directory, "supervisor.log")
-    pid = os.fork()
+    try:
+        pid = os.fork()
+    except OSError as exc:
+        update_state(
+            directory, status="failed", exit_code=1,
+            finished_at=time.time(), reason="could_not_start_supervisor: %s" % exc,
+        )
+        raise
     if pid:
         print(STARTED_PREFIX + json.dumps({
             "task_id": task_id, "status": "starting",
@@ -320,7 +327,16 @@ def start_task(root, task_id, timeout, payload):
             os.close(log_fd)
         result = run_daemon(root, task_id)
         os._exit(int(result))
-    except BaseException:
+    except BaseException as exc:
+        try:
+            update_state(
+                directory, status="failed", exit_code=1,
+                finished_at=time.time(),
+                reason="supervisor_startup_error: %s" % exc,
+                traceback=traceback.format_exc()[-12000:],
+            )
+        except BaseException:
+            pass
         os._exit(1)
 
 
