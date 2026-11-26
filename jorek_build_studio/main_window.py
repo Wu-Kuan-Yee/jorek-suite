@@ -874,6 +874,10 @@ class MainWindow(QMainWindow):
             plan["ssh"], plan["ssh_args"], "remote-start")
         if self.task_kind == "remote-start" and self.task_stage_log_dir is not None:
             self._save_remote_task_metadata()
+        else:
+            self.remote_task_id = ""
+            self.remote_task_profile = None
+            self.remote_task_metadata_file = None
 
 
     def _save_remote_task_metadata(self) -> None:
