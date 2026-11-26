@@ -276,6 +276,10 @@ def start_task(root, task_id, timeout, payload):
     os.umask(0o077)
     root = os.path.abspath(root)
     os.makedirs(root, mode=0o700, exist_ok=True)
+    # Task state and transcripts can contain host paths and build output.
+    # Keep the supervisor-owned registry private even if it already existed.
+    os.chmod(os.path.dirname(root), 0o700)
+    os.chmod(root, 0o700)
     directory = task_directory(root, task_id)
     os.mkdir(directory, 0o700)
     request = {
