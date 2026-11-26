@@ -402,7 +402,7 @@ register(
         deps=("mpich", "openblas", "scalapack", "metis"),
         static_libs=("libstrumpack.a",), includes=("StrumpackConfig.h", "StrumpackSparseSolverMPIDist.hpp"),
         builder="strumpack", platforms=("linux", "bsd", "macos"),
-        required_paths=("CMakeLists.txt", "src"), recipe_revision="1"),
+        required_paths=("CMakeLists.txt", "src"), recipe_revision="2"),
     dep("boost", "1.87.0", "https://archives.boost.io/release/1.87.0/source/boost_1_87_0.tar.bz2",
         license="BSL-1.0", homepage="https://www.boost.org/",
         static_libs=("libboost_math_tr1.a",), includes=("boost/math/special_functions/bessel.hpp",),
@@ -1461,16 +1461,154 @@ def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         os.chmod(conf, 0o755)
 
 
+def patch_strumpack_static_link_order(src: Path) -> bool:
+    """Put ScaLAPACK before MPI in STRUMPACK's exported static link interface.
+
+    STRUMPACK 7.1.0 appends MPI libraries to the target before ScaLAPACK.
+    With static archives, ScaLAPACK's unresolved MPI references then occur
+    after the MPI archives have already been scanned by GNU ld.  Move the
+    upstream MPI block after the ScaLAPACK block without changing the actual
+    dependency set.  Fail closed if upstream changes the expected layout.
+    """
+    cmake_lists = Path(src) / "CMakeLists.txt"
+    if not cmake_lists.is_file():
+        raise BuildError(
+            "STRUMPACK source is missing its top-level CMakeLists.txt: %s" %
+            cmake_lists)
+
+    content = read_text(cmake_lists)
+    marker = (
+        "# JOREK Build Studio static-link fix: ScaLAPACK may reference MPI symbols."
+    )
+    if marker in content:
+        marker_at = content.index(marker)
+        scalapack_at = content.find(
+            "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
+            marker_at)
+        mpi_at = content.find("MPI::MPI_CXX", marker_at)
+        if scalapack_at < 0 or mpi_at < 0 or scalapack_at > mpi_at:
+            raise BuildError(
+                "STRUMPACK static-link patch marker exists, but the "
+                "ScaLAPACK-before-MPI order is not intact")
+        return False
+
+    original_mpi = (
+        "if(STRUMPACK_USE_MPI)\n"
+        "  target_link_libraries(strumpack PUBLIC\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+        "endif()\n"
+    )
+    original_scalapack = (
+        "if(STRUMPACK_USE_MPI)\n"
+        "  if(SCALAPACK_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+        "  endif()\n"
+        "endif()\n"
+    )
+    if content.count(original_mpi) != 1 or content.count(original_scalapack) != 1:
+        raise BuildError(
+            "cannot safely patch STRUMPACK %s static link order: expected "
+            "MPI and ScaLAPACK target_link_libraries blocks were not found "
+            "exactly once" % DEPENDENCIES["strumpack"].version)
+
+    content = content.replace(original_mpi, "", 1)
+    replacement = (
+        marker + "\n"
+        "if(STRUMPACK_USE_MPI)\n"
+        "  if(SCALAPACK_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+        "  endif()\n"
+        "  target_link_libraries(strumpack PUBLIC\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+        "endif()\n"
+    )
+    content = content.replace(original_scalapack, replacement, 1)
+    marker_at = content.index(marker)
+    scalapack_at = content.find(
+        "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
+        marker_at)
+    mpi_at = content.find("MPI::MPI_CXX", marker_at)
+    if scalapack_at < 0 or mpi_at < 0 or scalapack_at > mpi_at:
+        raise BuildError("failed to establish ScaLAPACK-before-MPI link order")
+    write_text(cmake_lists, content)
+    return True
+
+
+def verify_strumpack_install_link(
+    ctx: BuildContext, dep: Dependency, cmake: str, build_dir: Path,
+) -> None:
+    """Link a tiny external consumer against the installed STRUMPACK package.
+
+    The probe deliberately references the Fortran ScaLAPACK PDGEMM entry point.
+    That pulls a ScaLAPACK archive member into the final link and verifies that
+    its MPI references are resolved by the later MPI libraries exported by
+    STRUMPACK::strumpack.
+    """
+    package_dir = ctx.prefix / "lib" / "cmake" / "STRUMPACK"
+    required_package_files = (
+        package_dir / "strumpack-config.cmake",
+        package_dir / "strumpack-targets.cmake",
+    )
+    missing = [str(path) for path in required_package_files if not path.is_file()]
+    if missing:
+        raise BuildError(
+            "STRUMPACK install is missing its CMake package files: %s" %
+            ", ".join(missing))
+
+    probe_root = build_dir / "consumer-link-check"
+    if probe_root.exists():
+        shutil.rmtree(probe_root)
+    source_dir = ensure_dir(probe_root / "src")
+    consumer_build = probe_root / "build"
+    write_text(
+        source_dir / "CMakeLists.txt",
+        "cmake_minimum_required(VERSION 3.17)\n"
+        "project(strumpack_consumer_link_check LANGUAGES CXX)\n"
+        "find_package(STRUMPACK CONFIG REQUIRED)\n"
+        "add_executable(strumpack_link_probe strumpack_link_probe.cpp)\n"
+        "target_link_libraries(strumpack_link_probe PRIVATE STRUMPACK::strumpack)\n",
+    )
+    write_text(
+        source_dir / "strumpack_link_probe.cpp",
+        "#include <StrumpackFortranCInterface.h>\n"
+        "#include <StrumpackSparseSolverMPIDist.hpp>\n"
+        "extern \"C\" void STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM)();\n"
+        "void (* volatile force_scalapack_reference)() =\n"
+        "    &STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM);\n"
+        "int main() { return force_scalapack_reference == nullptr ? 1 : 0; }\n",
+    )
+
+    print("  verifying installed STRUMPACK CMake target and static MPI/ScaLAPACK link")
+    env = ctx.build_env(dep)
+    mpi_args = [
+        "-DMPI_C_COMPILER=%s" % (ctx.prefix / "bin" / "mpicc"),
+        "-DMPI_CXX_COMPILER=%s" % (ctx.prefix / "bin" / "mpicxx"),
+        "-DMPI_Fortran_COMPILER=%s" % (ctx.prefix / "bin" / "mpifort"),
+    ]
+    run([
+        cmake, "-S", str(source_dir), "-B", str(consumer_build),
+        "-DCMAKE_PREFIX_PATH=%s" % ctx.prefix,
+        "-DCMAKE_BUILD_TYPE=Release",
+    ] + mpi_args, cwd=source_dir, env=env, log=ctx.log_path(dep.name))
+    run([
+        cmake, "--build", str(consumer_build),
+        "--target", "strumpack_link_probe", "--parallel", "1",
+    ], cwd=source_dir, env=env, log=ctx.log_path(dep.name))
+
+
 def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     cmake = ctx.cmake or which("cmake", ctx.path)
     if not cmake:
         raise BuildError("cmake is required to build STRUMPACK")
 
-    # STRUMPACK's MPI build requires ScaLAPACK.  Its CMake project does not
-    # reliably discover a custom static ScaLAPACK archive via find_package(),
-    # so provide the exact archives built by this dependency stack.  Do the
-    # same for BLAS/LAPACK and METIS to avoid silently mixing host libraries
-    # with the private build prefix.
+    patched = patch_strumpack_static_link_order(src)
+    print("  STRUMPACK static link order patch: %s" %
+          ("applied" if patched else "already present"))
+
+    # Use the private numerical libraries from this dependency stack rather
+    # than accidentally mixing them with host BLAS/LAPACK installations.
     blas = _lib_path(ctx, "libopenblas.a")
     scalapack = _lib_path(ctx, "libscalapack.a")
     metis = _lib_path(ctx, "libmetis.a")
@@ -1488,11 +1626,11 @@ def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         "-DCMAKE_PREFIX_PATH=%s" % ctx.prefix,
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
+        "-DBUILD_TESTING=OFF",
         "-DSTRUMPACK_USE_MPI=ON",
         "-DSTRUMPACK_USE_OPENMP=ON",
         "-DSTRUMPACK_USE_CUDA=OFF",
         "-DSTRUMPACK_USE_HIP=OFF",
-        "-DSTRUMPACK_BUILD_TESTS=OFF",
         "-DTPL_BLAS_LIBRARIES=%s" % blas,
         "-DTPL_LAPACK_LIBRARIES=%s" % blas,
         "-DTPL_SCALAPACK_LIBRARIES=%s" % scalapack,
@@ -1510,10 +1648,16 @@ def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         "-DTPL_ENABLE_ZFP=OFF",
     ]
     run(args, cwd=src, env=ctx.build_env(dep), log=ctx.log_path(dep.name))
-    run([cmake, "--build", str(build_dir), "--parallel", str(max(1, ctx.jobs))],
-        env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    # Build the library target only.  STRUMPACK 7.1.0 adds examples and test
+    # executables unconditionally, and its BUILD_TESTING option does not
+    # exclude those targets from the default build.
+    run([
+        cmake, "--build", str(build_dir),
+        "--target", "strumpack", "--parallel", str(max(1, ctx.jobs)),
+    ], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
     run([cmake, "--install", str(build_dir)],
         env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    verify_strumpack_install_link(ctx, dep, cmake, build_dir)
 
 
 def build_imas(ctx: BuildContext, dep: Dependency, src: Path) -> None:
