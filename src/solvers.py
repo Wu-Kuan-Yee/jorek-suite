@@ -158,40 +158,73 @@ class SolverBuild:
             destination = self.work / "src" / (
                 "%s-%s" % (recipe_name, recipe.version))
             destination.parent.mkdir(parents=True, exist_ok=True)
-            urls = list(self.url_overrides.get(directory, [])) + [recipe.url]
-            failures = []
             env = self.env
             env["GIT_TERMINAL_PROMPT"] = "0"
-            source = None
-            for url in urls:
-                if destination.exists():
-                    shutil.rmtree(destination)
-                command = [git, "clone", "--depth", "1"]
+            if self.downloader.offline:
+                if not (destination / ".git").is_dir():
+                    raise BuildError(
+                        "offline mode has no cached Git checkout for %s at %s" %
+                        (recipe_name, destination))
+                head = run(
+                    [git, "-C", str(destination), "rev-parse", "HEAD"],
+                    env=env, log=self.log(recipe_name), check=False)
+                actual = head.stdout.decode("utf-8", "replace").strip()
+                if head.returncode != 0:
+                    raise BuildError("could not inspect cached Git checkout for %s" % recipe_name)
                 if recipe.git_ref:
-                    command.extend(["--branch", recipe.git_ref])
-                if recipe.git_submodules:
-                    command.extend(["--recurse-submodules", "--shallow-submodules"])
-                command.extend([url, str(destination)])
-                result = run(command, cwd=self.work, env=env,
-                             log=self.log(recipe.name), check=False)
-                if result.returncode != 0:
-                    failures.append("%s: git clone exited %d" % (url, result.returncode))
-                    continue
+                    expected = run(
+                        [git, "-C", str(destination), "rev-parse",
+                         recipe.git_ref + "^{commit}"],
+                        env=env, log=self.log(recipe_name), check=False)
+                    if (expected.returncode != 0 or
+                            expected.stdout.decode("utf-8", "replace").strip() != actual):
+                        raise BuildError(
+                            "cached Git checkout for %s does not match pinned ref %s" %
+                            (recipe_name, recipe.git_ref))
                 if recipe.git_submodules:
                     status = run(
                         [git, "-C", str(destination), "submodule", "status", "--recursive"],
-                        env=env, log=self.log(recipe.name), check=False)
+                        env=env, log=self.log(recipe_name), check=False)
                     lines = status.stdout.decode("utf-8", "replace").splitlines()
                     incomplete = [line for line in lines if line[:1] in ("-", "+", "U")]
                     if status.returncode != 0 or incomplete:
-                        failures.append("%s: recursive submodule checkout is incomplete" % url)
-                        shutil.rmtree(destination, ignore_errors=True)
-                        continue
+                        raise BuildError(
+                            "cached recursive submodules for %s are incomplete or mismatched" %
+                            recipe_name)
                 source = destination
-                break
-            if source is None:
-                raise BuildError("could not clone %s:\n  %s" % (
-                    recipe_name, "\n  ".join(failures)))
+            else:
+                urls = list(self.url_overrides.get(directory, [])) + [recipe.url]
+                failures = []
+                source = None
+                for url in urls:
+                    if destination.exists():
+                        shutil.rmtree(destination)
+                    command = [git, "clone", "--depth", "1"]
+                    if recipe.git_ref:
+                        command.extend(["--branch", recipe.git_ref])
+                    if recipe.git_submodules:
+                        command.extend(["--recurse-submodules", "--shallow-submodules"])
+                    command.extend([url, str(destination)])
+                    result = run(command, cwd=self.work, env=env,
+                                 log=self.log(recipe_name), check=False)
+                    if result.returncode != 0:
+                        failures.append("%s: git clone exited %d" % (url, result.returncode))
+                        continue
+                    if recipe.git_submodules:
+                        status = run(
+                            [git, "-C", str(destination), "submodule", "status", "--recursive"],
+                            env=env, log=self.log(recipe_name), check=False)
+                        lines = status.stdout.decode("utf-8", "replace").splitlines()
+                        incomplete = [line for line in lines if line[:1] in ("-", "+", "U")]
+                        if status.returncode != 0 or incomplete:
+                            failures.append("%s: recursive submodule checkout is incomplete" % url)
+                            shutil.rmtree(destination, ignore_errors=True)
+                            continue
+                    source = destination
+                    break
+                if source is None:
+                    raise BuildError("could not clone %s:\n  %s" % (
+                        recipe_name, "\n  ".join(failures)))
         else:
             urls = list(self.url_overrides.get(directory, [])) + [recipe.url]
             archive = self.downloader.fetch(urls, filename)
