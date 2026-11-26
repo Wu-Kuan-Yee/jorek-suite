@@ -151,6 +151,7 @@ class StageLogDialog(QDialog):
         self._stats_finalized = False
         self.matches = []
         self.match_index = -1
+        self._search_stale = False
 
         outer = QVBoxLayout(self)
         header = QHBoxLayout()
@@ -294,7 +295,10 @@ class StageLogDialog(QDialog):
         self._accumulate_statistics(text)
         self.update_statistics()
         if self.search_edit.text():
-            self.update_search()
+            self._search_stale = True
+            self.match_label.setText(
+                "%s matches (new output; press Enter to refresh)" %
+                format(len(self.matches), ",d"))
 
     def scroll_to_top(self) -> None:
         self.editor.verticalScrollBar().setValue(
@@ -357,6 +361,7 @@ class StageLogDialog(QDialog):
     def update_search(self):
         query = self.search_edit.text()
         old_position = self.editor.textCursor().selectionStart()
+        self._search_stale = False
         self.matches = []
         self.match_index = -1
         self.editor.setExtraSelections([])
@@ -417,7 +422,7 @@ class StageLogDialog(QDialog):
             "%s / %s" % (format(index + 1, ",d"), format(len(self.matches), ",d")))
 
     def search_next(self):
-        if not self.matches:
+        if self._search_stale or not self.matches:
             self.update_search()
         if not self.matches:
             return
