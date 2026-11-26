@@ -293,11 +293,11 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("rev-parse HEAD", command)
 
     @unittest.skipIf(os.name == "nt", "remote command uses a POSIX shell")
-    def test_remote_source_audit_rejects_stale_pastix_archive_recipe(self):
+    def test_remote_preflight_failure_prevents_build(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = root / "stale source"
-            (source / "src").mkdir(parents=True)
+            source = root / "preflight failure repo"
+            source.mkdir()
             subprocess.run(
                 ["git", "init", "-b", "main", str(source)],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -307,19 +307,25 @@ class RemoteCommandTests(unittest.TestCase):
             subprocess.run(
                 ["git", "-C", str(source), "config", "user.email", "build@example.invalid"],
                 check=True)
-            (source / "build.py").write_text(
-                "print('BUILD SHOULD NOT START', flush=True)\n",
-                encoding="utf-8")
-            (source / "src" / "deps.py").write_text(
-                "from types import SimpleNamespace\n"
-                "DEPENDENCIES = {'pastix6': SimpleNamespace("
-                "source_kind='archive', git_ref='', git_submodules=False)}\n",
-                encoding="utf-8")
+            (source / "build.py").write_text(textwrap.dedent("""\
+                import argparse
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--work", required=True)
+                parser.add_argument("action")
+                parser.add_argument("--for-command")
+                parser.add_argument("--expected-commit")
+                parser.add_argument("--json", action="store_true")
+                args = parser.parse_args()
+                if args.action == "preflight":
+                    print("GENERIC PREFLIGHT FAILURE", flush=True)
+                    raise SystemExit(1)
+                if args.action == "dist":
+                    print("BUILD SHOULD NOT START", flush=True)
+                """), encoding="utf-8")
             subprocess.run(
-                ["git", "-C", str(source), "add", "build.py", "src/deps.py"],
-                check=True)
+                ["git", "-C", str(source), "add", "build.py"], check=True)
             subprocess.run(
-                ["git", "-C", str(source), "commit", "-m", "stale fixture"],
+                ["git", "-C", str(source), "commit", "-m", "preflight fixture"],
                 check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             commit = subprocess.run(
                 ["git", "-C", str(source), "rev-parse", "HEAD"],
@@ -341,12 +347,11 @@ class RemoteCommandTests(unittest.TestCase):
             result = subprocess.run(
                 ["/bin/sh", "-c", command], stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, check=False, timeout=45)
-
             self.assertNotEqual(result.returncode, 0, result.stdout)
-            self.assertIn(
-                "Pinned commit does not contain the recursive PaStiX 6.3.2 source fix",
-                result.stdout)
+            self.assertIn("GENERIC PREFLIGHT FAILURE", result.stdout)
             self.assertNotIn("BUILD SHOULD NOT START", result.stdout)
+            self.assertIn('"id":"remote:preflight"', result.stdout)
+
 
     def test_scp_uses_a_space_free_remote_staging_path(self):
         transfer = remote_artifact_path(PROFILE)
@@ -398,10 +403,18 @@ class RemoteCommandTests(unittest.TestCase):
                 parser = argparse.ArgumentParser()
                 parser.add_argument("--work", required=True)
                 parser.add_argument("action")
+                parser.add_argument("--for-command")
+                parser.add_argument("--expected-commit")
                 parser.add_argument("--json", action="store_true")
                 args = parser.parse_args()
                 suite = Path(args.work) / "dist" / "jorek-suite"
-                if args.action == "dist":
+                if args.action == "preflight":
+                    if args.for_command != "dist" or not args.expected_commit:
+                        raise SystemExit(3)
+                    print("GENERIC PREFLIGHT PASSED", flush=True)
+                    if args.json:
+                        print(json.dumps({"ok": True, "status": "passed"}))
+                elif args.action == "dist":
                     print(">> building fixture_dep 1.2.3", flush=True)
                     print("fixture dependency compiler output", flush=True)
                     print(">> building fixture_variant (model 600, solver pastix6, programs main)", flush=True)
@@ -414,15 +427,8 @@ class RemoteCommandTests(unittest.TestCase):
                     print(json.dumps({"portable_on_build_host": True}))
                 """)
             (source / "build.py").write_text(script, encoding="utf-8")
-            (source / "src").mkdir(parents=True, exist_ok=True)
-            (source / "src" / "deps.py").write_text(
-                "from types import SimpleNamespace\n"
-                "DEPENDENCIES = {'pastix6': SimpleNamespace("
-                "source_kind='git', git_ref='v6.3.2', git_submodules=True)}\n",
-                encoding="utf-8",
-            )
             subprocess.run(
-                ["git", "-C", str(source), "add", "build.py", "src/deps.py"],
+                ["git", "-C", str(source), "add", "build.py"],
                 check=True)
             subprocess.run(["git", "-C", str(source), "commit", "-m", "fixture"],
                            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -448,12 +454,11 @@ class RemoteCommandTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertIn("@@JOREK_BUILD_EVENT@@", result.stdout)
             self.assertIn('"id":"remote:repository"', result.stdout)
-            self.assertIn('"id":"remote:source-audit"', result.stdout)
+            self.assertIn('"id":"remote:preflight"', result.stdout)
             self.assertIn('"id":"remote:build"', result.stdout)
             self.assertIn("Pinned jorek-suite commit: " + commit, result.stdout)
-            self.assertIn(
-                "PaStiX 6.3.2 recipe: source_kind=git, git_ref=v6.3.2, "
-                "recursive_submodules=True", result.stdout)
+            self.assertIn("GENERIC PREFLIGHT PASSED", result.stdout)
+            self.assertNotIn("PaStiX 6.3.2 recipe:", result.stdout)
             self.assertIn('"id":"remote:verify"', result.stdout)
             event_prefix = "@@JOREK_BUILD_EVENT@@"
             events = [
