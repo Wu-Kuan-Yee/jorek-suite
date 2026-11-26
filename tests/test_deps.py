@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 import deps  # noqa: E402
+import solvers  # noqa: E402
 from common import BuildError  # noqa: E402
 
 
@@ -335,6 +336,29 @@ class MetisArchiveTests(unittest.TestCase):
             self.assertEqual(
                 merge_calls[0][1],
                 (("metis", primary), ("gklib", gklib)))
+
+
+
+class PastixMetisFindModuleTests(unittest.TestCase):
+    def test_findmetis_uses_the_math_library_variables_exported_by_findm(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            module = (source / "cmake_modules" / "morse_cmake" /
+                      "modules" / "find" / "FindMETIS.cmake")
+            module.parent.mkdir(parents=True)
+            module.write_text(
+                '  find_package(M QUIET)\\n'
+                '  if ( M_FOUND )\\n'
+                '    set( METIS_LIBRARIES "${METIS_LIBRARIES};${M_LIBRARIES}" )\\n'
+                '  endif()\\n',
+                encoding="utf-8",
+            )
+
+            self.assertTrue(solvers.patch_pastix_metis_find_module(source))
+            patched = module.read_text(encoding="utf-8")
+            self.assertIn("list(APPEND METIS_LIBRARIES ${M_LIBRARY})", patched)
+            self.assertIn("list(APPEND METIS_LIBRARIES MORSE::M)", patched)
+            self.assertFalse(solvers.patch_pastix_metis_find_module(source))
 
 
 class ScotchInstallTests(unittest.TestCase):
