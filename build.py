@@ -989,10 +989,11 @@ def _copy_pe_private_deps(binary: Path, directory: Path) -> None:
         continue
 
 
-def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> Path:
+def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant],
+                stage_prefix: str = "suite") -> Path:
     work = Path(args.work)
     launcher, objects = _tracked_stage(
-        "suite:launcher", "Compile suite launcher", "Packaging",
+        stage_prefix + ":launcher", "Compile suite launcher", "Packaging",
         lambda: _compile_launcher(args, platform, work),
         work / "logs" / "suite-launcher.log")
     output = Path(args.output) if args.output else (Path(args.work) / "dist" / ("jorek-suite" + platform.exe_suffix))
@@ -1019,7 +1020,7 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
     for rel, path in _runtime_payloads(Path(args.root)):
         builder.add_helper(rel, path)
     tool = _tracked_stage(
-        "suite:runtime-tool", "Compile JOREK runtime helper", "Packaging",
+        stage_prefix + ":runtime-tool", "Compile JOREK runtime helper", "Packaging",
         lambda: _compile_runtime_tool(args, platform, work),
         work / "logs" / "jorek-tool.log")
     builder.add_helper("bin/jorek-tool" + platform.exe_suffix, tool)
@@ -1032,14 +1033,19 @@ def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant]) -> 
             builder.build(output)
         return output
     _tracked_stage(
-        "suite:archive", "Assemble single-file suite", "Packaging",
+        stage_prefix + ":archive", "Assemble single-file suite", "Packaging",
         package_suite, work / "logs" / "suite-archive.log")
+    def verify_packaged_suite():
+        ok, offenders = jorek.verify_static(output, platform)
+        if not ok and not getattr(args, "allow_shared", False):
+            raise BuildError(
+                "suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
+        return ok, offenders
     ok, offenders = _tracked_stage(
-        "suite:verify", "Verify packaged suite", "Verification",
-        lambda: jorek.verify_static(output, platform),
-        work / "logs" / "suite-verify.log")
-    if not ok and not getattr(args, "allow_shared", False):
-        raise BuildError("suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
+        stage_prefix + ":verify", "Verify packaged suite", "Verification",
+        verify_packaged_suite, work / "logs" / "suite-verify.log")
+    if not ok:
+        print("warning: packaged suite has non-system dependencies: %s" % ", ".join(offenders))
     print("")
     print("Single-file JOREK suite: %s (%s)" % (output, human_bytes(output.stat().st_size)))
     return output
@@ -1399,7 +1405,7 @@ def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[
     """Merge build.py variant JSON manifests into one native suite."""
     work = Path(args.work)
     launcher, objects = _tracked_stage(
-        "suite:launcher", "Compile suite launcher", "Packaging",
+        "suite:final-merge:launcher", "Compile final suite launcher", "Packaging",
         lambda: _compile_launcher(args, platform, work),
         work / "logs" / "suite-launcher.log")
     builder = suite.SuiteBuilder(
@@ -1428,7 +1434,7 @@ def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[
     for rel, path in _runtime_payloads(Path(args.root)):
         builder.add_helper(rel, path)
     tool = _tracked_stage(
-        "suite:runtime-tool", "Compile JOREK runtime helper", "Packaging",
+        "suite:final-merge:runtime-tool", "Compile final JOREK runtime helper", "Packaging",
         lambda: _compile_runtime_tool(args, platform, work),
         work / "logs" / "jorek-tool.log")
     builder.add_helper("bin/jorek-tool" + platform.exe_suffix, tool)
@@ -1441,7 +1447,7 @@ def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[
             builder.build(output)
         return output
     _tracked_stage(
-        "suite:archive", "Assemble final single-file suite", "Packaging",
+        "suite:final-merge:archive", "Assemble final single-file suite", "Packaging",
         package_suite, work / "logs" / "suite-archive.log")
     def verify_suite():
         ok, offenders = jorek.verify_static(output, platform)
@@ -1450,7 +1456,7 @@ def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[
                 "suite has non-system dynamic dependencies: %s" % ", ".join(offenders))
         return ok, offenders
     ok, offenders = _tracked_stage(
-        "suite:verify", "Verify final single-file suite", "Verification",
+        "suite:final-merge:verify", "Verify final single-file suite", "Verification",
         verify_suite, work / "logs" / "suite-verify.log")
     if not ok:
         print("warning: final suite has non-system dependencies: %s" % ", ".join(offenders))
@@ -1545,7 +1551,7 @@ def cmd_full(args) -> int:
     ensure_dir(variants_dir)
     for result in built:
         write_json(variants_dir / (result.spec.name + ".json"), result.to_json())
-    build_suite(all_args, platform, built)
+    build_suite(all_args, platform, built, stage_prefix="suite:solver-subset")
 
     p5_args = copy.copy(all_args)
     p5_args.solver = "pastix5"
