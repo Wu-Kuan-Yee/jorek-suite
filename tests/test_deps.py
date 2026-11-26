@@ -175,11 +175,11 @@ class GitSourceTests(unittest.TestCase):
         for relative in dependency.required_paths:
             target = source / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("# fixture\\n", encoding="utf-8")
+            target.write_text("# fixture\n", encoding="utf-8")
         build_dir = self.context.work / "build" / "pastix6-6.3.2"
         build_dir.mkdir(parents=True)
         stale_cache = build_dir / "CMakeCache.txt"
-        stale_cache.write_text("CMAKE_HOME_DIRECTORY=old/archive/root\\n", encoding="utf-8")
+        stale_cache.write_text("CMAKE_HOME_DIRECTORY=old/archive/root\n", encoding="utf-8")
         (self.context.prefix / "bin").mkdir()
 
         with patch.object(deps, "build_cmake") as cmake_mock:
@@ -304,7 +304,7 @@ class MetisArchiveTests(unittest.TestCase):
             include = source / "include"
             include.mkdir(parents=True)
             (include / "metis.h").write_text("/* METIS fixture */", encoding="utf-8")
-            (include / "CMakeLists.txt").write_text("# fixture\\n", encoding="utf-8")
+            (include / "CMakeLists.txt").write_text("# fixture\n", encoding="utf-8")
             libdir = context.prefix / "lib"
             libdir.mkdir(parents=True)
             primary = libdir / "libmetis.a"
@@ -347,10 +347,10 @@ class PastixMetisFindModuleTests(unittest.TestCase):
                       "modules" / "find" / "FindMETIS.cmake")
             module.parent.mkdir(parents=True)
             module.write_text(
-                '  find_package(M QUIET)\\n'
-                '  if ( M_FOUND )\\n'
-                '    set( METIS_LIBRARIES "${METIS_LIBRARIES};${M_LIBRARIES}" )\\n'
-                '  endif()\\n',
+                '  find_package(M QUIET)\n'
+                '  if ( M_FOUND )\n'
+                '    set( METIS_LIBRARIES "${METIS_LIBRARIES};${M_LIBRARIES}" )\n'
+                '  endif()\n',
                 encoding="utf-8",
             )
 
