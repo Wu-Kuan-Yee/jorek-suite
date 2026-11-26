@@ -1697,6 +1697,12 @@ class MainWindow(QMainWindow):
                     label, category, stage_id))
                 handle.flush()
             except OSError as exc:
+                if handle:
+                    try:
+                        handle.close()
+                    except OSError:
+                        pass
+                handle = None
                 log_path = None
                 self._append_overview_output(
                     "[Warning] Detailed log could not be created for %s: %s\n" % (
