@@ -265,7 +265,7 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("attach", remote_task_attach_command(PROFILE, task_id, 123))
         self.assertIn("cancel", remote_task_cancel_command(PROFILE, task_id))
         extended = build_remote_task_command(
-            PROFILE, ["dist"], ["verify"], task_id, heartbeat_timeout=240)
+            dict(PROFILE, heartbeat_timeout=240), ["dist"], ["verify"], task_id)
         self.assertIn("240", extended)
         with self.assertRaises(ValueError):
             build_remote_task_command(
