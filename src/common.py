@@ -209,6 +209,11 @@ def run(
         if proc is not None and proc.poll() is None:
             proc.kill()
             proc.wait()
+        if proc is not None:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
         if log_handle:
             log_handle.close()
 
