@@ -208,6 +208,7 @@ class StageLogDialogTests(unittest.TestCase):
             path = Path(temporary) / "invalid-regex.log"
             path.write_text("some output\n", encoding="utf-8")
             dialog = StageLogDialog("regex stage", str(path), running=False)
+            dialog.regex_check.setChecked(True)
             dialog.search_edit.setText("(")
             self.app.processEvents()
             self.assertIn("Invalid regex", dialog.match_label.text())
