@@ -206,7 +206,30 @@ class GitSourceTests(unittest.TestCase):
 
 class MetisArchiveTests(unittest.TestCase):
     def test_metis_recipe_revision_invalidates_pre_merge_install_stamps(self):
-        self.assertEqual(deps.DEPENDENCIES["metis"].recipe_revision, "1")
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary)
+            dependency = deps.DEPENDENCIES["metis"]
+            (prefix / "lib").mkdir()
+            for library in dependency.static_libs:
+                (prefix / "lib" / library).write_bytes(b"fixture")
+            (prefix / "include").mkdir()
+            (prefix / "include" / "metis.h").write_text(
+                "/* fixture */", encoding="utf-8")
+
+            context = object.__new__(deps.BuildContext)
+            context.force = False
+            context.prefix = prefix
+            context.stamps = {
+                "metis": {
+                    "name": "metis",
+                    "version": dependency.version,
+                    "url": dependency.url,
+                }
+            }
+            self.assertFalse(context.has_stamp(dependency))
+
+            context.stamps["metis"]["recipe_revision"] = dependency.recipe_revision
+            self.assertTrue(context.has_stamp(dependency))
 
     def test_merge_static_archives_namespaces_object_members(self):
         with tempfile.TemporaryDirectory() as temporary:
