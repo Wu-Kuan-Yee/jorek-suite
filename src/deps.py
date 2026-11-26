@@ -590,6 +590,45 @@ def _clone_git_source(
 
     destination = ctx.work / "src" / ("%s-%s" % (dep.name, dep.version))
     ensure_dir(destination.parent)
+    if ctx.offline:
+        if not (destination / ".git").is_dir():
+            raise BuildError(
+                "offline mode has no cached Git checkout for %s at %s" %
+                (dep.name, destination))
+        head = run(
+            [git, "-C", str(destination), "rev-parse", "HEAD"],
+            env=ctx.build_env(dep), log=ctx.log_path(dep.name), check=False)
+        actual = head.stdout.decode("utf-8", "replace").strip()
+        if head.returncode != 0:
+            raise BuildError("could not inspect cached Git checkout for %s" % dep.name)
+        if dep.git_ref:
+            expected = run(
+                [git, "-C", str(destination), "rev-parse", dep.git_ref + "^{commit}"],
+                env=ctx.build_env(dep), log=ctx.log_path(dep.name), check=False)
+            if expected.returncode != 0 or expected.stdout.decode("utf-8", "replace").strip() != actual:
+                raise BuildError(
+                    "cached Git checkout for %s does not match pinned ref %s" %
+                    (dep.name, dep.git_ref))
+        if dep.git_submodules:
+            status = run(
+                [git, "-C", str(destination), "submodule", "status", "--recursive"],
+                env=ctx.build_env(dep), log=ctx.log_path(dep.name), check=False)
+            lines = status.stdout.decode("utf-8", "replace").splitlines()
+            incomplete = [line for line in lines if line[:1] in ("-", "+", "U")]
+            if status.returncode != 0 or incomplete:
+                raise BuildError(
+                    "cached recursive submodules for %s are incomplete or mismatched" %
+                    dep.name)
+        missing = [
+            relative for relative in dep.required_paths
+            if not (destination / relative).exists()
+        ]
+        if missing:
+            raise BuildError(
+                "cached Git source for %s is incomplete: %s" %
+                (dep.name, ", ".join(missing)))
+        print("  %-18s reusing offline Git checkout at %s" % (dep.name, actual))
+        return destination
     failures: List[str] = []
     for url in urls:
         if destination.exists():
