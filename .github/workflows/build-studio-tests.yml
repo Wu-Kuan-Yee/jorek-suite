@@ -36,3 +36,19 @@ jobs:
         run: python -c "from PySide6.QtWidgets import QApplication; from jorek_build_studio.main_window import MainWindow; app = QApplication([]); window = MainWindow(); assert window.tabs.count() == 8; window.deleteLater()"
       - name: Test application entry point
         run: python -m jorek_build_studio --smoke-test
+
+  python-compat:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${ matrix.python-version }}
+      - name: Install CLI package without GUI extras
+        run: python -m pip install -e .
+      - name: Run cross-version unit and integration tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
