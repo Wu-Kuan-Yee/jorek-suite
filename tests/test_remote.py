@@ -79,6 +79,11 @@ class RemoteCommandTests(unittest.TestCase):
             ["--work", "/scratch/jorek work", "verify", "--json"],
         )
         self.assertIn("git clone", command)
+        self.assertIn("@@JOREK_BUILD_EVENT@@", command)
+        self.assertIn("remote:repository", command)
+        self.assertIn("remote:build", command)
+        self.assertIn("remote:verify", command)
+        self.assertIn("JOREK_BUILD_STUDIO_EVENTS=1", command)
         self.assertIn("0123456789abcdef0123456789abcdef01234567", command)
         self.assertIn("'/srv/build studio/jorek-suite/build.py'", command)
         self.assertIn("'/scratch/jorek work'", command)
@@ -170,6 +175,10 @@ class RemoteCommandTests(unittest.TestCase):
                 ["/bin/sh", "-c", command], stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, check=False, timeout=45)
             self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("@@JOREK_BUILD_EVENT@@", result.stdout)
+            self.assertIn('"id":"remote:repository"', result.stdout)
+            self.assertIn('"id":"remote:build"', result.stdout)
+            self.assertIn('"id":"remote:verify"', result.stdout)
             artifact = Path(profile["remote_work"]) / "dist" / "jorek-suite"
             self.assertEqual(artifact.read_text(encoding="utf-8"), "native-suite")
             transfer = Path(remote_artifact_path(profile))
