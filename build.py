@@ -734,6 +734,14 @@ def _collect_variants(args, platform: PlatformInfo, toolchain) -> List[BuiltVari
     common.emit_build_event(
         "phase_start", phase="variants", label="JOREK variants",
         total=len(unique))
+    common.emit_build_event(
+        "stage_plan", phase="variants",
+        stages=[{
+            "id": "variant:" + spec.name,
+            "label": spec.name,
+            "category": "JOREK variant",
+            "log_path": str(Path(args.work) / "logs" / (spec.name + "-make.log")),
+        } for spec in unique])
     results = []
     completed = 0
     for spec in unique:
@@ -992,6 +1000,34 @@ def _copy_pe_private_deps(binary: Path, directory: Path) -> None:
 def build_suite(args, platform: PlatformInfo, built: Sequence[BuiltVariant],
                 stage_prefix: str = "suite") -> Path:
     work = Path(args.work)
+    common.emit_build_event(
+        "stage_plan", phase="packaging",
+        stages=[
+            {
+                "id": stage_prefix + ":launcher",
+                "label": "Compile suite launcher",
+                "category": "Packaging",
+                "log_path": str(work / "logs" / "suite-launcher.log"),
+            },
+            {
+                "id": stage_prefix + ":runtime-tool",
+                "label": "Compile JOREK runtime helper",
+                "category": "Packaging",
+                "log_path": str(work / "logs" / "jorek-tool.log"),
+            },
+            {
+                "id": stage_prefix + ":archive",
+                "label": "Assemble single-file suite",
+                "category": "Packaging",
+                "log_path": str(work / "logs" / "suite-archive.log"),
+            },
+            {
+                "id": stage_prefix + ":verify",
+                "label": "Verify packaged suite",
+                "category": "Verification",
+                "log_path": str(work / "logs" / "suite-verify.log"),
+            },
+        ])
     launcher, objects = _tracked_stage(
         stage_prefix + ":launcher", "Compile suite launcher", "Packaging",
         lambda: _compile_launcher(args, platform, work),
@@ -1321,6 +1357,22 @@ def cmd_build(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
+    common.emit_build_event(
+        "stage_plan", phase="preparation",
+        stages=[
+            {
+                "id": "dependencies:policy",
+                "label": "Resolve dependency policy",
+                "category": "Dependencies",
+                "log_path": str(Path(args.work) / "logs" / "dependency-policy.log"),
+            },
+            {
+                "id": "toolchain:detect",
+                "label": "Detect native compiler toolchain",
+                "category": "Toolchain",
+                "log_path": str(Path(args.work) / "logs" / "toolchain-detection.log"),
+            },
+        ])
     _tracked_stage(
         "dependencies:policy", "Resolve dependency policy", "Dependencies",
         lambda: _wait_for_deps_policy(args),
@@ -1379,6 +1431,22 @@ def cmd_dist(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
+    common.emit_build_event(
+        "stage_plan", phase="preparation",
+        stages=[
+            {
+                "id": "dependencies:policy",
+                "label": "Resolve dependency policy",
+                "category": "Dependencies",
+                "log_path": str(Path(args.work) / "logs" / "dependency-policy.log"),
+            },
+            {
+                "id": "toolchain:detect",
+                "label": "Detect native compiler toolchain",
+                "category": "Toolchain",
+                "log_path": str(Path(args.work) / "logs" / "toolchain-detection.log"),
+            },
+        ])
     _tracked_stage(
         "dependencies:policy", "Resolve dependency policy", "Dependencies",
         lambda: _wait_for_deps_policy(args),
