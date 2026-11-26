@@ -84,6 +84,28 @@ WORK_DEFAULT = HERE / "build"
 JOREK_GIT_URL = "https://github.com/iterorganization/JOREK.git"
 
 
+def _run_capture(argv, **kwargs):
+    """Run a captured diagnostic command and include its output in Build Studio logs."""
+    result = subprocess.run(argv, **kwargs)
+    if os.environ.get("JOREK_BUILD_STUDIO_EVENTS") == "1":
+        print("  + " + shlex.join([str(item) for item in argv]), flush=True)
+        binary_stdout = getattr(sys.stdout, "buffer", None)
+        for stream_name in ("stdout", "stderr"):
+            payload = getattr(result, stream_name, None)
+            if not payload:
+                continue
+            if isinstance(payload, str):
+                sys.stdout.write(payload)
+                sys.stdout.flush()
+            elif binary_stdout is not None:
+                binary_stdout.write(payload)
+                binary_stdout.flush()
+            else:
+                sys.stdout.write(payload.decode("utf-8", "replace"))
+                sys.stdout.flush()
+    return result
+
+
 def _tracked_stage(stage_id: str, label: str, category: str, callback,
                    log_path: Optional[Path] = None, phase: str = ""):
     """Run one visible build stage and report its terminal state to the GUI."""
@@ -221,7 +243,7 @@ def _static_libc_available(args) -> bool:
         return False
     for lib in ("libc.a", "libm.a", "libmvec.a"):
         try:
-            proc = subprocess.run([cc, "-print-file-name=%s" % lib],
+            proc = _run_capture([cc, "-print-file-name=%s" % lib],
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                   text=True, check=False)
         except OSError:
@@ -556,7 +578,7 @@ def _static_runtime_libs(fc: str) -> List[str]:
     if not fc:
         return []
     try:
-        proc = subprocess.run([fc, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        proc = _run_capture([fc, "--version"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
         text = proc.stdout.decode("utf-8", "replace").lower()
     except OSError:
         return []
@@ -649,7 +671,7 @@ def build_one(args, spec: jorek.VariantSpec, platform: PlatformInfo, toolchain, 
 def _ad_hoc_sign_path(path: Path) -> None:
     if sys.platform != "darwin":
         return
-    result = subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(path)],
+    result = _run_capture(["codesign", "--force", "--sign", "-", "--timestamp=none", str(path)],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if result.returncode != 0:
         raise BuildError("codesign failed for %s: %s" % (path, result.stderr.decode("utf-8", "replace")))
@@ -947,7 +969,7 @@ def _mpi_helper_payloads(args, platform: PlatformInfo) -> List[Tuple[str, Path]]
 
 
 def _copy_macos_private_deps(binary: Path, directory: Path) -> None:
-    proc = subprocess.run(["otool", "-L", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _run_capture(["otool", "-L", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if proc.returncode != 0:
         return
     for line in proc.stdout.decode("utf-8", "replace").splitlines()[1:]:
@@ -960,18 +982,18 @@ def _copy_macos_private_deps(binary: Path, directory: Path) -> None:
         target = directory / source.name
         if not target.exists():
             shutil.copy2(source, target)
-        subprocess.run(["install_name_tool", "-change", dep, "@loader_path/" + source.name, str(binary)],
+        _run_capture(["install_name_tool", "-change", dep, "@loader_path/" + source.name, str(binary)],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
         # The newly copied library may itself have non-system dependencies; a
         # single level is sufficient for Hydra's hwloc dependency.
-        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(binary)],
+        _run_capture(["codesign", "--force", "--sign", "-", "--timestamp=none", str(binary)],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
-        subprocess.run(["codesign", "--force", "--sign", "-", "--timestamp=none", str(target)],
+        _run_capture(["codesign", "--force", "--sign", "-", "--timestamp=none", str(target)],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
 
 def _copy_elf_private_deps(binary: Path, directory: Path) -> None:
-    proc = subprocess.run(["ldd", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _run_capture(["ldd", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     if proc.returncode != 0:
         return
     for line in proc.stdout.decode("utf-8", "replace").splitlines():
@@ -991,7 +1013,7 @@ def _copy_pe_private_deps(binary: Path, directory: Path) -> None:
     objdump = which("objdump") or which("x86_64-w64-mingw32-objdump")
     if not objdump:
         return
-    proc = subprocess.run([objdump, "-p", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _run_capture([objdump, "-p", str(binary)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
     for dll in re.findall(r"DLL Name:\s*(\S+)", proc.stdout.decode("utf-8", "replace")):
         # System DLLs are not shipped; MinGW runtime DLLs are searched on PATH.
         continue
@@ -1695,7 +1717,7 @@ def cmd_verify(args) -> int:
             signature_ok = False
         else:
             try:
-                proc = subprocess.run(
+                proc = _run_capture(
                     [codesign, "--verify", "--verbose=2", str(target)],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     check=False, timeout=20)
@@ -1710,7 +1732,7 @@ def cmd_verify(args) -> int:
     suite_info = {"status": "not_run", "data": None, "details": ""}
     if host_match["compatible"]:
         try:
-            proc = subprocess.run(
+            proc = _run_capture(
                 [str(target), "--json", "--info"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 check=False, timeout=20)
