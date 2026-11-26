@@ -592,19 +592,20 @@ class MainWindow(QMainWindow):
             return
         self._start_external_process(ssh, args, "remote-test")
 
-    def _build_remote(self) -> None:
+    def _prepare_remote_build_plan(self) -> Optional[Dict[str, Any]]:
         profile = self._remote_profile_from_widgets()
         errors = validate_profile(profile)
         if errors:
             QMessageBox.warning(self, APP_TITLE, "\n".join(errors))
-            return
+            return None
         ssh = shutil.which("ssh")
         scp = shutil.which("scp")
         if not ssh or not scp:
             QMessageBox.warning(self, APP_TITLE, "Both ssh and scp must be available in PATH.")
-            return
+            return None
         if not self._save_remote_profile():
-            return
+            return None
+
         cfg = self._collect_config()
         repo = remote_repo_path(profile)
         remote_cfg = dict(cfg)
@@ -623,42 +624,146 @@ class MainWindow(QMainWindow):
             remote_cfg.update(parse_remote_overrides(profile.get("remote_overrides", "")))
         except RemoteProfileError as exc:
             QMessageBox.warning(self, APP_TITLE, str(exc))
-            return
+            return None
         remote_cfg["output"] = ""
         remote_cfg["suite_path"] = ""
         remote_cfg["stdin_file"] = ""
         remote_cfg["run_args"] = ""
+
         selected_action = self.command_combo.currentData()
         if selected_action == "build":
             QMessageBox.information(
                 self, APP_TITLE,
                 "Remote build-and-download creates a single-file suite. "
                 "Choose 'Build and package' or 'Full solver suite' first.")
-            return
+            return None
         action = "full" if selected_action == "full" else "dist"
         try:
             build_args = build_arguments(remote_cfg, action)
             verify_args = build_arguments(remote_cfg, "verify")
             remote_command = build_remote_command(profile, build_args, verify_args)
             remote_artifact = remote_artifact_path(profile)
-            self.remote_artifact_path = remote_artifact
-            self.remote_ssh_executable = ssh
-            self.remote_cleanup_args = ssh_arguments(
-                profile, "rm -f " + shlex.quote(remote_artifact))
             local_dir = Path(profile["artifact_dir"]).expanduser()
-            local_dir.mkdir(parents=True, exist_ok=True)
-            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", profile["name"]).strip("-") or "remote"
+            safe_name = re.sub(
+                r"[^A-Za-z0-9_.-]+", "-", profile["name"]).strip("-") or "remote"
             local_artifact = local_dir / (
                 "jorek-suite-%s-%s" % (safe_name, profile["commit"][:8]))
-            self.remote_download_args = scp_arguments(
+            ssh_args = ssh_arguments(profile, remote_command)
+            download_args = scp_arguments(
                 profile, remote_artifact, str(local_artifact))
-            self.remote_local_artifact = local_artifact
-            self.remote_preview.setPlainText(remote_command)
-            args = ssh_arguments(profile, remote_command)
+            cleanup_args = ssh_arguments(
+                profile, "rm -f " + shlex.quote(remote_artifact))
         except (OSError, ValueError, RemoteProfileError) as exc:
             QMessageBox.warning(self, APP_TITLE, str(exc))
+            return None
+
+        return {
+            "profile": profile,
+            "remote_config": remote_cfg,
+            "build_args": build_args,
+            "verify_args": verify_args,
+            "remote_command": remote_command,
+            "remote_artifact": remote_artifact,
+            "local_artifact": local_artifact,
+            "local_dir": local_dir,
+            "ssh": ssh,
+            "ssh_args": ssh_args,
+            "download_args": download_args,
+            "cleanup_args": cleanup_args,
+        }
+
+    def _show_remote_build_preview(
+        self, plan: Dict[str, Any], confirm_build: bool,
+    ) -> bool:
+        profile = plan["profile"]
+        summary = {
+            "remote_target": profile["destination"],
+            "ssh_port": profile["port"],
+            "remote_repository": profile["repo_url"],
+            "repository_branch": profile["branch"],
+            "pinned_commit": profile["commit"],
+            "remote_repository_path": remote_repo_path(profile),
+            "remote_work_directory": profile["remote_work"],
+            "remote_jorek_source": profile.get("remote_jorek_root", "") or
+                "(fetch JOREK source automatically)",
+            "remote_python": profile.get("python", "python3"),
+            "remote_artifact_staging_path": plan["remote_artifact"],
+            "local_artifact_path": str(plan["local_artifact"]),
+            "remote_overrides": profile.get("remote_overrides", ""),
+            "effective_build_configuration": plan["remote_config"],
+            "build_arguments": plan["build_args"],
+            "verification_arguments": plan["verify_args"],
+        }
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Remote build configuration preview")
+        dialog.resize(920, 700)
+        outer = QVBoxLayout(dialog)
+        note = QLabel(
+            "Review the final configuration after local paths have been removed "
+            "and remote overrides have been applied. No remote command has run yet.")
+        note.setWordWrap(True)
+        outer.addWidget(note)
+
+        tabs = QTabWidget(dialog)
+        settings_view = QPlainTextEdit()
+        settings_view.setReadOnly(True)
+        settings_view.setPlainText(json.dumps(summary, ensure_ascii=False, indent=2))
+        tabs.addTab(settings_view, "Effective configuration")
+
+        command_view = QPlainTextEdit()
+        command_view.setReadOnly(True)
+        command_view.setPlainText(plan["remote_command"])
+        tabs.addTab(command_view, "Remote command")
+
+        build_view = QPlainTextEdit()
+        build_view.setReadOnly(True)
+        build_view.setPlainText(
+            shlex.join([profile.get("python", "python3"),
+                        remote_repo_path(profile) + "/build.py"] + plan["build_args"]))
+        tabs.addTab(build_view, "Build arguments")
+        outer.addWidget(tabs, 1)
+
+        buttons = QDialogButtonBox(dialog)
+        if confirm_build:
+            buttons.addButton("Build now", QDialogButtonBox.ButtonRole.AcceptRole)
+            buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
+        else:
+            buttons.addButton(QDialogButtonBox.StandardButton.Close)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        buttons.button(QDialogButtonBox.StandardButton.Close).clicked.connect(dialog.accept) \
+            if not confirm_build else None
+        outer.addWidget(buttons)
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def preview_remote_build(self) -> None:
+        plan = self._prepare_remote_build_plan()
+        if plan is None:
             return
-        self._start_external_process(ssh, args, "remote-build")
+        self.remote_preview.setPlainText(plan["remote_command"])
+        self._show_remote_build_preview(plan, confirm_build=False)
+
+    def _build_remote(self) -> None:
+        plan = self._prepare_remote_build_plan()
+        if plan is None:
+            return
+        self.remote_preview.setPlainText(plan["remote_command"])
+        if not self._show_remote_build_preview(plan, confirm_build=True):
+            return
+        try:
+            plan["local_dir"].mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, APP_TITLE, "Cannot create artifact directory:\n%s" % exc)
+            return
+        self.remote_artifact_path = plan["remote_artifact"]
+        self.remote_ssh_executable = plan["ssh"]
+        self.remote_cleanup_args = plan["cleanup_args"]
+        self.remote_download_args = plan["download_args"]
+        self.remote_local_artifact = plan["local_artifact"]
+        self._start_external_process(
+            plan["ssh"], plan["ssh_args"], "remote-build")
+
 
     def _build_dependencies_tab(self) -> None:
         page = QWidget()
