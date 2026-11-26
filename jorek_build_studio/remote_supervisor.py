@@ -297,20 +297,34 @@ def start_task(root, task_id, timeout, payload):
     })
     open(os.path.join(directory, "output.log"), "ab").close()
     touch(os.path.join(directory, "heartbeat"))
-    daemon_log = open(os.path.join(directory, "supervisor.log"), "ab", buffering=0)
+    supervisor_log = os.path.join(directory, "supervisor.log")
+    pid = os.fork()
+    if pid:
+        print(STARTED_PREFIX + json.dumps({
+            "task_id": task_id, "status": "starting",
+            "supervisor_pid": pid,
+            "heartbeat_timeout": request["heartbeat_timeout"],
+        }, separators=(",", ":")), flush=True)
+        return
+
+    # The child is detached from the SSH session before doing any long-running
+    # work. Ignore SIGHUP as an additional guard for PAM/sshd session teardown.
     try:
-        process = subprocess.Popen(
-            [sys.executable, "-u", "-c", SCRIPT, "daemon", root, task_id],
-            stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=subprocess.STDOUT,
-            cwd=directory, close_fds=True, start_new_session=True,
-        )
-    finally:
-        daemon_log.close()
-    print(STARTED_PREFIX + json.dumps({
-        "task_id": task_id, "status": "starting",
-        "supervisor_pid": process.pid,
-        "heartbeat_timeout": request["heartbeat_timeout"],
-    }, separators=(",", ":")), flush=True)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        os.setsid()
+        null_fd = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(null_fd, 0)
+        if null_fd > 2:
+            os.close(null_fd)
+        log_fd = os.open(supervisor_log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        os.dup2(log_fd, 1)
+        os.dup2(log_fd, 2)
+        if log_fd > 2:
+            os.close(log_fd)
+        result = run_daemon(root, task_id)
+        os._exit(int(result))
+    except BaseException:
+        os._exit(1)
 
 
 def attach_task(root, task_id, offset):
@@ -416,9 +430,6 @@ def main():
     if command == "status":
         return status_task(root, task_id)
     raise SystemExit("unknown supervisor command: " + command)
-
-
-SCRIPT = r"""' + '"""' + r''' + """
 
 
 if __name__ == "__main__":
