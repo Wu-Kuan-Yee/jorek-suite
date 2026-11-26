@@ -673,6 +673,7 @@ class MainWindow(QMainWindow):
             "local_artifact": local_artifact,
             "local_dir": local_dir,
             "ssh": ssh,
+            "scp": scp,
             "ssh_args": ssh_args,
             "download_args": download_args,
             "cleanup_args": cleanup_args,
@@ -685,6 +686,9 @@ class MainWindow(QMainWindow):
         summary = {
             "remote_target": profile["destination"],
             "ssh_port": profile["port"],
+            "ssh_identity_file": profile.get("identity_file", ""),
+            "host_key_policy": profile.get("host_key_policy", "yes"),
+            "additional_ssh_options": profile.get("ssh_options", []),
             "remote_repository": profile["repo_url"],
             "repository_branch": profile["branch"],
             "pinned_commit": profile["commit"],
@@ -695,6 +699,9 @@ class MainWindow(QMainWindow):
             "remote_python": profile.get("python", "python3"),
             "remote_artifact_staging_path": plan["remote_artifact"],
             "local_artifact_path": str(plan["local_artifact"]),
+            "ssh_command": shlex.join([plan["ssh"]] + plan["ssh_args"]),
+            "download_command": shlex.join([plan["scp"]] + plan["download_args"]),
+            "cleanup_command": shlex.join([plan["ssh"]] + plan["cleanup_args"]),
             "remote_overrides": profile.get("remote_overrides", ""),
             "effective_build_configuration": plan["remote_config"],
             "build_arguments": plan["build_args"],
@@ -728,6 +735,14 @@ class MainWindow(QMainWindow):
             shlex.join([profile.get("python", "python3"),
                         remote_repo_path(profile) + "/build.py"] + plan["build_args"]))
         tabs.addTab(build_view, "Build arguments")
+
+        transfer_view = QPlainTextEdit()
+        transfer_view.setReadOnly(True)
+        transfer_view.setPlainText(
+            "SSH connection:\n" + shlex.join([plan["ssh"]] + plan["ssh_args"]) +
+            "\n\nArtifact download:\n" + shlex.join([plan["scp"]] + plan["download_args"]) +
+            "\n\nRemote staging cleanup:\n" + shlex.join([plan["ssh"]] + plan["cleanup_args"]))
+        tabs.addTab(transfer_view, "Transfer commands")
         outer.addWidget(tabs, 1)
 
         if confirm_build:
