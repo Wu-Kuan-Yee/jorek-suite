@@ -274,16 +274,13 @@ def _wait_for_deps_policy(args) -> None:
     if args.deps in ("source", "none"):
         return
     names = deps.core_dependencies(args.profile, args.solver)
-    required = []
-    for name in names:
-        item = deps.DEPENDENCIES.get(name)
-        if item:
-            required.extend(item.static_libs)
     prefixes = _system_static_prefixes(args)
-    missing = [lib for lib in required if not _static_available(prefixes, lib)]
+    missing = _preflight_check_static_libraries(names, prefixes)
     if args.deps == "system":
         if missing:
-            raise BuildError("--deps system is missing static libraries: %s" % ", ".join(missing))
+            raise BuildError(
+                "--deps system is missing declared libraries/headers: %s" %
+                ", ".join(missing))
         args.dep_prefix = [str(p) for p in prefixes]
         return
     # auto
