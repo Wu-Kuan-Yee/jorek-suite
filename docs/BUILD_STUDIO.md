@@ -128,10 +128,16 @@ full core dependency profile. It requires a working host C and C++ compiler;
 without a host Fortran compiler, the bootstrap attempts to build GCC with
 Fortran support.
 
-PaStiX 6.3.2 is fetched as the pinned `v6.3.2` Git tag with recursive,
-shallow submodules. Its `spm` and `morse_cmake` submodules are required by
-CMake and are checked before configuration. A normal source archive is not
-sufficient for this release. The remote host therefore needs Git in addition
+PaStiX 5.2.3 and PaStiX 6.3.2 are separate JOREK backends. PaStiX 5 uses
+the legacy `USE_PASTIX` / optional `USE_PASTIX_MURGE` adapter and is installed
+under a private `pastix5` prefix to avoid colliding with PaStiX 6's
+`libpastix.a`. PaStiX 6 uses `USE_PASTIX6` and is fetched as the pinned
+`v6.3.2` Git tag with recursive, shallow submodules. Its `spm` and
+`morse_cmake` submodules are required by CMake and are checked before
+configuration. Both bundled PaStiX backends currently use 32-bit solver
+indices, matching JOREK's default `USE_INTSIZE64=0`; incompatible 64-bit
+JOREK configurations are rejected during preflight. A normal source archive
+is not sufficient for PaStiX 6. The remote host therefore needs Git in addition
 to the compiler and CMake toolchain. SCOTCH's hand-written Makefile install
 target receives the private toolchain prefix explicitly; it must not attempt
 to write into system directories such as `/usr/local`.
@@ -149,10 +155,16 @@ Double-click a running or completed stage, or choose Open selected log, to open
 its own full transcript. The live log window never forces the reader back to the
 end: it follows new output only while the reader is already at the tail, and
 otherwise preserves both vertical and horizontal scroll positions. Top, Bottom,
-Left, and Right controls jump to each edge of the log. Build Studio mode streams
-complete merged command output to stage transcripts even when the underlying
-build command requests quiet output. The progress indicator reports the current
-dependency/solver/variant phase and its completed count.
+Left, and Right controls jump to each edge of the log. Detailed log windows also
+provide visible-by-default line numbers, toggleable line-number gutters, PCRE
+regular-expression search with next/previous navigation and match highlighting,
+and live statistics for bytes, characters, lines, words, and maximum line length.
+Diagnostic highlighting distinguishes fatal errors, warnings, expected failed
+feature probes, ignored/non-fatal errors, and successful checks. Logs can be
+copied or saved independently. Build Studio mode streams complete merged command
+output to stage transcripts even when the underlying build command requests quiet
+output. The progress indicator reports the current dependency/solver/variant
+phase and its completed count.
 
 Compiler and dependency commands stream their merged stdout/stderr while they
 run. The full task transcript and each stage log are also persisted under the
@@ -183,9 +195,13 @@ confirmation before connecting.
 A build checks out a pinned full commit SHA, runs a generic preflight for
 the complete selected build plan, performs the packaged (dist) or full-solver
 build, runs the remote portability verifier, and downloads the artifact only
-after verification succeeds. Updating the local checkout does not silently
-change a saved pin: use **Use local HEAD** and save the profile when you want
-the remote host to build the updated checkout.
+after verification succeeds. The preflight validates the repository revision,
+dependency and solver recipe registries, dependency graph, supplied sources,
+cached sources in offline mode, solver artifact plans, JOREK source and variant
+matrix, compiler toolchain, and writable storage. It is not tied to a particular
+dependency such as PaStiX. Updating the local checkout does not silently change
+a saved pin: use **Use local HEAD** and save the profile when you want the remote
+host to build the updated checkout.
 
 The preflight is a reusable verification framework, not a PaStiX-specific
 condition. It checks the exact repository revision and clean working tree,
