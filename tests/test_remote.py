@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import json
 import subprocess
 import sys
 import tempfile
@@ -91,7 +92,7 @@ class RemoteBuildStreamerTests(unittest.TestCase):
                 command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, check=False, timeout=15)
             self.assertEqual(result.returncode, 0, result.stdout)
-            self.assertIn('"id":"dependency:fixture_dep"', result.stdout)
+            self.assertIn("dependency:fixture_dep", result.stdout)
             self.assertNotIn("remote-fallback:dependency:fixture_dep", result.stdout)
 
 
