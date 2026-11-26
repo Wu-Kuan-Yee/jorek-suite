@@ -402,7 +402,7 @@ register(
         deps=("mpich", "openblas", "scalapack", "metis"),
         static_libs=("libstrumpack.a",), includes=("StrumpackConfig.h", "StrumpackSparseSolverMPIDist.hpp"),
         builder="strumpack", platforms=("linux", "bsd", "macos"),
-        required_paths=("CMakeLists.txt", "src")),
+        required_paths=("CMakeLists.txt", "src"), recipe_revision="1"),
     dep("boost", "1.87.0", "https://archives.boost.io/release/1.87.0/source/boost_1_87_0.tar.bz2",
         license="BSL-1.0", homepage="https://www.boost.org/",
         static_libs=("libboost_math_tr1.a",), includes=("boost/math/special_functions/bessel.hpp",),
