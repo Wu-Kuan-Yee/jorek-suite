@@ -272,8 +272,8 @@ class MetisArchiveTests(unittest.TestCase):
                 output_archive.write_bytes(b"merged metis + gklib")
                 return output_archive
 
-            with patch.object(deps, "which", return_value=None), \\
-                    patch.object(deps, "run", side_effect=fake_run), \\
+            with patch.object(deps, "which", return_value=None), \
+                    patch.object(deps, "run", side_effect=fake_run), \
                     patch.object(deps, "merge_static_archives", side_effect=fake_merge):
                 deps.build_metis(context, deps.DEPENDENCIES["metis"], source)
 
