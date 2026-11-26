@@ -75,19 +75,19 @@ class RemoteBuildStreamerTests(unittest.TestCase):
             )
             build_script = root / "build.py"
             build_script.write_text(
-                "# common.emit_build_event(\\"stage_start\\", id=\\"variant:\\" + name)\\n"
-                "import json\\n"
-                "prefix = '@@JOREK_BUILD_EVENT@@'\\n"
-                "start = {'event': 'stage_start', 'id': 'dependency:fixture_dep'}\\n"
-                "finish = {'event': 'stage_finish', 'id': 'dependency:fixture_dep', 'status': 'completed'}\\n"
-                "variant_start = {'event': 'stage_start', 'id': 'variant:fixture_variant'}\\n"
-                "variant_finish = {'event': 'stage_finish', 'id': 'variant:fixture_variant', 'status': 'completed'}\\n"
-                "print(prefix + json.dumps(start), flush=True)\\n"
-                "print('>> building fixture_dep 1.2.3', flush=True)\\n"
-                "print(prefix + json.dumps(finish), flush=True)\\n"
-                "print(prefix + json.dumps(variant_start), flush=True)\\n"
-                "print('>> building fixture_variant (model 600, solver mumps, programs main)', flush=True)\\n"
-                "print(prefix + json.dumps(variant_finish), flush=True)\\n",
+                '# common.emit_build_event("stage_start", id="variant:" + name)\n'
+                "import json\n"
+                "prefix = '@@JOREK_BUILD_EVENT@@'\n"
+                "start = {'event': 'stage_start', 'id': 'dependency:fixture_dep'}\n"
+                "finish = {'event': 'stage_finish', 'id': 'dependency:fixture_dep', 'status': 'completed'}\n"
+                "variant_start = {'event': 'stage_start', 'id': 'variant:fixture_variant'}\n"
+                "variant_finish = {'event': 'stage_finish', 'id': 'variant:fixture_variant', 'status': 'completed'}\n"
+                "print(prefix + json.dumps(start), flush=True)\n"
+                "print('>> building fixture_dep 1.2.3', flush=True)\n"
+                "print(prefix + json.dumps(finish), flush=True)\n"
+                "print(prefix + json.dumps(variant_start), flush=True)\n"
+                "print('>> building fixture_variant (model 600, solver mumps, programs main)', flush=True)\n"
+                "print(prefix + json.dumps(variant_finish), flush=True)\n",
                 encoding="utf-8",
             )
             command = [
