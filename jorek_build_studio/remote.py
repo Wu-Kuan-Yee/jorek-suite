@@ -126,8 +126,8 @@ def validate_profile(profile: Dict[str, Any]) -> List[str]:
         errors.append(str(exc))
     timeout = profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT)
     if (not isinstance(timeout, int) or isinstance(timeout, bool) or
-            not 10 <= timeout <= 3600):
-        errors.append("heartbeat_timeout must be an integer between 10 and 3600 seconds")
+            not 30 <= timeout <= 3600):
+        errors.append("heartbeat_timeout must be an integer between 30 and 3600 seconds")
     return errors
 
 
