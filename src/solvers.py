@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
+
+from deps import DEPENDENCIES, validate_source_recipe
 
 from common import (
     BuildError,
@@ -24,6 +27,95 @@ from common import (
     write_text,
     emit_build_event,
 )
+
+
+@dataclass(frozen=True)
+class SolverSourceRecipe:
+    name: str
+    version: str
+    url: str
+    filename: str
+    directory: str
+    source_kind: str = "archive"
+    git_ref: str = ""
+    git_submodules: bool = False
+    required_paths: Tuple[str, ...] = ()
+
+
+def _dependency_source(name: str, directory: Optional[str] = None) -> SolverSourceRecipe:
+    item = DEPENDENCIES[name]
+    filename = os.path.basename(item.url.split("?", 1)[0]) or (name + ".source")
+    return SolverSourceRecipe(
+        name=item.name,
+        version=item.version,
+        url=item.url,
+        filename=filename,
+        directory=directory or item.name,
+        source_kind=item.source_kind,
+        git_ref=item.git_ref,
+        git_submodules=item.git_submodules,
+        required_paths=tuple(item.required_paths),
+    )
+
+
+# Solver-only source recipes live here; PaStiX 6 reuses the authoritative
+# dependency record so the dist and full build paths cannot silently diverge.
+SOLVER_SOURCE_RECIPES = {
+    "hwloc": SolverSourceRecipe(
+        "hwloc", "2.11.2",
+        "https://download.open-mpi.org/release/hwloc/v2.11/hwloc-2.11.2.tar.gz",
+        "hwloc-2.11.2.tar.gz", "hwloc",
+        required_paths=("configure", "hwloc/Makefile.am"),
+    ),
+    "gklib": SolverSourceRecipe(
+        "gklib", "master",
+        "https://github.com/KarypisLab/GKlib/archive/refs/heads/master.tar.gz",
+        "gklib-master.tar.gz", "gklib",
+        required_paths=("CMakeLists.txt",),
+    ),
+    "metis": SolverSourceRecipe(
+        "metis", "5.2.1",
+        "https://github.com/KarypisLab/METIS/archive/refs/tags/v5.2.1.tar.gz",
+        "metis-5.2.1.tar.gz", "metis",
+        required_paths=("CMakeLists.txt", "include/metis.h", "include/CMakeLists.txt"),
+    ),
+    "pastix6": _dependency_source("pastix6"),
+    "strumpack": SolverSourceRecipe(
+        "strumpack", "7.1.0",
+        "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
+        "strumpack-7.1.0.tar.gz", "strumpack",
+        required_paths=("CMakeLists.txt", "src"),
+    ),
+    "pastix5": SolverSourceRecipe(
+        "pastix5", "5.2.3",
+        "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
+        "pastix-5.2.3.tar.bz2", "pastix5",
+        required_paths=("common/src/pastix_fortran.h",),
+    ),
+}
+
+SOLVER_STAGE_ARTIFACTS = {
+    "hwloc": ("lib/libhwloc.a",),
+    "gklib-metis": ("lib/libGKlib.a", "lib/libmetis.a"),
+    "pastix6": ("lib/libpastix.a", "lib/libpastix_kernels.a", "lib/libspm.a"),
+    "strumpack": ("lib/libstrumpack.a",),
+    "pastix5": ("pastix5/lib/libpastix.a",),
+}
+
+
+def validate_solver_source_recipes() -> List[str]:
+    """Validate all source recipes used by the full-solver build path."""
+    errors: List[str] = []
+    for name, recipe in sorted(SOLVER_SOURCE_RECIPES.items()):
+        if name != recipe.name:
+            errors.append("solver source key %r does not match recipe name %r" % (
+                name, recipe.name))
+        errors.extend(validate_source_recipe(
+            recipe.name, recipe.version, recipe.url, recipe.source_kind,
+            recipe.git_ref, recipe.git_submodules, recipe.required_paths))
+    return errors
+
+
 
 
 class SolverBuild:
@@ -58,20 +150,76 @@ class SolverBuild:
     def fetch(self, url: str, filename: str) -> Path:
         return self.downloader.fetch(url, filename)
 
-    def source(self, url: str, filename: str, directory: str) -> Path:
-        supplied = self.source_dirs.get(directory)
+    def source(self, name: str) -> Path:
+        """Acquire a source tree from its shared, validated recipe."""
+        recipe = SOLVER_SOURCE_RECIPES[name]
+        supplied = self.source_dirs.get(recipe.directory)
         if supplied is not None:
             supplied = Path(supplied).expanduser().resolve()
             if not supplied.is_dir():
                 raise BuildError("source directory for %s is not a directory: %s" % (
-                    directory, supplied))
-            print("  %-18s using source tree %s" % (directory, supplied))
-            return supplied
-        urls = list(self.url_overrides.get(directory, [])) + [url]
-        archive = self.downloader.fetch(urls, filename)
-        dest = ensure_dir(self.work / "src" / directory)
-        root = extract_archive(archive, dest)
-        return root
+                    recipe.name, supplied))
+            source = supplied
+            print("  %-18s using source tree %s" % (recipe.name, source))
+        elif recipe.source_kind == "git":
+            git = shutil.which("git")
+            if not git:
+                raise BuildError("git is required to fetch the %s source tree" % recipe.name)
+            destination = self.work / "src" / (
+                "%s-%s" % (recipe.name, recipe.version))
+            if destination.exists():
+                shutil.rmtree(destination)
+            command = [git, "clone", "--depth", "1"]
+            if recipe.git_ref:
+                command.extend(["--branch", recipe.git_ref])
+            if recipe.git_submodules:
+                command.extend(["--recurse-submodules", "--shallow-submodules"])
+            command.extend([recipe.url, str(destination)])
+            env = self.env
+            env["GIT_TERMINAL_PROMPT"] = "0"
+            result = run(command, cwd=self.work, env=env,
+                         log=self.log(recipe.name), check=False)
+            if result.returncode != 0:
+                raise BuildError("Git clone failed for %s (exit %d)" % (
+                    recipe.name, result.returncode))
+            if recipe.git_submodules:
+                status = run(
+                    [git, "-C", str(destination), "submodule", "status", "--recursive"],
+                    env=env, log=self.log(recipe.name), check=False)
+                if status.returncode != 0:
+                    raise BuildError("could not verify recursive submodules for %s" % recipe.name)
+                lines = status.stdout.decode("utf-8", "replace").splitlines()
+                incomplete = [line for line in lines if line[:1] in ("-", "+", "U")]
+                if incomplete:
+                    raise BuildError(
+                        "%s has uninitialized or mismatched submodules: %s" %
+                        (recipe.name, "; ".join(incomplete)))
+            source = destination
+        else:
+            urls = list(self.url_overrides.get(recipe.directory, [])) + [recipe.url]
+            archive = self.downloader.fetch(urls, recipe.filename)
+            destination = ensure_dir(self.work / "src" / recipe.directory)
+            source = extract_archive(archive, destination)
+
+        missing = [
+            relative for relative in recipe.required_paths
+            if not (source / relative).exists()
+        ]
+        if missing:
+            raise BuildError(
+                "%s source tree is incomplete; missing required paths: %s" %
+                (recipe.name, ", ".join(missing)))
+        return source
+
+    def verify_stage_artifacts(self, stage_name: str) -> None:
+        missing = [
+            relative for relative in SOLVER_STAGE_ARTIFACTS.get(stage_name, ())
+            if not (self.prefix / relative).is_file()
+        ]
+        if missing:
+            raise BuildError(
+                "solver stage %s did not produce required artifacts: %s" %
+                (stage_name, ", ".join(missing)))
 
     def cmake_configure(self, source: Path, build: Path, args: List[str],
                         name: str) -> None:
@@ -106,9 +254,7 @@ class SolverBuild:
     def hwloc(self) -> None:
         if (self.prefix / "lib" / "libhwloc.a").exists():
             return
-        src = self.source(
-            "https://download.open-mpi.org/release/hwloc/v2.11/hwloc-2.11.2.tar.gz",
-            "hwloc-2.11.2.tar.gz", "hwloc")
+        src = self.source("hwloc")
         # The upstream release is an autotools tree; its CMake files live only
         # under contrib/windows-cmake.
         run([str(src / "configure"),
@@ -124,9 +270,7 @@ class SolverBuild:
     # -- GKlib / METIS -----------------------------------------------------
     def gklib_metis(self) -> None:
         if not (self.prefix / "lib" / "libmetis.a").exists():
-            src = self.source(
-                "https://github.com/KarypisLab/GKlib/archive/refs/heads/master.tar.gz",
-                "gklib-master.tar.gz", "gklib")
+            src = self.source("gklib")
             build = self.work / "build" / "gklib"
             self.cmake_configure(src, build, [
                 "-DCMAKE_INSTALL_PREFIX=%s" % self.prefix,
@@ -134,9 +278,7 @@ class SolverBuild:
             ], "gklib")
             self.cmake_build(build, "gklib", install=True)
 
-            metis = self.source(
-                "https://github.com/KarypisLab/METIS/archive/refs/tags/v5.2.1.tar.gz",
-                "metis-5.2.1.tar.gz", "metis")
+            metis = self.source("metis")
             xinclude = ensure_dir(metis / "build" / "xinclude")
             write_text(xinclude / "metis.h",
                        "#define IDXTYPEWIDTH 32\n#define REALTYPEWIDTH 32\n" +
@@ -182,21 +324,7 @@ class SolverBuild:
     def pastix6(self) -> None:
         if (self.prefix / "lib" / "libpastix.a").exists():
             return
-        src = self.source(
-            "https://gitlab.inria.fr/solverstack/pastix/-/archive/v6.3.2/pastix-v6.3.2.tar.gz",
-            "pastix-6.3.2.tar.gz", "pastix6")
-        spm = src / "spm"
-        morse = src / "cmake_modules" / "morse_cmake"
-        if not (spm / "CMakeLists.txt").exists():
-            spm_src = self.source(
-                "https://gitlab.inria.fr/solverstack/spm/-/archive/master/spm-master.tar.gz",
-                "spm-master.tar.gz", "spm")
-            shutil.copytree(spm_src, spm, dirs_exist_ok=True)
-        if not (morse / "modules" / "MorseInit.cmake").exists():
-            morse_src = self.source(
-                "https://gitlab.inria.fr/solverstack/morse_cmake/-/archive/master/morse_cmake-master.tar.gz",
-                "morse-master.tar.gz", "morse")
-            shutil.copytree(morse_src, morse, dirs_exist_ok=True)
+        src = self.source("pastix6")
         # PaStiX 6.3.2's no-hwloc fallback calls an undeclared
         # ``pastix_warning`` helper.  The public helper is
         # ``pastix_print_warning`` from common/out.h.
@@ -271,9 +399,7 @@ class SolverBuild:
     def strumpack(self) -> None:
         if (self.prefix / "lib" / "libstrumpack.a").exists():
             return
-        src = self.source(
-            "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
-            "strumpack-7.1.0.tar.gz", "strumpack")
+        src = self.source("strumpack")
         build = self.work / "build" / "strumpack"
         blas = self.core / "lib" / "libopenblas.a"
         scalapack = self.core / "lib" / "libscalapack.a"
@@ -321,9 +447,7 @@ class SolverBuild:
         if (prefix / "lib" / "libpastix.a").exists():
             return
         ensure_dir(prefix)
-        src = self.source(
-            "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
-            "pastix-5.2.3.tar.bz2", "pastix5")
+        src = self.source("pastix5")
         root = src / "src" if (src / "src" / "CMakeLists.txt").exists() else src
         stub = root / "sopalin" / "src" / "murge_fortran.c"
         if not stub.exists():
@@ -410,6 +534,7 @@ class SolverBuild:
             error = ""
             try:
                 builder()
+                self.verify_stage_artifacts(name)
             except Exception as exc:
                 status = "failed"
                 error = str(exc)
