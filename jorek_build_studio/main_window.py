@@ -436,6 +436,7 @@ class MainWindow(QMainWindow):
 
         buttons = QHBoxLayout()
         buttons.addWidget(_button("Test SSH connection", self._test_remote_connection, page))
+        buttons.addWidget(_button("Preview remote configuration", self.preview_remote_build, page))
         buttons.addWidget(_button("Build, verify and download", self._build_remote, page))
         buttons.addStretch(1)
         outer.addLayout(buttons)
