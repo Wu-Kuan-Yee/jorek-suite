@@ -14,6 +14,16 @@ import shlex
 from pathlib import PurePosixPath
 from typing import Any, Dict, List
 
+from .remote_supervisor import (
+    DEFAULT_HEARTBEAT_TIMEOUT,
+    remote_task_attach_command,
+    remote_task_cancel_command,
+    remote_task_start_command,
+    remote_task_state_root,
+    remote_task_status_command,
+    validate_remote_task_id,
+)
+
 
 class RemoteProfileError(ValueError):
     pass
@@ -434,6 +444,19 @@ def build_remote_command(
             shlex.quote(transfer_path) + " && chmod 700 " + shlex.quote(transfer_path)),
     ]
     return "; ".join(commands)
+
+
+def build_remote_task_command(
+    profile: Dict[str, Any],
+    build_args: List[str],
+    verify_args: List[str],
+    task_id: str,
+    heartbeat_timeout: int = DEFAULT_HEARTBEAT_TIMEOUT,
+) -> str:
+    """Return the short SSH command that starts a detached supervised build."""
+    workload = build_remote_command(profile, build_args, verify_args)
+    return remote_task_start_command(
+        profile, task_id, workload, heartbeat_timeout=heartbeat_timeout)
 
 
 def scp_arguments(profile: Dict[str, Any], remote_path: str, local_path: str) -> List[str]:
