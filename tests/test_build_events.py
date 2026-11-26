@@ -14,7 +14,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from common import BUILD_EVENT_PREFIX, emit_build_event, run
+from common import BUILD_EVENT_PREFIX, emit_build_event, output as command_output, run
 from suite import _run as suite_run
 
 
@@ -56,6 +56,20 @@ class BuildEventTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("quiet-stdout", output.getvalue())
         self.assertIn("quiet-stderr", output.getvalue())
+
+    def test_captured_tool_output_is_logged_without_changing_return_value(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('captured-stdout'); "
+            "print('captured-stderr', file=sys.stderr)",
+        ]
+        with patch.dict(os.environ, {"JOREK_BUILD_STUDIO_EVENTS": "1"}):
+            with contextlib.redirect_stdout(output):
+                returned = command_output(command)
+        self.assertEqual(returned, "captured-stdout")
+        self.assertIn("captured-stdout", output.getvalue())
+        self.assertIn("captured-stderr", output.getvalue())
 
     def test_suite_packaging_commands_stream_output_in_build_studio(self):
         output = io.StringIO()
