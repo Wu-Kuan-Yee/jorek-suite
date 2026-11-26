@@ -1483,8 +1483,13 @@ def _preflight_cache_check(
                 deps._find_header_in_prefix(prefix, header)
                 for header in item.includes
             )
+            recipe_revision_ok = (
+                not item.recipe_revision or
+                stamp.get("recipe_revision") == item.recipe_revision
+            )
             if (stamp.get("version") == item.version and
-                    stamp.get("url") == item.url and artifacts_ok):
+                    stamp.get("url") == item.url and artifacts_ok and
+                    recipe_revision_ok):
                 continue
         if source_root and any(
                 (source_root / candidate).is_dir()
