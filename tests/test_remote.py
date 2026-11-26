@@ -509,7 +509,7 @@ class RemoteCommandTests(unittest.TestCase):
             def send_heartbeats():
                 while not stop_heartbeats.is_set():
                     try:
-                        attach.stdin.write(b"\\n")
+                        attach.stdin.write(b"\n")
                         attach.stdin.flush()
                     except (BrokenPipeError, OSError, AttributeError):
                         return
