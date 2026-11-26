@@ -360,6 +360,43 @@ class PastixMetisFindModuleTests(unittest.TestCase):
             self.assertIn("list(APPEND METIS_LIBRARIES MORSE::M)", patched)
             self.assertFalse(solvers.patch_pastix_metis_find_module(source))
 
+    def test_dependency_builder_patches_module_before_cmake_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            context = FakeContext(root)
+            source = root / "pastix"
+            module = (source / "cmake_modules" / "morse_cmake" /
+                      "modules" / "find" / "FindMETIS.cmake")
+            module.parent.mkdir(parents=True)
+            module.write_text(
+                '  find_package(M QUIET)\n'
+                '  if ( M_FOUND )\n'
+                '    set( METIS_LIBRARIES "${METIS_LIBRARIES};${M_LIBRARIES}" )\n'
+                '  endif()\n',
+                encoding="utf-8",
+            )
+            build_dir = context.work / "build" / "pastix6-6.3.2"
+            build_dir.mkdir(parents=True)
+            (build_dir / "CMakeCache.txt").write_text("stale cache", encoding="utf-8")
+            (context.prefix / "bin").mkdir(parents=True)
+
+            dependency = deps.Dependency(
+                name="pastix6", version="6.3.2", url="",
+                builder="pastix", required_paths=(),
+            )
+
+            def configure(ctx, item, source_dir):
+                self.assertFalse(build_dir.exists())
+                patched = module.read_text(encoding="utf-8")
+                self.assertIn("list(APPEND METIS_LIBRARIES ${M_LIBRARY})", patched)
+                self.assertIn("list(APPEND METIS_LIBRARIES MORSE::M)", patched)
+
+            with patch.object(deps, "build_cmake", side_effect=configure) as configure_mock:
+                deps.build_pastix(context, dependency, source)
+
+            configure_mock.assert_called_once_with(context, dependency, source)
+            self.assertTrue((context.prefix / "bin" / "pastix-conf").is_file())
+
 
 class ScotchInstallTests(unittest.TestCase):
     def test_install_target_receives_the_private_prefix(self):
