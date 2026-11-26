@@ -62,6 +62,20 @@ class GitSourceTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.context = FakeContext(self.root)
 
+    def test_pastix5_is_registered_with_an_isolated_private_prefix(self):
+        dependency = deps.DEPENDENCIES["pastix5"]
+        self.assertEqual(dependency.version, "5.2.3")
+        self.assertEqual(dependency.builder, "pastix5")
+        self.assertEqual(dependency.filename, "pastix-5.2.3.tar.bz2")
+        self.assertEqual(dependency.static_libs, ("pastix5/lib/libpastix.a",))
+        self.assertEqual(
+            dependency.includes, ("pastix5/include/pastix_fortran.h",))
+        self.assertTrue(dependency.required_any_paths)
+        names = deps.core_dependencies("standard", "pastix5")
+        self.assertIn("pastix5", names)
+        self.assertIn("metis", names)
+        self.assertIn("hwloc", names)
+
     def test_pastix_source_is_a_recursive_tagged_git_checkout(self):
         dependency = deps.DEPENDENCIES["pastix6"]
         self.assertEqual(dependency.source_kind, "git")
