@@ -1888,6 +1888,14 @@ class MainWindow(QMainWindow):
             self.task_log.flush()
 
         stripped = line.rstrip("\r\n")
+        if stripped.startswith(REMOTE_STARTED_PREFIX):
+            try:
+                started = json.loads(stripped[len(REMOTE_STARTED_PREFIX):])
+                self.remote_task_id = str(started.get("task_id") or self.remote_task_id)
+                self._save_remote_task_metadata()
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                self._append_overview_output(line)
+            return
         prefix = "@@JOREK_BUILD_EVENT@@"
         if stripped.startswith(prefix):
             try:
@@ -1908,14 +1916,66 @@ class MainWindow(QMainWindow):
         else:
             self._append_overview_output(line)
 
+    def _consume_remote_task_bytes(self, data: bytes) -> None:
+        decoded = self.remote_log_decoder.decode(data, final=False)
+        self.remote_stream_buffer += decoded
+        while "\n" in self.remote_stream_buffer:
+            line, self.remote_stream_buffer = self.remote_stream_buffer.split("\n", 1)
+            self._consume_process_line(line + "\n")
+
+    def _flush_remote_task_stream(self) -> None:
+        tail = self.remote_log_decoder.decode(b"", final=True)
+        self.remote_stream_buffer += tail
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        if self.remote_stream_buffer:
+            self._consume_process_line(self.remote_stream_buffer)
+            self.remote_stream_buffer = ""
+
     def _read_process_output(self) -> None:
         data = bytes(self.process.readAllStandardOutput())
         if not data:
             return
-        self.process_output_buffer += data.decode("utf-8", "replace")
+        if self.task_kind != "remote-attach":
+            self.process_output_buffer += data.decode("utf-8", "replace")
+            while "\n" in self.process_output_buffer:
+                line, self.process_output_buffer = self.process_output_buffer.split("\n", 1)
+                self._consume_process_line(line + "\n")
+            return
+
+        # The remote attach protocol frames binary log chunks as base64 lines.
+        # A complete frame advances the durable byte offset; an interrupted
+        # frame is replayed after reconnect rather than being lost or duplicated.
+        self.process_output_buffer += data.decode("ascii", "replace")
         while "\n" in self.process_output_buffer:
             line, self.process_output_buffer = self.process_output_buffer.split("\n", 1)
-            self._consume_process_line(line + "\n")
+            if line.startswith(REMOTE_DATA_PREFIX):
+                try:
+                    offset_text, encoded = line[len(REMOTE_DATA_PREFIX):].split(":", 1)
+                    offset = int(offset_text)
+                    payload = base64.b64decode(encoded.encode("ascii"), validate=True)
+                except (ValueError, UnicodeEncodeError):
+                    self._append_overview_output(
+                        "[Warning] Invalid remote log frame; it will be retried.\n")
+                    continue
+                if offset < self.remote_log_offset:
+                    continue
+                if offset > self.remote_log_offset:
+                    self._append_overview_output(
+                        "[Warning] Remote log stream has a gap (%d to %d bytes).\n" %
+                        (self.remote_log_offset, offset))
+                self.remote_log_offset = offset + len(payload)
+                self._consume_remote_task_bytes(payload)
+            elif line.startswith(REMOTE_TASK_PREFIX):
+                try:
+                    result = json.loads(line[len(REMOTE_TASK_PREFIX):])
+                except json.JSONDecodeError:
+                    self._append_overview_output(line + "\n")
+                else:
+                    if isinstance(result, dict):
+                        self.remote_task_result = result
+                        self.remote_task_terminal = True
+            else:
+                self._consume_process_line(line + "\n")
 
     def _flush_process_output_buffer(self) -> None:
         if self.process_output_buffer:
