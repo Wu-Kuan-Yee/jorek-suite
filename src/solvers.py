@@ -43,22 +43,6 @@ class SolverSourceRecipe:
     required_any_paths: Tuple[Tuple[str, ...], ...] = ()
 
 
-def _dependency_source(name: str, directory: Optional[str] = None) -> SolverSourceRecipe:
-    item = DEPENDENCIES[name]
-    filename = os.path.basename(item.url.split("?", 1)[0]) or (name + ".source")
-    return SolverSourceRecipe(
-        name=item.name,
-        version=item.version,
-        url=item.url,
-        filename=filename,
-        directory=directory or item.name,
-        source_kind=item.source_kind,
-        git_ref=item.git_ref,
-        git_submodules=item.git_submodules,
-        required_paths=tuple(item.required_paths),
-    )
-
-
 # Solver-only source recipes live here; PaStiX 6 reuses the authoritative
 # dependency record so the dist and full build paths cannot silently diverge.
 SOLVER_SOURCE_RECIPES = {
@@ -80,7 +64,7 @@ SOLVER_SOURCE_RECIPES = {
         "metis-5.2.1.tar.gz", "metis",
         required_paths=("CMakeLists.txt", "include/metis.h", "include/CMakeLists.txt"),
     ),
-    "pastix6": _dependency_source("pastix6"),
+    "pastix6": DEPENDENCIES["pastix6"],
     "strumpack": SolverSourceRecipe(
         "strumpack", "7.1.0",
         "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
@@ -117,7 +101,7 @@ def validate_solver_source_recipes() -> List[str]:
         errors.extend(validate_source_recipe(
             recipe.name, recipe.version, recipe.url, recipe.source_kind,
             recipe.git_ref, recipe.git_submodules, recipe.required_paths))
-        for alternatives in recipe.required_any_paths:
+        for alternatives in getattr(recipe, "required_any_paths", ()):
             for relative in alternatives:
                 path = Path(relative)
                 if path.is_absolute() or ".." in path.parts or not relative:
@@ -163,22 +147,27 @@ class SolverBuild:
     def source(self, name: str) -> Path:
         """Acquire a source tree from its shared, validated recipe."""
         recipe = SOLVER_SOURCE_RECIPES[name]
-        supplied = self.source_dirs.get(recipe.directory)
+        recipe_name = recipe.name
+        directory = getattr(recipe, "directory", recipe.name)
+        filename = getattr(
+            recipe, "filename",
+            os.path.basename(recipe.url.split("?", 1)[0]) or (recipe.name + ".source"))
+        supplied = self.source_dirs.get(directory)
         if supplied is not None:
             supplied = Path(supplied).expanduser().resolve()
             if not supplied.is_dir():
                 raise BuildError("source directory for %s is not a directory: %s" % (
-                    recipe.name, supplied))
+                    recipe_name, supplied))
             source = supplied
-            print("  %-18s using source tree %s" % (recipe.name, source))
+            print("  %-18s using source tree %s" % (recipe_name, source))
         elif recipe.source_kind == "git":
             git = shutil.which("git")
             if not git:
-                raise BuildError("git is required to fetch the %s source tree" % recipe.name)
+                raise BuildError("git is required to fetch the %s source tree" % recipe_name)
             destination = self.work / "src" / (
-                "%s-%s" % (recipe.name, recipe.version))
+                "%s-%s" % (recipe_name, recipe.version))
             destination.parent.mkdir(parents=True, exist_ok=True)
-            urls = list(self.url_overrides.get(recipe.directory, [])) + [recipe.url]
+            urls = list(self.url_overrides.get(directory, [])) + [recipe.url]
             failures = []
             env = self.env
             env["GIT_TERMINAL_PROMPT"] = "0"
@@ -214,8 +203,8 @@ class SolverBuild:
                     recipe.name, "\\n  ".join(failures)))
         else:
             urls = list(self.url_overrides.get(recipe.directory, [])) + [recipe.url]
-            archive = self.downloader.fetch(urls, recipe.filename)
-            destination = ensure_dir(self.work / "src" / recipe.directory)
+            archive = self.downloader.fetch(urls, filename)
+            destination = ensure_dir(self.work / "src" / directory)
             source = extract_archive(archive, destination)
 
         missing = [
@@ -231,7 +220,7 @@ class SolverBuild:
             details = missing + missing_alternatives
             raise BuildError(
                 "%s source tree is incomplete; missing required paths: %s" %
-                (recipe.name, ", ".join(details)))
+                (recipe_name, ", ".join(details)))
         return source
 
     def verify_stage_artifacts(self, stage_name: str) -> None:
