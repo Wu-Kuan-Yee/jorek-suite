@@ -180,7 +180,7 @@ class RemoteCommandTests(unittest.TestCase):
     def test_native_remote_build_and_artifact_download_over_ssh_and_scp(self):
         with tempfile.TemporaryDirectory(prefix="jorek-ssh-integration-") as temporary:
             root = Path(temporary)
-            root.chmod(0o755)  # The remote SSH account must traverse this fixture directory.
+            root.chmod(0o777)  # The isolated remote SSH account must write below this fixture directory.
             source = root / "source repo"
             source.mkdir()
             subprocess.run(["git", "init", "-b", "main", str(source)],
