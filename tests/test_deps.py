@@ -72,6 +72,17 @@ class GitSourceTests(unittest.TestCase):
             "cmake_modules/morse_cmake/modules/MorseInit.cmake",
             dependency.required_paths)
         self.assertIn("-DGIT_SUBMODULE=OFF", dependency.cmake_args)
+        self.assertIn("-DPASTIX_INT64=OFF", dependency.cmake_args)
+        self.assertIn("-DPASTIX_ORDERING_METIS=ON", dependency.cmake_args)
+        self.assertIn("-DPASTIX_ORDERING_SCOTCH=OFF", dependency.cmake_args)
+        self.assertEqual(dependency.recipe_revision, "2")
+
+    def test_pastix6_does_not_pull_scotch_when_using_metis_ordering(self):
+        names = deps.core_dependencies("standard", "pastix6")
+        self.assertIn("pastix6", names)
+        self.assertIn("metis", names)
+        self.assertNotIn("scotch", names)
+        self.assertIn("scotch", deps.core_dependencies("complete", "pastix6"))
 
     def test_git_clone_includes_recursive_submodules_and_validates_them(self):
         dependency = deps.Dependency(
