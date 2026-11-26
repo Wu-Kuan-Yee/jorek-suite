@@ -92,7 +92,16 @@ class GitSourceTests(unittest.TestCase):
         self.assertIn("-DPASTIX_INT64=OFF", dependency.cmake_args)
         self.assertIn("-DPASTIX_ORDERING_METIS=ON", dependency.cmake_args)
         self.assertIn("-DPASTIX_ORDERING_SCOTCH=OFF", dependency.cmake_args)
-        self.assertEqual(dependency.recipe_revision, "2")
+        self.assertIn("-DPASTIX_BUILD_EXAMPLES=OFF", dependency.cmake_args)
+        self.assertIn("-DPASTIX_BUILD_TESTS=OFF", dependency.cmake_args)
+        self.assertEqual(dependency.recipe_revision, "4")
+
+    def test_hwloc_static_build_uses_internal_xml_backend(self):
+        dependency = deps.DEPENDENCIES["hwloc"]
+        self.assertIn("--disable-shared", dependency.configure_args)
+        self.assertIn("--enable-static", dependency.configure_args)
+        self.assertIn("--disable-libxml2", dependency.configure_args)
+        self.assertEqual(dependency.recipe_revision, "1")
 
     def test_pastix6_does_not_pull_scotch_when_using_metis_ordering(self):
         names = deps.core_dependencies("standard", "pastix6")
