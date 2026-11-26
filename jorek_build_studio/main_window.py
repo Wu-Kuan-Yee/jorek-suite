@@ -685,6 +685,7 @@ class MainWindow(QMainWindow):
         profile = plan["profile"]
         summary = {
             "remote_target": profile["destination"],
+            "target_execution": "Native build on the remote host; OS and CPU architecture are detected there after SSH connection",
             "ssh_port": profile["port"],
             "ssh_identity_file": profile.get("identity_file", ""),
             "host_key_policy": profile.get("host_key_policy", "yes"),
@@ -704,6 +705,11 @@ class MainWindow(QMainWindow):
             "cleanup_command": shlex.join([plan["ssh"]] + plan["cleanup_args"]),
             "remote_overrides": profile.get("remote_overrides", ""),
             "effective_build_configuration": plan["remote_config"],
+            "automatic_defaults": (
+                "Unset compiler and prefix fields are auto-detected on the remote host. "
+                "The preview does not invent remote filesystem paths. Dependency policy "
+                "and profile are applied exactly as shown in the effective configuration."
+            ),
             "build_arguments": plan["build_args"],
             "verification_arguments": plan["verify_args"],
         }
