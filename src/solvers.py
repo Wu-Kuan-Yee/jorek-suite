@@ -435,7 +435,7 @@ class SolverBuild:
             "-DBLAS_LIBRARIES=%s" % (self.core / "lib" / "libopenblas.a"),
             "-DLAPACK_LIBRARIES=%s" % (self.core / "lib" / "libopenblas.a"),
             "-DBLA_VENDOR=OpenBLAS",
-            "-DMETIS_LIBRARIES=%s;-lm" % (self.prefix / "lib" / "libmetis.a"),
+            "-DMETIS_LIBRARIES=%s" % (self.prefix / "lib" / "libmetis.a"),
             "-DMETIS_INCLUDE_DIRS=%s" % (self.prefix / "include"),
             "-DHWLOC_DIR=%s" % self.prefix,
             "-DHWLOC_LIBRARIES=%s;-lm" % (self.prefix / "lib" / "libhwloc.a"),
