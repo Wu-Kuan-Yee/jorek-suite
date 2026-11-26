@@ -32,7 +32,7 @@ class LogHighlighter(QSyntaxHighlighter):
             # GNU ar/ranlib may report ignored modifiers without saying "warning".
             (re.compile(
                 r"(?i)(?:^|[\s/\\])(?:llvm-|gcc-)?(?:ar|ranlib)(?:\.exe)?\s*:"
-                r".*\b(?:modifier|option|flag)\b.*\bignored\b"),
+                r".*(?:\b(?:modifier|option|flag)\b.*\bignored\b|修饰符.*被忽略)"),
              "#ffca68", "#352b16", True),
             (re.compile(r"(?i)performing test .+ - failed"),
              "#aab2c0", None, False),
