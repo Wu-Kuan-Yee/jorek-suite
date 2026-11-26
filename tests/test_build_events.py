@@ -39,6 +39,23 @@ class BuildEventTests(unittest.TestCase):
                 emit_build_event("stage_start", id="hidden")
         self.assertEqual(output.getvalue(), "")
 
+    def test_build_studio_streams_complete_output_even_in_quiet_mode(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('quiet-stdout', flush=True); "
+            "print('quiet-stderr', file=sys.stderr, flush=True)",
+        ]
+        with patch.dict(os.environ, {
+            "JOREK_BUILD_STUDIO_EVENTS": "1",
+            "JOREK_QUIET": "1",
+        }):
+            with contextlib.redirect_stdout(output):
+                result = run(command, echo=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("quiet-stdout", output.getvalue())
+        self.assertIn("quiet-stderr", output.getvalue())
+
     def test_run_streams_merged_output_and_writes_complete_log(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "logs" / "component.log"
