@@ -227,7 +227,12 @@ def _system_static_prefixes(args) -> List[Path]:
 
 
 def _static_available(prefixes: Sequence[Path], lib: str) -> bool:
+    relative = Path(lib)
+    if relative.is_absolute() or ".." in relative.parts:
+        return False
     for prefix in prefixes:
+        if (prefix / relative).is_file():
+            return True
         for sub in ("lib", "lib64", "lib/x86_64-linux-gnu", "lib/aarch64-linux-gnu"):
             if (prefix / sub / lib).exists():
                 return True
@@ -1867,6 +1872,16 @@ def cmd_preflight(args) -> int:
         if not root:
             return CheckResult("skipped", [
                 "Variant expansion will be checked after the requested JOREK source checkout is fetched."])
+        requested_features = jorek.FeatureSet()
+        _apply_feature_args(requested_features, args)
+        if requested_features.enabled("int64") and (
+                build_kind == "full" or
+                getattr(args, "solver", "mumps") in ("pastix5", "pastix6", "all")):
+            raise BuildError(
+                "the bundled PaStiX 5/6 adapters are currently built with 32-bit "
+                "integer interfaces to match JOREK's default USE_INTSIZE64=0. "
+                "Disable the int64 feature or supply a separately built, ABI-matched "
+                "solver prefix; refusing to mix 64-bit JOREK integers with 32-bit PaStiX.")
         plan_args = copy.copy(args)
         plan_args.root = str(root)
         plan_args.dry_run = True
