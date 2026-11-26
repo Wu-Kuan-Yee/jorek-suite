@@ -541,14 +541,25 @@ class RemoteCommandTests(unittest.TestCase):
             script = textwrap.dedent("""\
                 import argparse
                 import json
+                import subprocess
                 from pathlib import Path
                 parser = argparse.ArgumentParser()
                 parser.add_argument("--work", required=True)
                 parser.add_argument("action")
+                parser.add_argument("--for-command")
+                parser.add_argument("--expected-commit")
                 parser.add_argument("--json", action="store_true")
                 args = parser.parse_args()
                 suite = Path(args.work) / "dist" / "jorek-suite"
-                if args.action == "dist":
+                if args.action == "preflight":
+                    actual = subprocess.run(
+                        ["git", "rev-parse", "HEAD"], check=True,
+                        stdout=subprocess.PIPE, text=True).stdout.strip()
+                    if args.for_command != "dist" or actual != args.expected_commit:
+                        raise SystemExit(3)
+                    if args.json:
+                        print(json.dumps({"ok": True, "status": "passed"}))
+                elif args.action == "dist":
                     suite.parent.mkdir(parents=True, exist_ok=True)
                     suite.write_text("ssh-native-suite", encoding="utf-8")
                 elif args.action == "verify":
@@ -557,15 +568,8 @@ class RemoteCommandTests(unittest.TestCase):
                     print(json.dumps({"portable_on_build_host": True}))
                 """)
             (source / "build.py").write_text(script, encoding="utf-8")
-            (source / "src").mkdir(parents=True, exist_ok=True)
-            (source / "src" / "deps.py").write_text(
-                "from types import SimpleNamespace\n"
-                "DEPENDENCIES = {'pastix6': SimpleNamespace("
-                "source_kind='git', git_ref='v6.3.2', git_submodules=True)}\n",
-                encoding="utf-8",
-            )
             subprocess.run(
-                ["git", "-C", str(source), "add", "build.py", "src/deps.py"],
+                ["git", "-C", str(source), "add", "build.py"],
                 check=True)
             subprocess.run(["git", "-C", str(source), "commit", "-m", "fixture"],
                            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
