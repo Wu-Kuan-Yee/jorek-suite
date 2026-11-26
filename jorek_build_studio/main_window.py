@@ -2459,6 +2459,26 @@ class MainWindow(QMainWindow):
         self.overview_text.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
 
     def cancel_process(self) -> None:
+        if self.remote_task_id and not self.remote_task_terminal:
+            self._cancel_requested = True
+            self.remote_reconnect_timer.stop()
+            self.task_label.setText("Stopping remote build…")
+            if (self.task_kind == "remote-attach" and
+                    self.process.state() == QProcess.ProcessState.Running):
+                self.process.write(b"CANCEL\n")
+                self.statusBar().showMessage(
+                    "Remote cancellation requested; waiting for the supervisor to stop the process group.")
+            else:
+                delivered = self._send_remote_cancel_out_of_band()
+                self.statusBar().showMessage(
+                    "Remote cancellation sent." if delivered else
+                    "Cancellation could not reach the host. The supervisor will stop "
+                    "the task after 120 seconds without a heartbeat.")
+                if self.process.state() == QProcess.ProcessState.NotRunning:
+                    self._start_remote_attach()
+                else:
+                    QTimer.singleShot(1500, self._send_remote_cancel_out_of_band)
+            return
         if self.process.state() == QProcess.ProcessState.NotRunning:
             return
         self._cancel_requested = True
@@ -2512,27 +2532,40 @@ class MainWindow(QMainWindow):
         self.help_text.setPlainText(text)
 
     def closeEvent(self, event) -> None:
-        if self.process.state() != QProcess.ProcessState.NotRunning:
+        remote_active = bool(self.remote_task_id and not self.remote_task_terminal)
+        local_active = self.process.state() != QProcess.ProcessState.NotRunning
+        if remote_active or local_active:
             answer = QMessageBox.question(
                 self, APP_TITLE,
-                "A build task is still running. Terminate it and close the application?",
+                "A build task is still running. Request termination and close the application?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
             self._cancel_requested = True
-            self._terminate_process_tree(force=False)
-            self.process.waitForFinished(2500)
+            self.remote_reconnect_timer.stop()
+            self.remote_heartbeat_timer.stop()
+            if remote_active:
+                if (self.task_kind == "remote-attach" and
+                        self.process.state() == QProcess.ProcessState.Running):
+                    self.process.write(b"CANCEL\n")
+                    self.process.waitForBytesWritten(1000)
+                else:
+                    self._send_remote_cancel_out_of_band()
             if self.process.state() != QProcess.ProcessState.NotRunning:
-                self._terminate_process_tree(force=True)
-                self.process.waitForFinished(1500)
+                self._terminate_process_tree(force=False)
+                self.process.waitForFinished(2500)
+                if self.process.state() != QProcess.ProcessState.NotRunning:
+                    self._terminate_process_tree(force=True)
+                    self.process.waitForFinished(1500)
         try:
             self.config = self._collect_config()
             save_config(self.config, self.config_path)
         except Exception:
             pass
-        if self.stage_stack:
+        if self.stage_stack and not (
+                self.remote_task_id and not self.remote_task_terminal):
             self._finalize_open_stages("cancelled")
         else:
             self._close_stage_log_handles()
