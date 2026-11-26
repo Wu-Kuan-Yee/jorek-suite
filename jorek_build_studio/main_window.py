@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
@@ -103,6 +104,9 @@ class MainWindow(QMainWindow):
         self.process_output_buffer = ""
         self.current_phase = ""
         self._cancel_requested = False
+        self.stage_elapsed_timer = QTimer(self)
+        self.stage_elapsed_timer.setInterval(1000)
+        self.stage_elapsed_timer.timeout.connect(self._refresh_running_stage_rows)
 
         self.tabs = QTabWidget(self)
         self.setCentralWidget(self.tabs)
@@ -1672,7 +1676,7 @@ class MainWindow(QMainWindow):
                 "log": str(log_path),
                 "remote_log_path": str(event.get("log_path") or ""),
                 "started_at": started,
-                "started_monotonic": __import__("time").monotonic(),
+                "started_monotonic": time.monotonic(),
                 "elapsed_seconds": 0.0,
                 "error": "",
             }
@@ -1680,6 +1684,8 @@ class MainWindow(QMainWindow):
             self.stage_log_handles[stage_id] = handle
             self.stage_stack.append(stage_id)
             self._refresh_stage_table_row(stage_id)
+            if not self.stage_elapsed_timer.isActive():
+                self.stage_elapsed_timer.start()
             self._append_overview_output(
                 "\n[%s] %s — started\n" % (category, label))
             self.task_label.setText("Running: " + label)
@@ -1714,6 +1720,11 @@ class MainWindow(QMainWindow):
             if dialog:
                 dialog.set_running(False)
             self._refresh_stage_table_row(stage_id)
+            if not any(
+                item.get("status") == "running"
+                for item in self.stage_records.values()
+            ):
+                self.stage_elapsed_timer.stop()
             self._append_overview_output(
                 "[%s] %s — %s (%.1f s)\n" % (
                     record["category"], record["label"], status,
@@ -1751,6 +1762,11 @@ class MainWindow(QMainWindow):
                 item.setData(Qt.ItemDataRole.UserRole, stage_id)
             elif column == 4:
                 item.setData(Qt.ItemDataRole.UserRole, record.get("log", ""))
+
+    def _refresh_running_stage_rows(self) -> None:
+        for stage_id, record in self.stage_records.items():
+            if record.get("status") == "running":
+                self._refresh_stage_table_row(stage_id)
 
     def _open_stage_log(self, row: int, _column: int) -> None:
         item = self.stage_table.item(row, 0)
@@ -1813,6 +1829,8 @@ class MainWindow(QMainWindow):
                 dialog.set_running(False)
             self._refresh_stage_table_row(stage_id)
         self.stage_stack = []
+        self.stage_elapsed_timer.stop()
+        self._close_stage_log_handles()
 
     def _process_error(self, error) -> None:
         self._read_process_output()
