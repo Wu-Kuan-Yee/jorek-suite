@@ -1708,7 +1708,7 @@ class MainWindow(QMainWindow):
             record["finished_at"] = datetime.now(timezone.utc)
             record["elapsed_seconds"] = max(
                 0.0, time.monotonic() -
-                float(record.get("started_monotonic", __import__("time").monotonic())))
+                float(record.get("started_monotonic", time.monotonic())))
             handle = self.stage_log_handles.pop(stage_id, None)
             if handle:
                 suffix = "\n\n[Stage %s after %.1f seconds]\n" % (
@@ -1746,8 +1746,8 @@ class MainWindow(QMainWindow):
         status = str(record.get("status", ""))
         if status == "running":
             elapsed = max(
-                0.0, __import__("time").monotonic() -
-                float(record.get("started_monotonic", __import__("time").monotonic())))
+                0.0, time.monotonic() -
+                float(record.get("started_monotonic", time.monotonic())))
         else:
             elapsed = float(record.get("elapsed_seconds", 0.0))
         values = [
@@ -1821,8 +1821,8 @@ class MainWindow(QMainWindow):
             record["status"] = status
             record["finished_at"] = datetime.now(timezone.utc)
             record["elapsed_seconds"] = max(
-                0.0, __import__("time").monotonic() -
-                float(record.get("started_monotonic", __import__("time").monotonic())))
+                0.0, time.monotonic() -
+                float(record.get("started_monotonic", time.monotonic())))
             handle = self.stage_log_handles.pop(stage_id, None)
             if handle:
                 handle.write("\n\n[Stage %s after %.1f seconds]\n" % (
