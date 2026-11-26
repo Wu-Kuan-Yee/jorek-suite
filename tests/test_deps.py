@@ -178,6 +178,12 @@ class RecipeStampTests(unittest.TestCase):
             (prefix / "lib").mkdir()
             for library in dependency.static_libs:
                 (prefix / "lib" / library).write_bytes(b"fixture")
+            include = prefix / "include"
+            include.mkdir()
+            for header in dependency.includes:
+                target = include / header
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"fixture")
 
             context = object.__new__(deps.BuildContext)
             context.force = False
