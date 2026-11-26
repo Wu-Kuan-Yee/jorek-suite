@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from deps import DEPENDENCIES, merge_static_archives, validate_source_recipe
+from deps import (DEPENDENCIES, merge_static_archives, patch_pastix_metis_find_module,
+                   validate_source_recipe)
 
 from common import (
     BuildError,
@@ -94,49 +95,6 @@ def validate_solver_source_recipes() -> List[str]:
     return errors
 
 
-
-
-def patch_pastix_metis_find_module(source: Path) -> bool:
-    """Repair the pinned MORSE FindMETIS/FindM variable mismatch.
-
-    The pinned FindMETIS.cmake appends M_LIBRARIES, while its paired
-    FindM.cmake exports M_LIBRARY and MORSE::M.  Consequently a successful
-    find_package(M) can still leave the METIS link probe without libm.
-    Return True when the module was patched and False when already patched.
-    """
-    module = (Path(source) / "cmake_modules" / "morse_cmake" /
-              "modules" / "find" / "FindMETIS.cmake")
-    if not module.is_file():
-        raise BuildError("PaStiX MORSE FindMETIS.cmake is missing: %s" % module)
-
-    content = read_text(module)
-    old = '''  find_package(M QUIET)
-  if ( M_FOUND )
-    set( METIS_LIBRARIES "${METIS_LIBRARIES};${M_LIBRARIES}" )
-  endif()
-'''
-    new = '''  find_package(M QUIET)
-  if (M_FOUND)
-    # The pinned FindM.cmake exports M_LIBRARY and MORSE::M, not
-    # M_LIBRARIES.  Fall back to the variables/target it actually exports.
-    if (M_LIBRARIES)
-      list(APPEND METIS_LIBRARIES ${M_LIBRARIES})
-    elseif (M_LIBRARY)
-      list(APPEND METIS_LIBRARIES ${M_LIBRARY})
-    elseif (TARGET MORSE::M)
-      list(APPEND METIS_LIBRARIES MORSE::M)
-    endif()
-  endif()
-'''
-    if old in content:
-        write_text(module, content.replace(old, new, 1))
-        return True
-    if ("list(APPEND METIS_LIBRARIES ${M_LIBRARY})" in content and
-            "list(APPEND METIS_LIBRARIES MORSE::M)" in content):
-        return False
-    raise BuildError(
-        "unrecognized math-library handling in PaStiX FindMETIS.cmake; "
-        "refusing to configure with an unverified METIS link probe")
 
 
 class SolverBuild:
