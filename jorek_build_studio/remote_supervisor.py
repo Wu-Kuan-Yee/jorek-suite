@@ -465,7 +465,8 @@ def remote_task_start_command(
         raise ValueError("heartbeat timeout must be at least 10 seconds")
     payload = json.dumps({
         "command": str(workload_command),
-        "cwd": str(profile.get("remote_root", "")),
+        # The remote_root may not exist until the workload creates it.
+        "cwd": "/",
     }, ensure_ascii=False, separators=(",", ":"))
     return shlex.join(_supervisor_argv(
         profile, "start", task_id, str(timeout), payload))
