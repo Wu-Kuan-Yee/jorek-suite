@@ -135,12 +135,18 @@ class ConfigTests(unittest.TestCase):
     def test_config_round_trip(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "nested" / "studio.json"
-            cfg = normalize_config({"jobs": 12, "work_dir": "/tmp/work",
-                                    "feature_states": {"hdf5": False}})
+            cfg = normalize_config({
+                "jobs": 12, "work_dir": "/tmp/work",
+                "feature_states": {"hdf5": False},
+                "remote_profiles": [{"name": "cluster", "destination": "user@host"}],
+                "active_remote_profile": "cluster",
+            })
             save_config(cfg, path)
             loaded = load_config(path)
             self.assertEqual(loaded["jobs"], 12)
             self.assertFalse(loaded["feature_states"]["hdf5"])
+            self.assertEqual(loaded["remote_profiles"][0]["name"], "cluster")
+            self.assertEqual(loaded["active_remote_profile"], "cluster")
             self.assertEqual(json.loads(path.read_text())["jobs"], 12)
 
 

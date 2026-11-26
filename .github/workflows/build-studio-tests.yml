@@ -28,9 +28,9 @@ jobs:
       - name: Install GUI package
         run: python -m pip install -e ".[gui]"
       - name: Run unit tests
-        run: python -m unittest discover -s tests -p "test_build_studio.py" -v
+        run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Check native launcher C syntax
         if: runner.os != 'Windows'
         run: cc -D_GNU_SOURCE -std=c11 -fsyntax-only -Isrc src/jorek_suite.c
       - name: Launch GUI smoke test
-        run: python -c "from PySide6.QtWidgets import QApplication; from jorek_build_studio.main_window import MainWindow; app = QApplication([]); window = MainWindow(); assert window.tabs.count() == 7; window.deleteLater()"
+        run: python -c "from PySide6.QtWidgets import QApplication; from jorek_build_studio.main_window import MainWindow; app = QApplication([]); window = MainWindow(); assert window.tabs.count() == 8; window.deleteLater()"

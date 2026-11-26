@@ -73,6 +73,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "dep_action": "list",
     "bootstrap_with_deps": True,
     "dep_only": "",
+    "remote_profiles": [],
+    "active_remote_profile": "",
 }
 
 
@@ -100,6 +102,9 @@ def normalize_config(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     result["feature_defaults"] = dict(result.get("feature_defaults") or {})
     result["family_toggle_states"] = dict(result.get("family_toggle_states") or {})
     result["family_toggle_defaults"] = dict(result.get("family_toggle_defaults") or {})
+    result["remote_profiles"] = [dict(item) for item in (result.get("remote_profiles") or [])
+                                 if isinstance(item, dict)]
+    result["active_remote_profile"] = str(result.get("active_remote_profile") or "")
     for key in ("offline", "force", "no_checksum", "allow_shared",
                 "require_full_static", "no_full_static", "keep_going",
                 "verbose", "dry_run", "fetch_source", "everything",

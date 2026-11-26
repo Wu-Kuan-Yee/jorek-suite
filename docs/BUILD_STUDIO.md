@@ -177,6 +177,12 @@ temporary file followed by an atomic replace.
   signed release installers, artifact SBOM generation, and exhaustive
   target-side portability certification are future work.
 
+## Native remote builds
+
+Create a profile with an SSH destination, port, repository parent, work directory, repository branch, and full commit SHA. Test the connection before starting a build. The remote machine builds for its own operating system and CPU architecture; the verified single-file artifact is copied to the selected local artifact directory. `StrictHostKeyChecking=yes` is the default. Use `accept-new` only when its trust-on-first-use behavior is acceptable in your environment.
+
+The remote override field accepts a JSON object for machine-specific settings such as `toolchain_prefix`, `mpi_prefix`, `solver_prefix`, `cc`, `cxx`, `fc`, and `dep_prefixes`. Local absolute paths are cleared before remote arguments are assembled to avoid accidentally passing paths that exist only on the desktop running the GUI.
+
 ## Portability is target-specific
 
 A JOREK executable is not universally portable across operating systems,
@@ -191,7 +197,7 @@ every platform in the proposed long-term target matrix.
 Run the standard-library unit tests:
 
 ```sh
-python -m unittest discover -s tests -p 'test_build_studio.py' -v
+python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 The GitHub Actions workflow additionally installs PySide6 and performs a

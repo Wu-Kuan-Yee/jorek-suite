@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt, QUrl
@@ -31,6 +33,11 @@ from .config import (
     save_config, validate_config,
 )
 from .legacy import import_legacy_text
+from .remote import (
+    RemoteProfileError, build_remote_command, connection_test_command,
+    parse_remote_overrides, remote_artifact_path, remote_repo_path,
+    scp_arguments, ssh_arguments, validate_connection_profile, validate_profile,
+)
 
 
 APP_TITLE = "JOREK Build Studio"
@@ -91,6 +98,7 @@ class MainWindow(QMainWindow):
         self._build_overview_tab()
         self._build_configuration_tab()
         self._build_advanced_tab()
+        self._build_remote_tab()
         self._build_dependencies_tab()
         self._build_build_tab()
         self._build_history_tab()
@@ -99,6 +107,7 @@ class MainWindow(QMainWindow):
         self._load_config_into_widgets()
         self.refresh_catalog(show_message=False)
         self.refresh_history()
+        self._load_remote_profiles()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -339,6 +348,287 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, title, edit.text(), "All files (*)")
         if path:
             edit.setText(path)
+
+    def _build_remote_tab(self) -> None:
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        profile_row = QHBoxLayout()
+        self.remote_profile_combo = QComboBox()
+        self.remote_profile_combo.currentIndexChanged.connect(self._load_selected_remote_profile)
+        profile_row.addWidget(QLabel("Saved profile"))
+        profile_row.addWidget(self.remote_profile_combo, 1)
+        profile_row.addWidget(_button("Save profile", self._save_remote_profile, page))
+        profile_row.addWidget(_button("Remove", self._remove_remote_profile, page))
+        outer.addLayout(profile_row)
+
+        group = QGroupBox("Native POSIX remote builder")
+        form = QFormLayout(group)
+        self.remote_name_edit = QLineEdit("Linux x86_64")
+        self.remote_destination_edit = QLineEdit()
+        self.remote_destination_edit.setPlaceholderText("user@host or SSH config alias")
+        self.remote_port_spin = QSpinBox()
+        self.remote_port_spin.setRange(1, 65535)
+        self.remote_port_spin.setValue(22)
+        self.remote_identity_edit = QLineEdit()
+        self.remote_root_edit = QLineEdit("/tmp/jorek-build-studio")
+        self.remote_work_edit = QLineEdit("/tmp/jorek-build-work")
+        self.remote_jorek_root_edit = QLineEdit()
+        self.remote_jorek_root_edit.setPlaceholderText(
+            "Optional path to an existing JOREK checkout on the remote host")
+        self.remote_python_edit = QLineEdit("python3")
+        self.remote_repo_url_edit = QLineEdit(
+            "https://github.com/Wu-Kuan-Yee/jorek-suite.git")
+        self.remote_branch_edit = QLineEdit("feature/build-studio-gui")
+        self.remote_commit_edit = QLineEdit(self._local_git_commit())
+        self.remote_artifact_dir_edit = QLineEdit(
+            str(Path.home() / "JOREK-artifacts"))
+        self.remote_host_key_combo = QComboBox()
+        self.remote_host_key_combo.addItems(["yes", "accept-new", "no"])
+        self.remote_ssh_options_edit = QPlainTextEdit()
+        self.remote_ssh_options_edit.setMaximumHeight(55)
+        self.remote_ssh_options_edit.setPlaceholderText(
+            "Optional OpenSSH -o options, one per line")
+        self.remote_overrides_edit = QPlainTextEdit()
+        self.remote_overrides_edit.setMaximumHeight(95)
+        self.remote_overrides_edit.setPlaceholderText(
+            '{"toolchain_prefix": "/opt/jorek-toolchain", "mpi_prefix": "/opt/mpi"}')
+        form.addRow("Profile name", self.remote_name_edit)
+        form.addRow("SSH destination", self.remote_destination_edit)
+        form.addRow("SSH port", self.remote_port_spin)
+        form.addRow("Identity file (optional)", _path_row(
+            self.remote_identity_edit, lambda: self._browse_file_for(
+                self.remote_identity_edit, "Select SSH identity file"), group))
+        form.addRow("Remote repository parent", self.remote_root_edit)
+        form.addRow("Remote build work directory", self.remote_work_edit)
+        form.addRow("Remote JOREK source (optional)", self.remote_jorek_root_edit)
+        form.addRow("Remote Python executable", self.remote_python_edit)
+        form.addRow("jorek-suite repository URL", self.remote_repo_url_edit)
+        form.addRow("Repository branch", self.remote_branch_edit)
+        form.addRow("Pinned repository commit", self.remote_commit_edit)
+        form.addRow("Local artifact directory", _path_row(
+            self.remote_artifact_dir_edit, lambda: self._browse_directory_for(
+                self.remote_artifact_dir_edit, "Select artifact directory"), group))
+        form.addRow("Host key policy", self.remote_host_key_combo)
+        form.addRow("Additional SSH options", self.remote_ssh_options_edit)
+        form.addRow("Remote build overrides (JSON)", self.remote_overrides_edit)
+        outer.addWidget(group)
+
+        note = QLabel(
+            "Remote builds run natively on the remote OS and CPU. The remote host "
+            "needs SSH access, Git, Python 3, a C/C++/Fortran toolchain and the "
+            "required build utilities. Leave the JOREK source path empty to let "
+            "the remote build fetch JOREK itself. Local absolute paths are not "
+            "reused remotely; enter remote-specific compiler and prefix paths in "
+            "the JSON override field. Supported keys include cc, cxx, fc, "
+            "toolchain_prefix, mpi_prefix, solver_prefix, source_dir, imas_root, "
+            "catalyst_root and dep_prefixes.")
+        note.setWordWrap(True)
+        outer.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addWidget(_button("Test SSH connection", self._test_remote_connection, page))
+        buttons.addWidget(_button("Build, verify and download", self._build_remote, page))
+        buttons.addStretch(1)
+        outer.addLayout(buttons)
+        self.remote_preview = QPlainTextEdit()
+        self.remote_preview.setReadOnly(True)
+        self.remote_preview.setMaximumHeight(105)
+        self.remote_preview.setPlaceholderText("The remote command preview appears here.")
+        outer.addWidget(self.remote_preview)
+        outer.addStretch(1)
+        page.setWidget(content)
+        self.tabs.addTab(page, "Remote")
+
+    def _local_git_commit(self) -> str:
+        try:
+            script = Path(default_build_script()).resolve()
+            result = subprocess.run(
+                ["git", "-C", str(script.parent), "rev-parse", "HEAD"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, check=False, timeout=5)
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    def _remote_profile_from_widgets(self) -> Dict[str, Any]:
+        return {
+            "name": self.remote_name_edit.text().strip(),
+            "destination": self.remote_destination_edit.text().strip(),
+            "port": self.remote_port_spin.value(),
+            "identity_file": self.remote_identity_edit.text().strip(),
+            "remote_root": self.remote_root_edit.text().strip(),
+            "remote_work": self.remote_work_edit.text().strip(),
+            "remote_jorek_root": self.remote_jorek_root_edit.text().strip(),
+            "python": self.remote_python_edit.text().strip() or "python3",
+            "repo_url": self.remote_repo_url_edit.text().strip(),
+            "branch": self.remote_branch_edit.text().strip(),
+            "commit": self.remote_commit_edit.text().strip(),
+            "artifact_dir": self.remote_artifact_dir_edit.text().strip(),
+            "host_key_policy": self.remote_host_key_combo.currentText(),
+            "ssh_options": [
+                line.strip() for line in self.remote_ssh_options_edit.toPlainText().splitlines()
+                if line.strip()
+            ],
+            "remote_overrides": self.remote_overrides_edit.toPlainText().strip(),
+        }
+
+    def _apply_remote_profile(self, profile: Dict[str, Any]) -> None:
+        self.remote_name_edit.setText(str(profile.get("name", "")))
+        self.remote_destination_edit.setText(str(profile.get("destination", "")))
+        self.remote_port_spin.setValue(int(profile.get("port", 22)))
+        self.remote_identity_edit.setText(str(profile.get("identity_file", "")))
+        self.remote_root_edit.setText(str(profile.get("remote_root", "/tmp/jorek-build-studio")))
+        self.remote_work_edit.setText(str(profile.get("remote_work", "/tmp/jorek-build-work")))
+        self.remote_jorek_root_edit.setText(str(profile.get("remote_jorek_root", "")))
+        self.remote_python_edit.setText(str(profile.get("python", "python3")))
+        self.remote_repo_url_edit.setText(str(profile.get("repo_url", "")))
+        self.remote_branch_edit.setText(str(profile.get("branch", "")))
+        self.remote_commit_edit.setText(str(profile.get("commit", "")))
+        self.remote_artifact_dir_edit.setText(str(profile.get("artifact_dir", "")))
+        self.remote_host_key_combo.setCurrentText(str(profile.get("host_key_policy", "yes")))
+        self.remote_ssh_options_edit.setPlainText(
+            "\n".join(profile.get("ssh_options", []) or []))
+        self.remote_overrides_edit.setPlainText(str(profile.get("remote_overrides", "")))
+
+    def _load_remote_profiles(self) -> None:
+        profiles = self.config.get("remote_profiles", [])
+        current = str(self.config.get("active_remote_profile", ""))
+        self.remote_profile_combo.blockSignals(True)
+        self.remote_profile_combo.clear()
+        for profile in profiles:
+            self.remote_profile_combo.addItem(str(profile.get("name", "")))
+        index = self.remote_profile_combo.findText(current)
+        if index >= 0:
+            self.remote_profile_combo.setCurrentIndex(index)
+        self.remote_profile_combo.blockSignals(False)
+        if self.remote_profile_combo.count():
+            self._load_selected_remote_profile(self.remote_profile_combo.currentIndex())
+
+    def _load_selected_remote_profile(self, index: int) -> None:
+        if index < 0:
+            return
+        name = self.remote_profile_combo.itemText(index)
+        for profile in self.config.get("remote_profiles", []):
+            if profile.get("name") == name:
+                self._apply_remote_profile(profile)
+                self.config["active_remote_profile"] = name
+                return
+
+    def _save_remote_profile(self) -> bool:
+        profile = self._remote_profile_from_widgets()
+        errors = validate_profile(profile)
+        if errors:
+            QMessageBox.warning(self, APP_TITLE, "\n".join(errors))
+            return False
+        profiles = list(self.config.get("remote_profiles", []))
+        replaced = False
+        for index, old in enumerate(profiles):
+            if old.get("name") == profile["name"]:
+                profiles[index] = profile
+                replaced = True
+                break
+        if not replaced:
+            profiles.append(profile)
+        self.config["remote_profiles"] = profiles
+        self.config["active_remote_profile"] = profile["name"]
+        try:
+            save_config(self.config, self.config_path)
+        except OSError as exc:
+            QMessageBox.warning(self, APP_TITLE, "Could not save remote profile:\n%s" % exc)
+            return False
+        self._load_remote_profiles()
+        self.statusBar().showMessage("Remote profile saved", 5000)
+        return True
+
+    def _remove_remote_profile(self) -> None:
+        name = self.remote_profile_combo.currentText()
+        if not name:
+            return
+        self.config["remote_profiles"] = [
+            item for item in self.config.get("remote_profiles", [])
+            if item.get("name") != name
+        ]
+        self.config["active_remote_profile"] = ""
+        save_config(self.config, self.config_path)
+        self._load_remote_profiles()
+
+    def _test_remote_connection(self) -> None:
+        profile = self._remote_profile_from_widgets()
+        errors = validate_connection_profile(profile)
+        if errors:
+            QMessageBox.warning(self, APP_TITLE, "\n".join(errors))
+            return
+        ssh = shutil.which("ssh")
+        if not ssh:
+            QMessageBox.warning(self, APP_TITLE, "OpenSSH client (ssh) was not found in PATH.")
+            return
+        command = connection_test_command(profile)
+        self.remote_preview.setPlainText(command)
+        try:
+            args = ssh_arguments(profile, command)
+        except RemoteProfileError as exc:
+            QMessageBox.warning(self, APP_TITLE, str(exc))
+            return
+        self._start_external_process(ssh, args, "remote-test")
+
+    def _build_remote(self) -> None:
+        profile = self._remote_profile_from_widgets()
+        errors = validate_profile(profile)
+        if errors:
+            QMessageBox.warning(self, APP_TITLE, "\n".join(errors))
+            return
+        ssh = shutil.which("ssh")
+        scp = shutil.which("scp")
+        if not ssh or not scp:
+            QMessageBox.warning(self, APP_TITLE, "Both ssh and scp must be available in PATH.")
+            return
+        if not self._save_remote_profile():
+            return
+        cfg = self._collect_config()
+        repo = remote_repo_path(profile)
+        remote_cfg = dict(cfg)
+        remote_cfg["build_script"] = str(PurePosixPath(repo) / "build.py")
+        remote_cfg["work_dir"] = profile["remote_work"]
+        remote_cfg["jorek_root"] = profile.get("remote_jorek_root", "")
+        remote_cfg["fetch_source"] = not bool(remote_cfg["jorek_root"])
+        # Local absolute paths and compiler locations must never leak into a
+        # native build on another machine. Remote-specific values are explicit.
+        for key in ("cc", "cxx", "fc", "mpi_prefix", "toolchain_prefix",
+                    "source_dir", "imas_root", "catalyst_root", "solver_prefix"):
+            remote_cfg[key] = ""
+        remote_cfg["dep_prefixes"] = []
+        remote_cfg["sources"] = ""
+        try:
+            remote_cfg.update(parse_remote_overrides(profile.get("remote_overrides", "")))
+        except RemoteProfileError as exc:
+            QMessageBox.warning(self, APP_TITLE, str(exc))
+            return
+        remote_cfg["output"] = ""
+        remote_cfg["suite_path"] = ""
+        remote_cfg["stdin_file"] = ""
+        remote_cfg["run_args"] = ""
+        action = "full" if self.command_combo.currentData() == "full" else "dist"
+        try:
+            build_args = build_arguments(remote_cfg, action)
+            verify_args = build_arguments(remote_cfg, "verify")
+            remote_command = build_remote_command(profile, build_args, verify_args)
+            remote_artifact = remote_artifact_path(profile)
+            local_dir = Path(profile["artifact_dir"]).expanduser()
+            local_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", profile["name"]).strip("-") or "remote"
+            local_artifact = local_dir / (
+                "jorek-suite-%s-%s" % (safe_name, profile["commit"][:8]))
+            self.remote_download_args = scp_arguments(
+                profile, remote_artifact, str(local_artifact))
+            self.remote_local_artifact = local_artifact
+            self.remote_preview.setPlainText(remote_command)
+            args = ssh_arguments(profile, remote_command)
+        except (OSError, ValueError, RemoteProfileError) as exc:
+            QMessageBox.warning(self, APP_TITLE, str(exc))
+            return
+        self._start_external_process(ssh, args, "remote-build")
 
     def _build_dependencies_tab(self) -> None:
         page = QWidget()
@@ -938,15 +1228,22 @@ class MainWindow(QMainWindow):
         self._start_process(build_arguments(cfg, "verify"), "verify")
 
     def _start_process(self, args: List[str], kind: str) -> None:
-        if self.process.state() != QProcess.ProcessState.NotRunning:
-            QMessageBox.warning(self, APP_TITLE, "A task is already running.")
-            return
         try:
             script = resolve_build_script(self.build_script_edit.text())
         except BackendError as exc:
             QMessageBox.warning(self, APP_TITLE, str(exc))
             return
+        self._start_external_process(
+            sys.executable, [str(script)] + list(args), kind,
+            working_directory=str(script.parent))
 
+    def _start_external_process(
+        self, program: str, args: List[str], kind: str,
+        working_directory: Optional[str] = None,
+    ) -> None:
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.warning(self, APP_TITLE, "A task is already running.")
+            return
         self.config = self._collect_config()
         try:
             save_config(self.config, self.config_path)
@@ -967,7 +1264,7 @@ class MainWindow(QMainWindow):
         self.task_output = ""
         self.task_kind = kind
         self.task_started_at = datetime.now(timezone.utc)
-        self.current_command = [sys.executable, str(script)] + list(args)
+        self.current_command = [str(program)] + list(args)
         self.log_view.clear()
         self.log_view.appendPlainText("$ " + " ".join(
             shlex.quote(part) for part in self.current_command))
@@ -977,13 +1274,14 @@ class MainWindow(QMainWindow):
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("PYTHONUNBUFFERED", "1")
         self.process.setProcessEnvironment(environment)
-        self.process.setWorkingDirectory(str(script.parent))
-        self.process.setProgram(sys.executable)
+        self.process.setWorkingDirectory(working_directory or os.getcwd())
         if os.name == "nt":
-            self.process.setArguments([str(script)] + list(args))
+            self.process.setProgram(str(program))
+            self.process.setArguments(list(args))
         else:
-            runner = "import os,sys; os.setsid(); os.execv(sys.executable, [sys.executable] + sys.argv)"
-            self.process.setArguments(["-c", runner, str(script)] + list(args))
+            runner = "import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])"
+            self.process.setProgram(sys.executable)
+            self.process.setArguments(["-c", runner, str(program)] + list(args))
         self.process.start()
 
     def _read_process_output(self) -> None:
@@ -1013,17 +1311,45 @@ class MainWindow(QMainWindow):
 
     def _process_finished(self, exit_code: int, exit_status) -> None:
         self._read_process_output()
+        completed_kind = self.task_kind
+        succeeded = exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit
         if self.task_log:
             self.task_log.flush()
             self.task_log.close()
             self.task_log = None
-        if exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit:
+        if succeeded:
             self.task_label.setText("Completed")
             self.statusBar().showMessage("Task completed successfully", 8000)
         else:
             self.task_label.setText("Failed (exit %d)" % exit_code)
             self.statusBar().showMessage("Task failed; inspect the complete log", 10000)
         self._record_task(exit_code, exit_status == QProcess.ExitStatus.NormalExit)
+
+        if completed_kind == "remote-build":
+            if succeeded:
+                scp = shutil.which("scp")
+                if scp and getattr(self, "remote_download_args", None):
+                    self._start_external_process(
+                        scp, self.remote_download_args, "remote-download",
+                        working_directory=os.getcwd())
+                else:
+                    self.statusBar().showMessage(
+                        "Remote build verified, but scp is unavailable for download", 12000)
+            return
+        if completed_kind == "remote-download":
+            if succeeded:
+                self.overview_text.setPlainText(
+                    "Remote suite downloaded successfully:\n%s\n\n"
+                    "The remote builder completed its portability verification before transfer."
+                    % getattr(self, "remote_local_artifact", ""))
+                self.statusBar().showMessage("Remote artifact downloaded", 10000)
+            return
+        if completed_kind == "remote-test":
+            if succeeded:
+                self.statusBar().showMessage(
+                    "SSH connection succeeded; inspect the log for remote OS and architecture", 12000)
+            return
+
         if not self.root_edit.text().strip():
             fetched_root = Path(self.work_edit.text()).expanduser() / "src" / "JOREK"
             if (fetched_root / "jorek2_main.f90").is_file():
