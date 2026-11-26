@@ -358,7 +358,14 @@ register(
         source_kind="git", git_ref="v6.3.2", git_submodules=True,
         required_paths=("spm/CMakeLists.txt",
                         "cmake_modules/morse_cmake/modules/MorseInit.cmake"),
-        cmake_args=("-DGIT_SUBMODULE=OFF",)),
+        # JOREK's current USE_INTSIZE64 default is 0.  Keep PaStiX's public
+        # integer ABI at 32 bits and use METIS, matching the full-solver path.
+        # This also prevents CMake from discovering a Scotch build with a
+        # different SCOTCH_Num width.
+        cmake_args=("-DGIT_SUBMODULE=OFF", "-DPASTIX_INT64=OFF",
+                    "-DPASTIX_ORDERING_METIS=ON",
+                    "-DPASTIX_ORDERING_SCOTCH=OFF"),
+        recipe_revision="2"),
     dep("strumpack", "7.1.0", "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
         license="BSD-3-Clause", homepage="https://portal.nersc.gov/project/sparse/strumpack/",
         deps=("mpich", "openblas", "scalapack", "metis"),
@@ -1456,7 +1463,7 @@ def core_dependencies(profile: str = "standard", solver: str = "mumps",
     if solver in ("mumps", "all"):
         names.extend(["scalapack", "metis", "mumps"])
     if solver in ("pastix6", "all"):
-        names.extend(["scalapack", "metis", "scotch", "hwloc", "pastix6"])
+        names.extend(["scalapack", "metis", "hwloc", "pastix6"])
     if solver in ("strumpack", "all"):
         names.extend(["scalapack", "metis", "parmetis", "strumpack"])
     if profile in ("full", "complete"):
