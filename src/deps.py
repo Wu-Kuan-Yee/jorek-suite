@@ -1157,6 +1157,12 @@ def build_pastix5(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         raise BuildError(
             "PaStiX 5 source tree is incomplete; missing: %s" %
             ", ".join(missing))
+    # Some 5.2.3 source distributions omit the optional MURGE Fortran bridge
+    # stub even though the CMake target expects the source file to exist.
+    murge_stub = root / "sopalin" / "src" / "murge_fortran.c"
+    if not murge_stub.exists():
+        ensure_dir(murge_stub.parent)
+        write_text(murge_stub, "int pastix_murge_dummy;\n")
     cmake = ctx.cmake or which("cmake", ctx.path)
     if not cmake:
         raise BuildError("CMake is required to build PaStiX 5")
