@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
+import textwrap
 import unittest
+from pathlib import Path
 
 from jorek_build_studio.remote import (
     RemoteProfileError,
@@ -100,6 +105,69 @@ class RemoteCommandTests(unittest.TestCase):
             remote_artifact_path(PROFILE),
             "/scratch/jorek work/dist/jorek-suite",
         )
+
+    @unittest.skipIf(os.name == "nt", "remote command uses a POSIX shell")
+    def test_remote_build_sequence_clones_pinned_commit_builds_and_verifies(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source repo"
+            source.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(source)],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(source), "config", "user.name", "Build Test"],
+                           check=True)
+            subprocess.run(["git", "-C", str(source), "config", "user.email", "build@example.invalid"],
+                           check=True)
+            script = textwrap.dedent("""\
+                import argparse
+                import json
+                from pathlib import Path
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--work", required=True)
+                parser.add_argument("action")
+                parser.add_argument("--json", action="store_true")
+                args = parser.parse_args()
+                suite = Path(args.work) / "dist" / "jorek-suite"
+                if args.action == "dist":
+                    suite.parent.mkdir(parents=True, exist_ok=True)
+                    suite.write_text("native-suite", encoding="utf-8")
+                elif args.action == "verify":
+                    if not suite.is_file():
+                        raise SystemExit(2)
+                    print(json.dumps({"portable_on_build_host": True}))
+                """)
+            (source / "build.py").write_text(script, encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", "build.py"], check=True)
+            subprocess.run(["git", "-C", str(source), "commit", "-m", "fixture"],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            commit = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            profile = dict(PROFILE)
+            profile.update({
+                "remote_root": str(root / "remote root"),
+                "remote_work": str(root / "remote work"),
+                "repo_url": str(source),
+                "branch": "main",
+                "commit": commit,
+            })
+            command = build_remote_command(
+                profile,
+                ["--work", profile["remote_work"], "dist"],
+                ["--work", profile["remote_work"], "verify", "--json"],
+            )
+            result = subprocess.run(
+                ["/bin/sh", "-c", command], stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, check=False, timeout=45)
+            self.assertEqual(result.returncode, 0, result.stdout)
+            artifact = Path(profile["remote_work"]) / "dist" / "jorek-suite"
+            self.assertEqual(artifact.read_text(encoding="utf-8"), "native-suite")
+            checkout = Path(profile["remote_root"]) / "jorek-suite"
+            actual = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+            self.assertEqual(actual, commit)
+            self.assertIn('"portable_on_build_host": true', result.stdout)
 
     def test_remote_overrides_are_typed_and_restricted(self):
         overrides = parse_remote_overrides(
