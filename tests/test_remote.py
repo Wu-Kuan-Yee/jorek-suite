@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -251,9 +252,9 @@ class RemoteCommandTests(unittest.TestCase):
             ["--work", PROFILE["remote_work"], "verify", "--json"], task_id)
         self.assertIn(task_id, command)
         self.assertIn(str(DEFAULT_HEARTBEAT_TIMEOUT), command)
-        self.assertIn("remote_task", remote_task_state_root(PROFILE))
+        self.assertIn(".jorek-build-studio/tasks", remote_task_state_root(PROFILE))
         self.assertIn("@@JOREK_REMOTE_STARTED@@", command)
-        self.assertIn("remote_task", remote_task_attach_command(PROFILE, task_id, 123))
+        self.assertIn("attach", remote_task_attach_command(PROFILE, task_id, 123))
         self.assertIn("cancel", remote_task_cancel_command(PROFILE, task_id))
         with self.assertRaises(ValueError):
             validate_remote_task_id("../other-task")
