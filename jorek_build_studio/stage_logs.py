@@ -37,7 +37,7 @@ class LogHighlighter(QSyntaxHighlighter):
                 r"(?i)\b(?:fatal error|fatal:|cmake error|traceback|assertionerror|"
                 r"undefined reference|undefined symbol|unresolved external symbol|"
                 r"multiple definition|error occurred|linker command failed|"
-                r"collect2: error)\b|\berror\s*(?::|#\s*\d+|\s+[A-Z]?\d+\b)|"
+                r"collect2: error)\b|\bfatal\s*:|\berror\s*(?::|#\s*\d+|\s+[A-Z]?\d+\b)|"
                 r"\b(?:cannot find|cannot open|cannot locate|no such file or directory|"
                 r"subcommand failed|build stopped)\b|"
                 r"\b(?:make|gmake|ninja)(?:\[\d+\])?\s*:\s*\*{1,}|"
