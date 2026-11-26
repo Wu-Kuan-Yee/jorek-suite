@@ -131,30 +131,48 @@ Fortran support.
 ### Build
 
 Preview the matrix, start a build, verify a generated suite, run a suite, or
-cancel the current builder process. Verification invokes build.py verify --json
-and displays a structured report covering executable format, architecture,
-non-system dynamic dependencies, macOS signature status, and the launcher info
-smoke test. Output is displayed in the window and written to a persistent
-timestamped log file. The build driver's own logs remain available in its work
-directory.
+cancel the current builder process. The Build tab keeps a concise overview
+separate from the Detailed logs view. The detailed view lists each dependency,
+solver backend, JOREK model/variant, launcher, packaging, and verification
+stage independently. Double-click a stage or choose Open selected log to open
+its own log window. A running stage is followed live; completed and failed
+stage logs remain available after the stage ends. The progress indicator reports
+the current dependency/solver/variant phase and its completed count.
+
+Compiler and dependency commands stream their merged stdout/stderr while they
+run. The full task transcript and each stage log are also persisted under the
+application configuration directory. The build driver's own component logs
+remain in its work directory. Verification invokes build.py verify --json and
+displays a structured report covering executable format, architecture,
+non-system dynamic dependencies, macOS signature status, and the launcher
+info smoke test.
 
 ### History
 
 Completed tasks are recorded in history.jsonl with start/end timestamps,
-exit status, command arguments, and the associated log path. Double-click a
-log-file cell to open that log with the operating system default viewer.
+exit status, command arguments, the main transcript, and the list of per-stage
+logs. Double-click the main log cell to open the complete transcript. Double-
+click the stage-log count or choose View selected stage logs to browse the
+individual component logs from an earlier task.
 
 ### Remote
 
 Create named SSH profiles for native builds on Linux, macOS, or BSD hosts.
 The connection test reports the remote OS, CPU architecture, Python, and Git.
+Preview remote configuration shows the effective remote settings after local
+compiler/dependency paths have been cleared and JSON overrides applied, along
+with the pinned repository revision, final build arguments, remote command, and
+artifact paths. The Build, verify and download action opens this preview for
+confirmation before connecting.
+
 A build checks out a pinned full commit SHA, runs the selected packaged (dist)
 or full-solver build, runs the remote portability verifier, and downloads the
-artifact only after verification succeeds. Build-only mode is not offered here
-because it does not produce the single-file suite that this workflow transfers. Local absolute compiler and dependency paths are
-cleared before remote arguments are constructed. Enter machine-specific paths
-as JSON overrides. The local machine needs OpenSSH ssh and scp; the remote
-machine needs Git, Python 3, and a working native compiler/MPI/dependency
+artifact only after verification succeeds. Remote stage events and compiler
+output are streamed over SSH into the same per-stage log interface used by
+local builds. Build-only mode is not offered here because it does not produce
+the single-file suite that this workflow transfers. Enter machine-specific
+paths as JSON overrides. The local machine needs OpenSSH ssh and scp; the
+remote machine needs Git, Python 3, and a working native compiler/MPI/dependency
 environment. Configure public-key or agent authentication in OpenSSH; the
 builder uses batch mode and does not prompt for passwords. Strict host-key
 checking is enabled by default; pre-populate known_hosts or deliberately
@@ -177,8 +195,10 @@ configuration directory:
 - macOS: ~/Library/Application Support/jorek-build-studio
 - Windows: %APPDATA%/jorek-build-studio
 
-Task logs are stored in the logs/ subdirectory. Configuration writes use a
-temporary file followed by an atomic replace.
+Task transcripts and per-stage log files are stored in the logs/
+subdirectory. Each task gets a separate stage-log directory, and task history
+retains the paths so that completed component logs can be reopened later.
+Configuration writes use a temporary file followed by an atomic replace.
 
 ## Safety and operational notes
 
