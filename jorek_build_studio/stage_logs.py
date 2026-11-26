@@ -156,6 +156,14 @@ class StageLogDialog(QDialog):
         self.line_numbers.setChecked(True)
         self.line_numbers.toggled.connect(self.editor_line_numbers_changed)
         header.addWidget(self.line_numbers)
+        self.wrap_check = QCheckBox("Wrap lines")
+        self.wrap_check.toggled.connect(self.editor_wrap_changed)
+        header.addWidget(self.wrap_check)
+        self.follow_check = QCheckBox("Auto-follow")
+        self.follow_check.setChecked(True)
+        self.follow_check.setToolTip(
+            "Automatically follow new output only while already at the end")
+        header.addWidget(self.follow_check)
 
         self.top_button = QPushButton("Top")
         self.bottom_button = QPushButton("Bottom")
@@ -240,6 +248,11 @@ class StageLogDialog(QDialog):
     def editor_line_numbers_changed(self, visible):
         self.editor.set_line_numbers_visible(visible)
 
+    def editor_wrap_changed(self, enabled):
+        self.editor.setLineWrapMode(
+            QPlainTextEdit.LineWrapMode.WidgetWidth if enabled
+            else QPlainTextEdit.LineWrapMode.NoWrap)
+
     def set_running(self, running: bool) -> None:
         self.running = bool(running)
         if self.running:
@@ -256,9 +269,11 @@ class StageLogDialog(QDialog):
         horizontal = self.editor.horizontalScrollBar()
         old_vertical = vertical.value()
         old_horizontal = horizontal.value()
-        follow_vertical = old_vertical >= vertical.maximum() - 1
+        follow_vertical = (
+            self.follow_check.isChecked() and
+            old_vertical >= vertical.maximum() - 1)
         follow_horizontal = (
-            horizontal.maximum() > 0 and
+            self.follow_check.isChecked() and horizontal.maximum() > 0 and
             old_horizontal >= horizontal.maximum() - 1)
         cursor = QTextCursor(self.editor.document())
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -389,9 +404,14 @@ class StageLogDialog(QDialog):
         self._select_match(self.match_index)
 
     def copy_all(self):
+        cursor = self.editor.textCursor()
+        vertical = self.editor.verticalScrollBar().value()
+        horizontal = self.editor.horizontalScrollBar().value()
         self.editor.selectAll()
         self.editor.copy()
-        self.editor.moveCursor(QTextCursor.MoveOperation.End)
+        self.editor.setTextCursor(cursor)
+        self.editor.verticalScrollBar().setValue(vertical)
+        self.editor.horizontalScrollBar().setValue(horizontal)
 
     def save_as(self):
         filename, _ = QFileDialog.getSaveFileName(
