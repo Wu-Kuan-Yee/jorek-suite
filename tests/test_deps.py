@@ -265,6 +265,14 @@ class GitSourceTests(unittest.TestCase):
             target = source / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("# fixture\n", encoding="utf-8")
+        module = (source / "cmake_modules" / "morse_cmake" /
+                  "modules" / "find" / "FindMETIS.cmake")
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text(
+            '  list(APPEND METIS_LIBRARIES ${M_LIBRARY})\\n'
+            '  list(APPEND METIS_LIBRARIES MORSE::M)\\n',
+            encoding="utf-8",
+        )
         build_dir = self.context.work / "build" / "pastix6-6.3.2"
         build_dir.mkdir(parents=True)
         stale_cache = build_dir / "CMakeCache.txt"
