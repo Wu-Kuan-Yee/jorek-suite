@@ -8,6 +8,8 @@ import sys
 import tempfile
 import textwrap
 import time
+import threading
+import base64
 import unittest
 from pathlib import Path
 
@@ -479,6 +481,7 @@ class RemoteCommandTests(unittest.TestCase):
                 "host_key_policy": "yes",
                 "ssh_options": ["IdentitiesOnly=yes"],
             })
+            task_id = "d" * 32
             remote_command = build_remote_command(
                 profile,
                 ["--work", profile["remote_work"], "dist"],
@@ -487,11 +490,50 @@ class RemoteCommandTests(unittest.TestCase):
             # Make the disposable remote fixture removable by the local test user.
             remote_command += "; chmod -R a+rwX " + shlex.quote(profile["remote_root"])
             remote_command += " " + shlex.quote(profile["remote_work"])
-            ssh = subprocess.run(
-                ["ssh"] + ssh_arguments(profile, remote_command),
+            start_command = remote_task_start_command(profile, task_id, remote_command)
+            start = subprocess.run(
+                ["ssh"] + ssh_arguments(profile, start_command),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, check=False, timeout=60)
-            self.assertEqual(ssh.returncode, 0, ssh.stdout)
+                text=True, check=False, timeout=15)
+            self.assertEqual(start.returncode, 0, start.stdout)
+            self.assertIn("@@JOREK_REMOTE_STARTED@@", start.stdout)
+
+            attach = subprocess.Popen(
+                ["ssh"] + ssh_arguments(
+                    profile, remote_task_attach_command(profile, task_id, 0)),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            stop_heartbeats = threading.Event()
+
+            def send_heartbeats():
+                while not stop_heartbeats.is_set():
+                    try:
+                        attach.stdin.write(b"\\n")
+                        attach.stdin.flush()
+                    except (BrokenPipeError, OSError, AttributeError):
+                        return
+                    stop_heartbeats.wait(0.5)
+
+            heartbeat_thread = threading.Thread(target=send_heartbeats, daemon=True)
+            heartbeat_thread.start()
+            attach_output = attach.stdout.read()
+            stop_heartbeats.set()
+            heartbeat_thread.join(timeout=2)
+            attach.wait(timeout=15)
+            attach.stdin.close()
+            self.assertEqual(attach.returncode, 0, attach_output.decode("utf-8", "replace"))
+            self.assertIn(b"@@JOREK_REMOTE_TASK@@", attach_output)
+            remote_log = b""
+            task_state = {}
+            for line in attach_output.splitlines():
+                if line.startswith(b"@@JOREK_REMOTE_DATA@@"):
+                    _offset, encoded = line.split(b":", 1)
+                    remote_log += base64.b64decode(encoded)
+                elif line.startswith(b"@@JOREK_REMOTE_TASK@@"):
+                    task_state = json.loads(line[len(b"@@JOREK_REMOTE_TASK@@"):])
+            self.assertEqual(task_state.get("status"), "completed", task_state)
+            self.assertIn(b'"portable_on_build_host": true', remote_log)
 
             local_dir = Path(profile["artifact_dir"])
             local_dir.mkdir(parents=True, exist_ok=True)
@@ -505,11 +547,13 @@ class RemoteCommandTests(unittest.TestCase):
             self.assertEqual(scp.returncode, 0, scp.stdout)
             self.assertEqual(local_artifact.read_text(encoding="utf-8"), "ssh-native-suite")
             cleanup = subprocess.run(
-                ["ssh"] + ssh_arguments(profile, "rm -f " + shlex.quote(transfer_path)),
+                ["ssh"] + ssh_arguments(
+                    profile, "rm -f " + shlex.quote(transfer_path) +
+                    " && rm -rf " + shlex.quote(profile["remote_root"]) +
+                    " " + shlex.quote(profile["remote_work"])),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, check=False, timeout=15)
             self.assertEqual(cleanup.returncode, 0, cleanup.stdout)
-            self.assertIn('"portable_on_build_host": true', ssh.stdout)
 
     def test_remote_overrides_are_typed_and_restricted(self):
         overrides = parse_remote_overrides(
