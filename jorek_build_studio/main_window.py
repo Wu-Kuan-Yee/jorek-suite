@@ -621,7 +621,14 @@ class MainWindow(QMainWindow):
         remote_cfg["suite_path"] = ""
         remote_cfg["stdin_file"] = ""
         remote_cfg["run_args"] = ""
-        action = "full" if self.command_combo.currentData() == "full" else "dist"
+        selected_action = self.command_combo.currentData()
+        if selected_action == "build":
+            QMessageBox.information(
+                self, APP_TITLE,
+                "Remote build-and-download creates a single-file suite. "
+                "Choose 'Build and package' or 'Full solver suite' first.")
+            return
+        action = "full" if selected_action == "full" else "dist"
         try:
             build_args = build_arguments(remote_cfg, action)
             verify_args = build_arguments(remote_cfg, "verify")

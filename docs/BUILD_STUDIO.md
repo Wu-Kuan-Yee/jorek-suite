@@ -5,8 +5,10 @@ existing JOREK suite builder. The command-line builder remains the source of
 truth for model discovery, feature handling, dependency resolution, variant
 planning, compilation, and packaging.
 
-The GUI launches the selected build.py as a separate process using an argument
-vector. It never constructs or executes a shell command.
+Local build commands are launched as a separate process using an argument
+vector, not through a shell. The optional remote builder sends a fixed,
+shell-quoted command sequence over OpenSSH; it does not source or execute
+arbitrary imported shell scripts.
 
 ## Requirements
 
@@ -142,6 +144,20 @@ Completed tasks are recorded in history.jsonl with start/end timestamps,
 exit status, command arguments, and the associated log path. Double-click a
 log-file cell to open that log with the operating system default viewer.
 
+### Remote
+
+Create named SSH profiles for native builds on Linux, macOS, or BSD hosts.
+The connection test reports the remote OS, CPU architecture, Python, and Git.
+A build checks out a pinned full commit SHA, runs the selected packaged (dist)
+or full-solver build, runs the remote portability verifier, and downloads the
+artifact only after verification succeeds. Build-only mode is not offered here
+because it does not produce the single-file suite that this workflow transfers. Local absolute compiler and dependency paths are
+cleared before remote arguments are constructed. Enter machine-specific paths
+as JSON overrides. The local machine needs OpenSSH ssh and scp; the remote
+machine needs Git, Python 3, and a working native compiler/MPI/dependency
+environment. Configure public-key or agent authentication in OpenSSH; the
+builder uses batch mode and does not prompt for passwords.
+
 ### Help
 
 Help text is read directly from the selected build.py argparse interface.
@@ -163,8 +179,10 @@ temporary file followed by an atomic replace.
 ## Safety and operational notes
 
 - The GUI never runs imported shell script content.
-- Commands are launched with a program path and an argument list, not through
-  a shell. Paths containing spaces remain single arguments.
+- Local commands are launched with a program path and an argument list.
+  Paths containing spaces remain single arguments.
+- Remote execution uses a fixed POSIX command sequence with shell-quoted
+  profile values. It is native building on the remote host, not cross-compilation.
 - The GUI does not delete build directories automatically.
 - A full solver build can be very large; inspect the matrix and available disk
   space first.
@@ -173,15 +191,10 @@ temporary file followed by an atomic replace.
   compiler/MPI child process, verify that no orphaned compiler processes remain.
 - A dry run is useful for checking arguments and variant plans, but it does
   not validate the resulting executable.
-- The current frontend targets a local build host. Remote native builders,
-  signed release installers, artifact SBOM generation, and exhaustive
-  target-side portability certification are future work.
-
-## Native remote builds
-
-Create a profile with an SSH destination, port, repository parent, work directory, repository branch, and full commit SHA. Test the connection before starting a build. The remote machine builds for its own operating system and CPU architecture; the verified single-file artifact is copied to the selected local artifact directory. `StrictHostKeyChecking=yes` is the default. Use `accept-new` only when its trust-on-first-use behavior is acceptable in your environment.
-
-The remote override field accepts a JSON object for machine-specific settings such as `toolchain_prefix`, `mpi_prefix`, `solver_prefix`, `cc`, `cxx`, `fc`, and `dep_prefixes`. Local absolute paths are cleared before remote arguments are assembled to avoid accidentally passing paths that exist only on the desktop running the GUI.
+- Remote cancellation terminates the local SSH client. If the connection
+  drops during a remote build, inspect the remote process list before retrying.
+- Signed release installers, artifact SBOM generation, and exhaustive
+  target-side portability certification remain future work.
 
 ## Portability is target-specific
 
