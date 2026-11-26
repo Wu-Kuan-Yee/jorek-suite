@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -19,7 +20,7 @@ from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -33,6 +34,7 @@ from .config import (
     save_config, validate_config,
 )
 from .legacy import import_legacy_text
+from .stage_logs import StageLogDialog
 from .remote import (
     RemoteProfileError, build_remote_command, connection_test_command,
     parse_remote_overrides, remote_artifact_path, remote_repo_path,
@@ -92,6 +94,14 @@ class MainWindow(QMainWindow):
         self.task_log = None
         self.task_started_at: Optional[datetime] = None
         self.current_command: List[str] = []
+        self.task_stage_log_dir: Optional[Path] = None
+        self.stage_records: Dict[str, Dict[str, Any]] = {}
+        self.stage_log_handles: Dict[str, Any] = {}
+        self.stage_stack: List[str] = []
+        self.stage_dialogs: Dict[str, StageLogDialog] = {}
+        self.process_output_buffer = ""
+        self.current_phase = ""
+        self._cancel_requested = False
 
         self.tabs = QTabWidget(self)
         self.setCentralWidget(self.tabs)
