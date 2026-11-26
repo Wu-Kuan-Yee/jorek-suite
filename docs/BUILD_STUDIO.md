@@ -180,15 +180,30 @@ with the pinned repository revision, final build arguments, remote command, and
 artifact paths. The Build, verify and download action opens this preview for
 confirmation before connecting.
 
-A build checks out a pinned full commit SHA, runs the selected packaged (dist)
-or full-solver build, runs the remote portability verifier, and downloads the
-artifact only after verification succeeds. Updating the local checkout does not
-silently change a saved pin: use **Use local HEAD** and save the profile when you
-want the remote host to build the updated checkout. Before any expensive build,
-the remote preparation stage prints the actual pinned commit and audits the
-PaStiX 6.3.2 recipe. It refuses to proceed unless the pinned checkout uses the
-recursive Git submodule source, preventing an older archive-based recipe from
-failing later during CMake configuration. The build runs under a detached
+A build checks out a pinned full commit SHA, runs a generic preflight for
+the complete selected build plan, performs the packaged (dist) or full-solver
+build, runs the remote portability verifier, and downloads the artifact only
+after verification succeeds. Updating the local checkout does not silently
+change a saved pin: use **Use local HEAD** and save the profile when you want
+the remote host to build the updated checkout.
+
+The preflight is a reusable verification framework, not a PaStiX-specific
+condition. It checks the exact repository revision and clean working tree,
+build-option consistency, the complete dependency registry and prerequisite
+graph, solver source recipes, supplied source directories and mirrors, selected
+dependency artifacts, JOREK source/model discovery, the requested variant
+matrix, compiler/tool versions, and writable work/output locations. The same
+preflight runs before local build, dist, and full commands; the remote workflow
+runs it once immediately after checking out the pinned builder and again inside
+the build command after any requested JOREK source checkout.
+
+Every check has its own result, log, severity, and machine-readable entry in
+WORK/logs/preflight/preflight-report.json. Errors stop compilation; warnings
+are reported without silently turning a warning into a failure. Dependency
+and solver builders also verify their declared installed libraries and headers
+after building. Source-recipe metadata is shared between build paths wherever
+possible; the full-solver PaStiX 6 builder uses the same recursive Git source
+recipe as the ordinary dependency builder. The build runs under a detached
 remote supervisor, not as a foreground child of the SSH connection. The
 supervisor stores a task ID, state, heartbeat, complete output transcript, and
 process-group ID below:
