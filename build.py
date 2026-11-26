@@ -1536,6 +1536,7 @@ def cmd_preflight(args) -> int:
 
     selected_names = _preflight_dependency_names(args, build_kind)
     effective_policy = {"value": args.deps}
+    solver_plan_state = {"stages": set()}
     checks: List[VerificationCheck] = []
 
     def check_repository_revision():
@@ -1741,6 +1742,7 @@ def cmd_preflight(args) -> int:
 
     def check_solver_plan():
         if build_kind != "full":
+            solver_plan_state["stages"] = set()
             return CheckResult("skipped", ["The selected build command does not invoke the full solver stack."])
         solver_prefix_value = getattr(args, "solver_prefix", None)
         solver_prefix = Path(solver_prefix_value).expanduser() if solver_prefix_value else work / "solvers"
@@ -1755,6 +1757,7 @@ def cmd_preflight(args) -> int:
                 raise BuildError(
                     "the selected full build reuses existing solver prefixes, but required "
                     "libraries/headers are missing: %s" % ", ".join(required))
+            solver_plan_state["stages"] = set()
             return [
                 "All declared full-solver libraries and headers are present in the supplied prefixes.",
                 "No solver source downloads or builds will be attempted.",
@@ -1787,6 +1790,7 @@ def cmd_preflight(args) -> int:
                 "existing solver prefix contains incomplete stage artifacts for: %s. "
                 "Repair or clean that prefix before building." %
                 ", ".join(partial_stages))
+        solver_plan_state["stages"] = set(missing_stages)
 
         if getattr(args, "offline", False):
             source_dirs, _urls = _source_options(args)
@@ -1908,12 +1912,11 @@ def cmd_preflight(args) -> int:
             details.append("%s compiler: %s (%s)" % (label, executable, first))
 
         build_deps = effective_policy["value"] == "source"
-        build_solvers = (
-            build_kind == "full" and
-            not getattr(args, "no_build_solvers", False) and
-            not args.dep_prefix
-        )
-        needs_cmake = build_solvers or (
+        solver_stages_to_build = solver_plan_state["stages"]
+        needs_solver_cmake = bool(
+            solver_stages_to_build &
+            {"gklib-metis", "pastix6", "strumpack", "pastix5"})
+        needs_cmake = needs_solver_cmake or (
             build_deps and any(
                 deps.DEPENDENCIES[name].builder in ("cmake", "cmake_bootstrap")
                 for name in selected_names)
@@ -1948,10 +1951,9 @@ def cmd_preflight(args) -> int:
                 not source_is_supplied(name, deps.DEPENDENCIES[name])
                 for name in selected_names)
         ) or (
-            build_solvers and any(
-                recipe.source_kind == "git" and
-                not source_is_supplied(name, recipe)
-                for name, recipe in solvers.SOLVER_SOURCE_RECIPES.items())
+            "pastix6" in solver_stages_to_build and
+            not source_is_supplied(
+                "pastix6", solvers.SOLVER_SOURCE_RECIPES["pastix6"])
         )
         if needs_git:
             git = shutil.which("git")
