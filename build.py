@@ -2618,6 +2618,7 @@ def make_parser() -> argparse.ArgumentParser:
               add --param-grid or --param-max explicitly.
 
             COMMANDS
+              preflight verify the complete build plan before compiling
               doctor    host/toolchain/JOREK diagnostic
               deps      inspect, fetch or build dependency sources
               bootstrap build missing compiler/toolchain pieces
