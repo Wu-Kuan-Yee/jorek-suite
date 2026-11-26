@@ -17,8 +17,8 @@ class BackendError(RuntimeError):
 
 
 def external_exec_runner() -> str:
-    """Return a POSIX QProcess trampoline that execs argv[0] with the full argv."""
-    return "import os,sys; getattr(os,'setsid',lambda:None)(); os.execvp(sys.argv[0], sys.argv)"
+    """Return a POSIX QProcess trampoline that execs the program argument after ``-c``."""
+    return "import os,sys; getattr(os,'setsid',lambda:None)(); os.execvp(sys.argv[1], sys.argv[1:])"
 
 
 def default_build_script() -> Path:
