@@ -131,6 +131,41 @@ class GitSourceTests(unittest.TestCase):
         self.assertIn("--shallow-submodules", argv)
         self.assertEqual(kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
 
+    def test_pastix5_builds_into_a_separate_prefix_with_32bit_abi(self):
+        dependency = deps.DEPENDENCIES["pastix5"]
+        source = self.root / "pastix5-source"
+        (source / "common" / "src").mkdir(parents=True)
+        (source / "CMakeLists.txt").write_text("# fixture\n", encoding="utf-8")
+        (source / "common" / "src" / "pastix_fortran.h").write_text(
+            "/* fixture header */\n", encoding="utf-8")
+        self.context.cmake = "cmake"
+        self.context.fc = "gfortran"
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            command = list(argv)
+            calls.append(command)
+            if "-B" in command:
+                build_dir = Path(command[command.index("-B") + 1])
+                build_dir.mkdir(parents=True, exist_ok=True)
+            if "--build" in command:
+                build_dir = Path(command[command.index("--build") + 1])
+                (build_dir / "libpastix.a").write_bytes(b"pastix5-fixture")
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+
+        with patch.object(deps, "which", return_value=None), \
+                patch.object(deps, "run", side_effect=fake_run):
+            deps.build_pastix5(self.context, dependency, source)
+
+        private = self.context.prefix / "pastix5"
+        self.assertTrue((private / "lib" / "libpastix.a").is_file())
+        self.assertTrue((private / "include" / "pastix_fortran.h").is_file())
+        configure = calls[0]
+        self.assertIn("-DPASTIX_INT64=OFF", configure)
+        self.assertIn("-DPASTIX_ORDERING_METIS=ON", configure)
+        self.assertIn("-DPASTIX_ORDERING_SCOTCH=OFF", configure)
+        self.assertIn(str(private), configure)
+
     def test_pastix_discards_cmake_cache_from_the_old_archive_root(self):
         dependency = deps.DEPENDENCIES["pastix6"]
         source = self.root / "pastix-source"
