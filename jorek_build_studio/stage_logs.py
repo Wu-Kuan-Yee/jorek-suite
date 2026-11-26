@@ -8,8 +8,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QRegularExpression, QSize, QTimer, Qt
 from PySide6.QtGui import (
-    QColor, QFontDatabase, QPainter, QTextCharFormat, QTextCursor,
-    QSyntaxHighlighter,
+    QColor, QFontDatabase, QKeySequence, QPainter, QShortcut,
+    QTextCharFormat, QTextCursor, QSyntaxHighlighter,
 )
 from PySide6.QtWidgets import (
     QCheckBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
@@ -202,7 +202,7 @@ class StageLogDialog(QDialog):
         self.search_edit.returnPressed.connect(self.search_next)
         search_row.addWidget(self.search_edit, 1)
         self.regex_check = QCheckBox("Regex")
-        self.regex_check.setChecked(True)
+        self.regex_check.setChecked(False)
         self.regex_check.toggled.connect(self.update_search)
         search_row.addWidget(self.regex_check)
         self.case_check = QCheckBox("Case sensitive")
@@ -218,6 +218,13 @@ class StageLogDialog(QDialog):
         search_row.addWidget(self.match_label)
         outer.addLayout(search_row)
         self.search_edit.textChanged.connect(self.update_search)
+
+        self.find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        self.find_shortcut.activated.connect(self.search_edit.setFocus)
+        self.next_shortcut = QShortcut(QKeySequence("F3"), self)
+        self.next_shortcut.activated.connect(self.search_next)
+        self.previous_shortcut = QShortcut(QKeySequence("Shift+F3"), self)
+        self.previous_shortcut.activated.connect(self.search_previous)
 
         self.editor = LogTextEdit()
         self.editor.setPlaceholderText("The complete stage output will appear here.")
