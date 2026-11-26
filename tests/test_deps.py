@@ -169,6 +169,7 @@ class GitSourceTests(unittest.TestCase):
         self.assertIn("openblas", dependency.deps)
         self.assertIn("scalapack", dependency.deps)
         self.assertIn("metis", dependency.deps)
+        self.assertEqual(dependency.recipe_revision, "1")
 
     def test_strumpack_build_uses_private_blas_lapack_scalapack_and_metis(self):
         dependency = deps.DEPENDENCIES["strumpack"]
