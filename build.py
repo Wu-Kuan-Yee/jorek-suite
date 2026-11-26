@@ -1745,62 +1745,89 @@ def cmd_preflight(args) -> int:
     def check_solver_plan():
         if build_kind != "full":
             return CheckResult("skipped", ["The selected build command does not invoke the full solver stack."])
+        solver_prefix_value = getattr(args, "solver_prefix", None)
+        solver_prefix = Path(solver_prefix_value).expanduser() if solver_prefix_value else work / "solvers"
         if args.no_build_solvers or args.dep_prefix:
-            solver_prefix_value = getattr(args, "solver_prefix", None)
-            solver_prefix = Path(solver_prefix_value).expanduser() if solver_prefix_value else work / "solvers"
             prefixes = [solver_prefix] + [Path(value).expanduser() for value in (args.dep_prefix or [])]
             required = []
-            for relative in (
-                "lib/libhwloc.a", "lib/libGKlib.a", "lib/libmetis.a",
-                "lib/libpastix.a", "lib/libpastix_kernels.a", "lib/libspm.a",
-                "lib/libstrumpack.a", "pastix5/lib/libpastix.a",
-            ):
-                if not any((prefix / relative).is_file() for prefix in prefixes):
-                    required.append(relative)
+            for stage, artifacts in solvers.SOLVER_STAGE_ARTIFACTS.items():
+                for relative in artifacts:
+                    if not any((prefix / relative).is_file() for prefix in prefixes):
+                        required.append("%s: %s" % (stage, relative))
             if required:
                 raise BuildError(
-                    "the selected full build reuses an existing solver prefix, but required "
-                    "artifacts are missing: %s" % ", ".join(required))
+                    "the selected full build reuses existing solver prefixes, but required "
+                    "libraries/headers are missing: %s" % ", ".join(required))
             return [
-                "Existing full-solver artifacts are present in the supplied prefixes.",
+                "All declared full-solver libraries and headers are present in the supplied prefixes.",
                 "No solver source downloads or builds will be attempted.",
             ]
+
         errors = solvers.validate_solver_source_recipes()
         if errors:
             raise BuildError("\n".join(errors))
         if not (platform.is_linux or platform.is_macos or platform.is_bsd):
             raise BuildError("the selected solver source recipes are unsupported on this platform")
+
+        stage_sources = {
+            "hwloc": ("hwloc",),
+            "gklib-metis": ("gklib", "metis"),
+            "pastix6": ("pastix6",),
+            "strumpack": ("strumpack",),
+            "pastix5": ("pastix5",),
+        }
+        missing_stages = []
+        partial_stages = []
+        for stage, artifacts in solvers.SOLVER_STAGE_ARTIFACTS.items():
+            present = [(solver_prefix / relative).is_file() for relative in artifacts]
+            if all(present):
+                continue
+            if any(present):
+                partial_stages.append(stage)
+            missing_stages.append(stage)
+        if partial_stages:
+            raise BuildError(
+                "existing solver prefix contains incomplete stage artifacts for: %s. "
+                "Repair or clean that prefix before building." %
+                ", ".join(partial_stages))
+
         if getattr(args, "offline", False):
             source_dirs, _urls = _source_options(args)
             source_root = Path(args.source_dir).expanduser() if getattr(args, "source_dir", None) else None
             cache = work / "downloads"
             missing = []
-            for name, recipe in solvers.SOLVER_SOURCE_RECIPES.items():
-                supplied = source_dirs.get(name)
-                if supplied and supplied.is_dir():
-                    continue
-                if source_root and any(
-                        (source_root / candidate).is_dir()
-                        for candidate in ("%s-%s" % (name, recipe.version), name)):
-                    continue
-                if recipe.source_kind == "git":
-                    cached = work / "solver-build" / "src" / (
-                        "%s-%s" % (name, recipe.version))
-                    issue = _preflight_cached_git_source(name, recipe, cached)
-                    if issue:
-                        missing.append("%s: %s" % (name, issue))
-                else:
-                    basename = os.path.basename(recipe.url.split("?", 1)[0]) or "source"
-                    filename = getattr(
-                        recipe, "filename",
-                        "%s-%s-%s" % (name, recipe.version, basename))
-                    if not (cache / filename).is_file():
-                        missing.append("%s: %s" % (name, filename))
+            for stage in missing_stages:
+                for name in stage_sources[stage]:
+                    recipe = solvers.SOLVER_SOURCE_RECIPES[name]
+                    supplied = source_dirs.get(name)
+                    if supplied and supplied.is_dir():
+                        continue
+                    if source_root and any(
+                            (source_root / candidate).is_dir()
+                            for candidate in ("%s-%s" % (name, recipe.version), name)):
+                        continue
+                    if recipe.source_kind == "git":
+                        cached = work / "solver-build" / "src" / (
+                            "%s-%s" % (name, recipe.version))
+                        issue = _preflight_cached_git_source(name, recipe, cached)
+                        if issue:
+                            missing.append("%s: %s" % (name, issue))
+                    else:
+                        basename = os.path.basename(recipe.url.split("?", 1)[0]) or "source"
+                        filename = getattr(
+                            recipe, "filename",
+                            "%s-%s-%s" % (name, recipe.version, basename))
+                        if not (cache / filename).is_file():
+                            missing.append("%s: %s" % (name, filename))
             if missing:
-                raise BuildError("offline solver source cache is incomplete: %s" % ", ".join(missing))
+                raise BuildError(
+                    "offline solver source cache is incomplete: %s" %
+                    ", ".join(missing))
         return [
             "Full solver source plan: %s" % ", ".join(sorted(solvers.SOLVER_SOURCE_RECIPES)),
-            "All selected solver source recipes have validated acquisition metadata and required source paths.",
+            "All source recipes and declared post-build libraries/headers are validated.",
+            "Solver stages requiring new source/build work: %s" %
+            (", ".join(missing_stages) if missing_stages else "none; all stages are already complete"),
         ]
 
     def check_jorek_source():
