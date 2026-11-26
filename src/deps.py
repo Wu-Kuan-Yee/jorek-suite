@@ -1061,6 +1061,12 @@ def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
             "Fetch the v%s Git tag with recursive submodules." %
             (", ".join(missing), dep.version)
         )
+    # The previous archive extraction used a nested source root.  A recursive
+    # Git checkout has a different root, so discard any CMake cache generated
+    # from the old source path before configuring this checkout.
+    build_dir = ctx.work / "build" / ("%s-%s" % (dep.name, dep.version))
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
     build_cmake(ctx, dep, src)
     # PaStiX installs a CMake package; pastix-conf is not produced by 6.x.
     conf = ctx.prefix / "bin" / "pastix-conf"
