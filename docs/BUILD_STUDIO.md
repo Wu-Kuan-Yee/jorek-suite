@@ -182,7 +182,13 @@ confirmation before connecting.
 
 A build checks out a pinned full commit SHA, runs the selected packaged (dist)
 or full-solver build, runs the remote portability verifier, and downloads the
-artifact only after verification succeeds. The build runs under a detached
+artifact only after verification succeeds. Updating the local checkout does not
+silently change a saved pin: use **Use local HEAD** and save the profile when you
+want the remote host to build the updated checkout. Before any expensive build,
+the remote preparation stage prints the actual pinned commit and audits the
+PaStiX 6.3.2 recipe. It refuses to proceed unless the pinned checkout uses the
+recursive Git submodule source, preventing an older archive-based recipe from
+failing later during CMake configuration. The build runs under a detached
 remote supervisor, not as a foreground child of the SSH connection. The
 supervisor stores a task ID, state, heartbeat, complete output transcript, and
 process-group ID below:
