@@ -6,6 +6,7 @@ from __future__ import annotations
 import itertools
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,39 @@ from common import (
     which,
     write_text,
 )
+
+
+def _captured_run(argv: Sequence[str], merge_stderr: bool = False):
+    """Capture a probe command and surface its complete output in Build Studio."""
+    command = [str(item) for item in argv]
+    studio_mode = os.environ.get("JOREK_BUILD_STUDIO_EVENTS") == "1"
+    if not studio_mode:
+        return subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
+            check=False,
+        )
+
+    result = subprocess.run(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    print("  + " + shlex.join(command), flush=True)
+    binary_stdout = getattr(sys.stdout, "buffer", None)
+    for payload in (result.stdout, result.stderr):
+        if not payload:
+            continue
+        if binary_stdout is not None:
+            binary_stdout.write(payload)
+            binary_stdout.flush()
+        else:
+            sys.stdout.write(payload.decode("utf-8", "replace"))
+            sys.stdout.flush()
+    combined = (
+        (result.stdout or b"") + (result.stderr or b"")
+        if merge_stderr else result.stdout
+    )
+    return subprocess.CompletedProcess(
+        command, result.returncode, combined, result.stderr)
 
 
 MODEL_RE = re.compile(r"model(\d{3})")
@@ -728,8 +762,7 @@ class MakeBuilder:
     @staticmethod
     def _compiler_family(compiler: str) -> str:
         try:
-            proc = subprocess.run([compiler, "--version"], stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, check=False)
+            proc = _captured_run([compiler, "--version"], merge_stderr=True)
             text = proc.stdout.decode("utf-8", "replace").lower()
         except OSError:
             return "unknown"
@@ -1084,7 +1117,7 @@ def _verify_linux(path: Path) -> Tuple[bool, List[str]]:
     readelf = which("readelf")
     if not readelf:
         return False, ["readelf unavailable; could not verify"]
-    proc = subprocess.run([readelf, "-d", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([readelf, "-d", str(path)])
     if proc.returncode != 0:
         return False, ["readelf failed; could not verify"]
     text = proc.stdout.decode("utf-8", "replace")
@@ -1107,7 +1140,7 @@ def _verify_macos(path: Path) -> Tuple[bool, List[str]]:
     otool = which("otool")
     if not otool:
         return False, ["otool unavailable; could not verify"]
-    proc = subprocess.run([otool, "-L", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([otool, "-L", str(path)])
     if proc.returncode != 0:
         return False, ["otool failed; could not verify"]
     lines = proc.stdout.decode("utf-8", "replace").splitlines()[1:]
@@ -1127,7 +1160,7 @@ def _verify_windows(path: Path) -> Tuple[bool, List[str]]:
     objdump = which("objdump") or which("x86_64-w64-mingw32-objdump")
     if not objdump:
         return False, ["objdump unavailable; could not verify"]
-    proc = subprocess.run([objdump, "-p", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([objdump, "-p", str(path)])
     if proc.returncode != 0:
         return False, ["objdump failed; could not verify"]
     text = proc.stdout.decode("utf-8", "replace")
@@ -1140,7 +1173,7 @@ def _verify_bsd(path: Path) -> Tuple[bool, List[str]]:
     ldd = which("ldd")
     if not ldd:
         return False, ["ldd unavailable; could not verify"]
-    proc = subprocess.run([ldd, str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([ldd, str(path)])
     text = proc.stdout.decode("utf-8", "replace")
     if "not a dynamic executable" in text or "statically linked" in text:
         return True, []
