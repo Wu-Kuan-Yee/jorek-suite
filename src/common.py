@@ -150,7 +150,12 @@ def run(
     if env:
         full_env.update({str(k): str(v) for k, v in env.items()})
     quiet = bool(env.get("JOREK_QUIET"))
-    if echo and not quiet:
+    # Build Studio's per-stage transcript must contain the complete merged
+    # stdout/stderr stream even when a CLI caller requested quiet output or
+    # passed echo=False.  Keep ordinary command-line quiet semantics unchanged.
+    studio_mode = full_env.get("JOREK_BUILD_STUDIO_EVENTS") == "1"
+    stream_output = studio_mode or (echo and not quiet)
+    if stream_output:
         print("  + " + _display_argv(argv), flush=True)
 
     log_handle = None
@@ -191,7 +196,7 @@ def run(
             if log_handle:
                 log_handle.write(chunk)
                 log_handle.flush()
-            if echo and not quiet:
+            if stream_output:
                 if binary_stdout is not None:
                     binary_stdout.write(chunk)
                     binary_stdout.flush()
@@ -202,7 +207,7 @@ def run(
                         sys.stdout.flush()
 
         tail = decoder.decode(b"", final=True) if binary_stdout is None else ""
-        if echo and not quiet and tail:
+        if stream_output and tail:
             sys.stdout.write(tail)
             sys.stdout.flush()
         returncode = proc.wait()
