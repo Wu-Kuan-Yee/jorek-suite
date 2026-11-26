@@ -156,7 +156,9 @@ cleared before remote arguments are constructed. Enter machine-specific paths
 as JSON overrides. The local machine needs OpenSSH ssh and scp; the remote
 machine needs Git, Python 3, and a working native compiler/MPI/dependency
 environment. Configure public-key or agent authentication in OpenSSH; the
-builder uses batch mode and does not prompt for passwords.
+builder uses batch mode and does not prompt for passwords. Strict host-key
+checking is enabled by default; pre-populate known_hosts or deliberately
+choose the accept-new policy for a first connection.
 
 ### Help
 
