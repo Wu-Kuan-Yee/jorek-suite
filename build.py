@@ -1901,6 +1901,43 @@ def cmd_preflight(args) -> int:
             details.append("PaStiX 5: " + p5_summary)
         return details
 
+    def check_feature_roots():
+        feature_args = copy.copy(args)
+        if build_kind == "full":
+            feature_args.solver = "all"
+        features = jorek.FeatureSet()
+        _apply_feature_args(features, feature_args)
+        required_roots = []
+        if features.enabled("imas"):
+            required_roots.append(("IMAS", getattr(args, "imas_root", None)))
+        if features.enabled("catalyst"):
+            required_roots.append(("ParaView Catalyst", getattr(args, "catalyst_root", None)))
+        details = [
+            "Validated feature compatibility for solver selection %s." %
+            features.solver,
+        ]
+        for label, value in required_roots:
+            if not value:
+                raise BuildError(
+                    "%s feature is enabled but its installation prefix was not supplied." %
+                    label)
+            path = Path(value).expanduser()
+            if not path.is_dir():
+                raise BuildError("%s installation prefix is not a directory: %s" % (
+                    label, path))
+            details.append("%s prefix: %s" % (label, path))
+        for label, value in (
+            ("MPI", getattr(args, "mpi_prefix", None)),
+            ("toolchain", getattr(args, "toolchain_prefix", None)),
+        ):
+            if value and not Path(value).expanduser().is_dir():
+                raise BuildError("%s prefix is not a directory: %s" % (label, value))
+        for value in getattr(args, "dep_prefix", []) or []:
+            if not Path(value).expanduser().is_dir():
+                raise BuildError("dependency prefix is not a directory: %s" % value)
+        details.append("All explicitly supplied external prefixes exist.")
+        return details
+
     def check_toolchain():
         cc, cxx, fc, mpifc = _find_compilers(args, platform)
         tools = {"C": cc, "C++": cxx, "Fortran": fc, "MPI Fortran": mpifc}
@@ -2007,6 +2044,8 @@ def cmd_preflight(args) -> int:
                           check_solver_plan),
         VerificationCheck("jorek-source", "Validate JOREK source checkout", "JOREK source",
                           check_jorek_source),
+        VerificationCheck("feature-roots", "Validate optional feature and external prefixes", "Features",
+                          check_feature_roots),
         VerificationCheck("variant-plan", "Validate JOREK model and variant matrix", "JOREK variants",
                           check_variant_plan),
         VerificationCheck("toolchain", "Probe compiler and build tools", "Toolchain",
