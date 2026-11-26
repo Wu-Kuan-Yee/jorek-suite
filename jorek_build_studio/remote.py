@@ -124,6 +124,10 @@ def validate_profile(profile: Dict[str, Any]) -> List[str]:
         parse_remote_overrides(str(profile.get("remote_overrides", "")))
     except RemoteProfileError as exc:
         errors.append(str(exc))
+    timeout = profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT)
+    if (not isinstance(timeout, int) or isinstance(timeout, bool) or
+            not 10 <= timeout <= 3600):
+        errors.append("heartbeat_timeout must be an integer between 10 and 3600 seconds")
     return errors
 
 
