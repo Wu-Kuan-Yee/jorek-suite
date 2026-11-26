@@ -108,13 +108,19 @@ class ConfigTests(unittest.TestCase):
 
     def test_builder_help_exposes_family_toggle_for_matrix_build_and_full(self):
         script = Path(__file__).resolve().parents[1] / "build.py"
-        for command in ("matrix", "build", "full", "verify"):
+        for command in ("matrix", "build", "full"):
             result = subprocess.run(
                 [sys.executable, str(script), command, "--help"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, check=False)
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertIn("--family-toggle", result.stdout)
+        result = subprocess.run(
+            [sys.executable, str(script), "verify", "--help"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("--json", result.stdout)
 
     def test_parameter_grid_and_maximum_conflict_is_reported(self):
         cfg = normalize_config({
