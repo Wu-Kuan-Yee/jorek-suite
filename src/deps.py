@@ -1195,6 +1195,14 @@ class DepManager:
         emit_build_event(
             "phase_start", phase="dependencies", label="Dependencies",
             total=len(order))
+        emit_build_event(
+            "stage_plan", phase="dependencies",
+            stages=[{
+                "id": "dependency:" + item.name,
+                "label": "%s %s" % (item.name, item.version),
+                "category": "Dependency",
+                "log_path": str(self.ctx.log_path(item.name)),
+            } for item in order])
         completed = 0
         for item in order:
             stage_id = "dependency:" + item.name
