@@ -819,10 +819,23 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.task_label)
         outer.addLayout(actions)
 
+        progress_row = QHBoxLayout()
+        self.progress_label = QLabel("No active build phase")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        progress_row.addWidget(self.progress_label)
+        progress_row.addWidget(self.progress_bar, 1)
+        outer.addLayout(progress_row)
+
+        self.build_views = QTabWidget()
+        overview_page = QWidget()
+        overview_layout = QVBoxLayout(overview_page)
+
         self.matrix_table = QTableWidget(0, 5)
         self.matrix_table.setHorizontalHeaderLabels(
-            ["Variant", "Model", "Solver", "Features", "Parameters"]
-        )
+            ["Variant", "Model", "Solver", "Features", "Parameters"])
         self.matrix_table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.Stretch)
         for column in range(1, 5):
@@ -830,15 +843,50 @@ class MainWindow(QMainWindow):
                 column, QHeaderView.ResizeMode.ResizeToContents)
         self.matrix_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.matrix_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        outer.addWidget(QLabel("Planned variants"))
-        outer.addWidget(self.matrix_table, 1)
+        overview_layout.addWidget(QLabel("Planned variants"))
+        overview_layout.addWidget(self.matrix_table, 1)
 
-        outer.addWidget(QLabel("Build output"))
+        overview_layout.addWidget(QLabel("Build output"))
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(12000)
-        self.log_view.setPlaceholderText("Build output and diagnostics will appear here.")
-        outer.addWidget(self.log_view, 2)
+        self.log_view.setPlaceholderText(
+            "Build overview and diagnostics will appear here. "
+            "Compiler and dependency output is available in Detailed logs.")
+        overview_layout.addWidget(self.log_view, 2)
+        self.build_views.addTab(overview_page, "Overview")
+
+        details_page = QWidget()
+        details_layout = QVBoxLayout(details_page)
+        detail_actions = QHBoxLayout()
+        detail_actions.addWidget(QLabel(
+            "Each dependency, JOREK variant and packaging stage has its own log. "
+            "Double-click a row to follow or reopen it."))
+        detail_actions.addStretch(1)
+        detail_actions.addWidget(_button(
+            "Open selected log", self._open_selected_stage_log, details_page))
+        details_layout.addLayout(detail_actions)
+
+        self.stage_table = QTableWidget(0, 5)
+        self.stage_table.setHorizontalHeaderLabels(
+            ["Build part", "Category", "Status", "Elapsed", "Detailed log"])
+        self.stage_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Stretch)
+        self.stage_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents)
+        self.stage_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.ResizeToContents)
+        self.stage_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents)
+        self.stage_table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Stretch)
+        self.stage_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.stage_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.stage_table.cellDoubleClicked.connect(self._open_stage_log)
+        details_layout.addWidget(self.stage_table, 1)
+        self.build_views.addTab(details_page, "Detailed logs")
+
+        outer.addWidget(self.build_views, 1)
         self.tabs.addTab(page, "Build")
 
     def _build_history_tab(self) -> None:
