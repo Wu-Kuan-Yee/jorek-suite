@@ -173,6 +173,85 @@ class RemoteCommandTests(unittest.TestCase):
             self.assertEqual(actual, commit)
             self.assertIn('"portable_on_build_host": true', result.stdout)
 
+    @unittest.skipUnless(
+        os.environ.get("JOREK_SSH_TEST_KEY"),
+        "local OpenSSH integration endpoint is not configured",
+    )
+    def test_native_remote_build_and_artifact_download_over_ssh_and_scp(self):
+        with tempfile.TemporaryDirectory(prefix="jorek-ssh-integration-") as temporary:
+            root = Path(temporary)
+            source = root / "source repo"
+            source.mkdir()
+            subprocess.run(["git", "init", "-b", "main", str(source)],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(["git", "-C", str(source), "config", "user.name", "Build Test"],
+                           check=True)
+            subprocess.run(["git", "-C", str(source), "config", "user.email", "build@example.invalid"],
+                           check=True)
+            script = textwrap.dedent("""\
+                import argparse
+                import json
+                from pathlib import Path
+                parser = argparse.ArgumentParser()
+                parser.add_argument("--work", required=True)
+                parser.add_argument("action")
+                parser.add_argument("--json", action="store_true")
+                args = parser.parse_args()
+                suite = Path(args.work) / "dist" / "jorek-suite"
+                if args.action == "dist":
+                    suite.parent.mkdir(parents=True, exist_ok=True)
+                    suite.write_text("ssh-native-suite", encoding="utf-8")
+                elif args.action == "verify":
+                    if not suite.is_file():
+                        raise SystemExit(2)
+                    print(json.dumps({"portable_on_build_host": True}))
+                """)
+            (source / "build.py").write_text(script, encoding="utf-8")
+            subprocess.run(["git", "-C", str(source), "add", "build.py"], check=True)
+            subprocess.run(["git", "-C", str(source), "commit", "-m", "fixture"],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            commit = subprocess.run(
+                ["git", "-C", str(source), "rev-parse", "HEAD"],
+                check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+
+            profile = dict(PROFILE)
+            profile.update({
+                "name": "Local SSH integration",
+                "destination": os.environ.get("JOREK_SSH_TEST_HOST", "runner@127.0.0.1"),
+                "port": int(os.environ.get("JOREK_SSH_TEST_PORT", "2222")),
+                "identity_file": os.environ["JOREK_SSH_TEST_KEY"],
+                "remote_root": str(root / "remote root"),
+                "remote_work": str(root / "remote work"),
+                "artifact_dir": str(root / "downloaded artifacts"),
+                "repo_url": str(source),
+                "branch": "main",
+                "commit": commit,
+                "host_key_policy": "yes",
+                "ssh_options": ["IdentitiesOnly=yes"],
+            })
+            remote_command = build_remote_command(
+                profile,
+                ["--work", profile["remote_work"], "dist"],
+                ["--work", profile["remote_work"], "verify", "--json"],
+            )
+            ssh = subprocess.run(
+                ["ssh"] + ssh_arguments(profile, remote_command),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False, timeout=60)
+            self.assertEqual(ssh.returncode, 0, ssh.stdout)
+
+            local_dir = Path(profile["artifact_dir"])
+            local_dir.mkdir(parents=True, exist_ok=True)
+            local_artifact = local_dir / "jorek-suite"
+            scp = subprocess.run(
+                ["scp"] + scp_arguments(
+                    profile, remote_artifact_path(profile), str(local_artifact)),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, check=False, timeout=30)
+            self.assertEqual(scp.returncode, 0, scp.stdout)
+            self.assertEqual(local_artifact.read_text(encoding="utf-8"), "ssh-native-suite")
+            self.assertIn('"portable_on_build_host": true', ssh.stdout)
+
     def test_remote_overrides_are_typed_and_restricted(self):
         overrides = parse_remote_overrides(
             '{"toolchain_prefix": "/opt/gcc", "dep_prefixes": ["/opt/fftw"], "jobs": 8}')

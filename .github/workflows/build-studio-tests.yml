@@ -80,13 +80,30 @@ jobs:
           git -C /tmp/jorek-base checkout --detach FETCH_HEAD
       - name: Install CLI package
         run: python -m pip install -e .
-      - name: Run full test suite with real JOREK source
+      - name: Install OpenSSH server and native Fortran compiler
+        run: sudo apt-get update && sudo apt-get install -y openssh-server gfortran
+      - name: Start local OpenSSH integration endpoint
+        run: |
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          ssh-keygen -q -t ed25519 -N "" -f "$RUNNER_TEMP/jorek-ssh-test"
+          cat "$RUNNER_TEMP/jorek-ssh-test.pub" >> "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -D -p 2222 -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitRootLogin=no -o PubkeyAuthentication=yes -o AuthorizedKeysFile="$HOME/.ssh/authorized_keys" -o StrictModes=no -o UsePAM=no > "$RUNNER_TEMP/sshd.log" 2>&1 &
+          for attempt in $(seq 1 20); do
+            if ssh-keyscan -p 2222 127.0.0.1 >> "$HOME/.ssh/known_hosts" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          ssh -p 2222 -i "$RUNNER_TEMP/jorek-ssh-test" -o IdentitiesOnly=yes -o BatchMode=yes "$(whoami)@127.0.0.1" true
+          echo "JOREK_SSH_TEST_HOST=$(whoami)@127.0.0.1" >> "$GITHUB_ENV"
+          echo "JOREK_SSH_TEST_PORT=2222" >> "$GITHUB_ENV"
+          echo "JOREK_SSH_TEST_KEY=$RUNNER_TEMP/jorek-ssh-test" >> "$GITHUB_ENV"
+      - name: Run full test suite with real JOREK source and live SSH endpoint
         run: python -m unittest discover -s tests -p "test_*.py" -v
       - name: Generate a real JOREK model matrix
         run: |
           python build.py --root /tmp/jorek-base --work /tmp/jorek-work matrix --matrix maximal --json > /tmp/jorek-matrix.json
           python -c "import json; data = json.load(open('/tmp/jorek-matrix.json', encoding='utf-8')); assert data; print('Discovered %d native JOREK variants' % len(data))"
-      - name: Install a native Fortran compiler
-        run: sudo apt-get update && sudo apt-get install -y gfortran
       - name: Dry-run a real JOREK model build
         run: python build.py --root /tmp/jorek-base --work /tmp/jorek-dry-run --dry-run --deps none build --model 303 --matrix one --programs main
