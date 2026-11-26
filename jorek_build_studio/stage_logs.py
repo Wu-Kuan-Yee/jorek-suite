@@ -208,6 +208,14 @@ class StageLogDialog(QDialog):
         self.case_check = QCheckBox("Case sensitive")
         self.case_check.toggled.connect(self.update_search)
         search_row.addWidget(self.case_check)
+        self.multiline_check = QCheckBox("Multiline")
+        self.multiline_check.setToolTip("Make ^ and $ match individual log lines")
+        self.multiline_check.toggled.connect(self.update_search)
+        search_row.addWidget(self.multiline_check)
+        self.dotall_check = QCheckBox("Dot matches newline")
+        self.dotall_check.setToolTip("Allow . to match newline characters")
+        self.dotall_check.toggled.connect(self.update_search)
+        search_row.addWidget(self.dotall_check)
         self.previous_button = QPushButton("Previous")
         self.next_button = QPushButton("Next")
         self.previous_button.clicked.connect(self.search_previous)
@@ -382,6 +390,10 @@ class StageLogDialog(QDialog):
         options = QRegularExpression.PatternOption.NoPatternOption
         if not self.case_check.isChecked():
             options |= QRegularExpression.PatternOption.CaseInsensitiveOption
+        if self.multiline_check.isChecked():
+            options |= QRegularExpression.PatternOption.MultilineOption
+        if self.dotall_check.isChecked():
+            options |= QRegularExpression.PatternOption.DotMatchesEverythingOption
         regex = QRegularExpression(pattern, options)
         if not regex.isValid():
             self.match_label.setText(
