@@ -851,6 +851,21 @@ class MainWindow(QMainWindow):
         plan = self._prepare_remote_build_plan()
         if plan is None:
             return
+        pinned_commit = str(plan["profile"].get("commit") or "").lower()
+        local_head = self._local_git_commit().lower()
+        if local_head and pinned_commit and local_head != pinned_commit:
+            answer = QMessageBox.question(
+                self, APP_TITLE,
+                "The remote profile is pinned to %s, but this local checkout is at %s.\n\n"
+                "The remote host will build the pinned commit, not the local HEAD. "
+                "Use 'Use local HEAD' in the Remote tab and save the profile if you "
+                "want the updated builder. Continue with the older/different pin?" %
+                (pinned_commit, local_head),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self.remote_preview.setPlainText(plan["remote_command"])
         if not self._show_remote_build_preview(plan, confirm_build=True):
             return
