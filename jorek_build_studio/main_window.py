@@ -871,7 +871,7 @@ class MainWindow(QMainWindow):
             pass
         self._start_external_process(
             plan["ssh"], plan["ssh_args"], "remote-start")
-        if self.task_stage_log_dir is not None:
+        if self.task_kind == "remote-start" and self.task_stage_log_dir is not None:
             self._save_remote_task_metadata()
 
 
