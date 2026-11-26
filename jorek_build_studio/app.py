@@ -17,11 +17,15 @@ def main() -> int:
 
     from .main_window import APP_TITLE, MainWindow
 
-    app = QApplication(sys.argv)
+    smoke_test = "--smoke-test" in sys.argv[1:]
+    app = QApplication([sys.argv[0]] if smoke_test else sys.argv)
     app.setApplicationName(APP_TITLE)
     app.setOrganizationName("JOREK")
     app.setStyle("Fusion")
     window = MainWindow()
+    if smoke_test:
+        window.close()
+        return 0
     window.show()
     return int(app.exec())
 
