@@ -173,6 +173,30 @@ def remote_artifact_path(profile: Dict[str, Any]) -> str:
     return "/tmp/jorek-suite-transfer-" + token
 
 
+BUILD_EVENT_PREFIX = "@@JOREK_BUILD_EVENT@@"
+
+
+def _remote_event_line(event: str, **payload) -> str:
+    message = {"event": event}
+    message.update(payload)
+    return "printf '%s\\n' " + shlex.quote(
+        BUILD_EVENT_PREFIX + json.dumps(message, ensure_ascii=False, separators=(",", ":")))
+
+
+def _remote_stage(stage_id: str, label: str, category: str, command: str) -> str:
+    """Wrap a remote shell command in start/success/failure progress events."""
+    start = _remote_event_line(
+        "stage_start", id=stage_id, label=label, category=category)
+    success = _remote_event_line(
+        "stage_finish", id=stage_id, status="completed")
+    failure = _remote_event_line(
+        "stage_finish", id=stage_id, status="failed", error="remote command failed")
+    return (
+        start + "; if " + command + "; then " + success +
+        "; else rc=$?; " + failure + "; exit \"$rc\"; fi"
+    )
+
+
 def build_remote_command(
     profile: Dict[str, Any],
     build_args: List[str],
@@ -192,23 +216,36 @@ def build_remote_command(
     qurl = shlex.quote(repo_url)
     qbranch = shlex.quote(branch)
     qcommit = shlex.quote(commit)
-    build_command = shlex.join([python, repo + "/build.py"] + list(build_args))
-    verify_command = shlex.join([python, repo + "/build.py"] + list(verify_args))
+    build_command = "PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join(
+        [python, repo + "/build.py"] + list(build_args))
+    verify_command = "PYTHONUNBUFFERED=1 JOREK_BUILD_STUDIO_EVENTS=1 " + shlex.join(
+        [python, repo + "/build.py"] + list(verify_args))
     suite_source = str(PurePosixPath(str(profile["remote_work"])) / "dist" / "jorek-suite")
     transfer_path = remote_artifact_path(profile)
+    repository_command = (
+        "if [ ! -d " + shlex.quote(repo + "/.git") + " ]; then "
+        "git clone --filter=blob:none --no-checkout -- " + qurl + " " + qrepo + "; fi"
+        " && git -C " + qrepo + " remote set-url origin " + qurl
+        " && git -C " + qrepo + " fetch --prune origin " + qbranch
+        " && git -C " + qrepo + " checkout --force --detach " + qcommit
+        " && test \"$(git -C " + qrepo + " rev-parse HEAD)\" = " + qcommit
+    )
     commands = [
         "set -eu",
         "mkdir -p " + qroot,
-        "if [ ! -d " + shlex.quote(repo + "/.git") + " ]; then "
-        "git clone --filter=blob:none --no-checkout -- " + qurl + " " + qrepo + "; fi",
-        "git -C " + qrepo + " remote set-url origin " + qurl,
-        "git -C " + qrepo + " fetch --prune origin " + qbranch,
-        "git -C " + qrepo + " checkout --force --detach " + qcommit,
-        "test \"$(git -C " + qrepo + " rev-parse HEAD)\" = " + qcommit,
-        build_command,
-        verify_command,
-        "cp " + shlex.quote(suite_source) + " " + shlex.quote(transfer_path),
-        "chmod 700 " + shlex.quote(transfer_path),
+        _remote_stage(
+            "remote:repository", "Fetch and pin jorek-suite repository",
+            "Remote preparation", repository_command),
+        _remote_stage(
+            "remote:build", "Build JOREK suite on remote host",
+            "Remote build", build_command),
+        _remote_stage(
+            "remote:verify", "Verify remote build artifact",
+            "Verification", verify_command),
+        _remote_stage(
+            "remote:transfer-stage", "Prepare artifact for download",
+            "Artifact", "cp " + shlex.quote(suite_source) + " " +
+            shlex.quote(transfer_path) + " && chmod 700 " + shlex.quote(transfer_path)),
     ]
     return "; ".join(commands)
 
