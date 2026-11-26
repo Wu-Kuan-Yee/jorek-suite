@@ -1477,6 +1477,34 @@ def _merge_suite_manifests(args, platform: PlatformInfo, variant_dirs: Sequence[
                           output: Path) -> Path:
     """Merge build.py variant JSON manifests into one native suite."""
     work = Path(args.work)
+    common.emit_build_event(
+        "stage_plan", phase="packaging",
+        stages=[
+            {
+                "id": "suite:final-merge:launcher",
+                "label": "Compile final suite launcher",
+                "category": "Packaging",
+                "log_path": str(work / "logs" / "suite-launcher.log"),
+            },
+            {
+                "id": "suite:final-merge:runtime-tool",
+                "label": "Compile final JOREK runtime helper",
+                "category": "Packaging",
+                "log_path": str(work / "logs" / "jorek-tool.log"),
+            },
+            {
+                "id": "suite:final-merge:archive",
+                "label": "Assemble final single-file suite",
+                "category": "Packaging",
+                "log_path": str(work / "logs" / "suite-archive.log"),
+            },
+            {
+                "id": "suite:final-merge:verify",
+                "label": "Verify final single-file suite",
+                "category": "Verification",
+                "log_path": str(work / "logs" / "suite-verify.log"),
+            },
+        ])
     launcher, objects = _tracked_stage(
         "suite:final-merge:launcher", "Compile final suite launcher", "Packaging",
         lambda: _compile_launcher(args, platform, work),
