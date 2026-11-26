@@ -822,6 +822,9 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, APP_TITLE, "Cannot create artifact directory:\n%s" % exc)
             return
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.warning(self, APP_TITLE, "A task is already running.")
+            return
         self.remote_artifact_path = plan["remote_artifact"]
         self.remote_ssh_executable = plan["ssh"]
         self.remote_scp_executable = plan["scp"]
@@ -953,7 +956,9 @@ class MainWindow(QMainWindow):
                 "SSH connection lost; retrying in %d seconds. The remote supervisor "
                 "will terminate the build if heartbeats are absent for 120 seconds." % delay)
             self.remote_reconnect_timer.start(delay * 1000)
-            self.remote_reconnect_delay = min(60, delay * 2)
+            # Keep retry intervals short enough to reconnect before the
+            # supervisor's 120-second lease expires.
+            self.remote_reconnect_delay = min(15, delay * 2)
 
     def _reconnect_remote_task(self) -> None:
         if self.remote_task_terminal or not self.remote_task_id:
@@ -2232,7 +2237,7 @@ class MainWindow(QMainWindow):
             self.task_log.write("\n" + message + "\n")
             self.task_log.flush()
         if error == QProcess.ProcessError.FailedToStart:
-            if self.task_kind == "remote-attach":
+            if self.task_kind in ("remote-attach", "remote-start"):
                 self.remote_heartbeat_timer.stop()
                 if self.task_log:
                     self.task_log.flush()
