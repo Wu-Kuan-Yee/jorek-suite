@@ -107,11 +107,14 @@ class RemoteCommandTests(unittest.TestCase):
         with self.assertRaises(RemoteProfileError):
             ssh_arguments(profile, "uname -s")
 
-    def test_default_artifact_path_is_inside_remote_work_directory(self):
-        self.assertEqual(
-            remote_artifact_path(PROFILE),
-            "/scratch/jorek work/dist/jorek-suite",
-        )
+    def test_default_artifact_path_is_a_safe_remote_staging_path(self):
+        path = remote_artifact_path(PROFILE)
+        self.assertTrue(path.startswith("/tmp/jorek-suite-transfer-"))
+        self.assertEqual(len(path.rsplit("-", 1)[-1]), 16)
+        self.assertFalse(any(character.isspace() for character in path))
+        self.assertEqual(path, remote_artifact_path(dict(PROFILE)))
+        changed = dict(PROFILE, commit="b" * 40)
+        self.assertNotEqual(path, remote_artifact_path(changed))
 
     @unittest.skipIf(os.name == "nt", "remote command uses a POSIX shell")
     def test_remote_build_sequence_clones_pinned_commit_builds_and_verifies(self):
