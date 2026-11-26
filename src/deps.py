@@ -291,9 +291,14 @@ register(
     dep("hwloc", "2.11.2", "https://github.com/open-mpi/hwloc/releases/download/hwloc-2.11.2/hwloc-2.11.2.tar.gz",
         license="BSD-3-Clause", homepage="https://www.open-mpi.org/projects/hwloc/",
         static_libs=("libhwloc.a",), includes=("hwloc.h",), builder="autotools",
+        # Keep the static hwloc archive self-contained: the optional libxml2
+        # backend introduces external XML symbols that are not consistently
+        # propagated by downstream static-library discovery.  hwloc's built-in
+        # XML backend is sufficient for same-release topology files.
         configure_args=("--disable-shared", "--enable-static", "--disable-io", "--disable-libudev",
-                        "--disable-cairo", "--disable-opencl", "--disable-pci"),
-        required_paths=("configure",)),
+                        "--disable-cairo", "--disable-opencl", "--disable-pci",
+                        "--disable-libxml2"),
+        required_paths=("configure",), recipe_revision="1"),
     dep("libpciaccess", "0.18.1", "https://xorg.freedesktop.org/releases/individual/lib/libpciaccess-0.18.1.tar.xz",
         license="MIT", homepage="https://gitlab.freedesktop.org/xorg/lib/libpciaccess",
         static_libs=("libpciaccess.a",), includes=("pciaccess.h",), builder="autotools",
@@ -379,10 +384,14 @@ register(
         # integer ABI at 32 bits and use METIS, matching the full-solver path.
         # This also prevents CMake from discovering a Scotch build with a
         # different SCOTCH_Num width.
+        # JOREK needs the PaStiX libraries, not its example or test
+        # executables.  Keep those optional targets out of this static build.
         cmake_args=("-DGIT_SUBMODULE=OFF", "-DPASTIX_INT64=OFF",
                     "-DPASTIX_ORDERING_METIS=ON",
-                    "-DPASTIX_ORDERING_SCOTCH=OFF"),
-        recipe_revision="3"),
+                    "-DPASTIX_ORDERING_SCOTCH=OFF",
+                    "-DPASTIX_BUILD_EXAMPLES=OFF",
+                    "-DPASTIX_BUILD_TESTS=OFF"),
+        recipe_revision="4"),
     dep("strumpack", "7.1.0", "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
         license="BSD-3-Clause", homepage="https://portal.nersc.gov/project/sparse/strumpack/",
         deps=("mpich", "openblas", "scalapack", "metis"),
