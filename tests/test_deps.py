@@ -167,40 +167,40 @@ class GitSourceTests(unittest.TestCase):
         source = self.root / "strumpack-source"
         source.mkdir()
         mpi_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  target_link_libraries(strumpack PUBLIC\\n"
-            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
-            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  target_link_libraries(strumpack PUBLIC\n"
+            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+            "endif()\n"
         )
         openmp_block = (
-            "if(OpenMP_FOUND)\\n"
-            "  # if(OpenMP_C_FOUND)\\n"
-            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\\n"
-            "  # endif()\\n"
-            "  if(OpenMP_CXX_FOUND)\\n"
-            "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\\n"
-            "  endif()\\n"
-            "  # if(OpenMP_Fortran_FOUND)\\n"
-            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\\n"
-            "  # endif()\\n"
-            "endif()\\n"
+            "if(OpenMP_FOUND)\n"
+            "  # if(OpenMP_C_FOUND)\n"
+            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\n"
+            "  # endif()\n"
+            "  if(OpenMP_CXX_FOUND)\n"
+            "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\n"
+            "  endif()\n"
+            "  # if(OpenMP_Fortran_FOUND)\n"
+            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\n"
+            "  # endif()\n"
+            "endif()\n"
         )
         scalapack_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  if(SCALAPACK_FOUND)\\n"
-            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
-            "  endif()\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  if(SCALAPACK_FOUND)\n"
+            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+            "  endif()\n"
+            "endif()\n"
         )
         blas_block = (
-            "if(BLAS_FOUND)\\n"
-            "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\\n"
-            "endif()\\n"
+            "if(BLAS_FOUND)\n"
+            "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\n"
+            "endif()\n"
         )
         cmake_lists = source / "CMakeLists.txt"
         cmake_lists.write_text(
-            mpi_block + "\\n" + openmp_block + "\\n" +
+            mpi_block + "\n" + openmp_block + "\n" +
             scalapack_block + blas_block,
             encoding="utf-8",
         )
@@ -231,7 +231,7 @@ class GitSourceTests(unittest.TestCase):
         source = self.root / "strumpack-unknown-source"
         source.mkdir()
         (source / "CMakeLists.txt").write_text(
-            "project(STRUMPACK VERSION 7.2.0)\\n", encoding="utf-8")
+            "project(STRUMPACK VERSION 7.2.0)\n", encoding="utf-8")
         with self.assertRaisesRegex(BuildError, "cannot safely patch STRUMPACK"):
             deps.patch_strumpack_static_link_order(source)
 
@@ -248,39 +248,39 @@ class GitSourceTests(unittest.TestCase):
         source = self.root / "strumpack-source"
         source.mkdir()
         mpi_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  target_link_libraries(strumpack PUBLIC\\n"
-            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
-            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  target_link_libraries(strumpack PUBLIC\n"
+            "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+            "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+            "endif()\n"
         )
         openmp_block = (
-            "if(OpenMP_FOUND)\\n"
-            "  # if(OpenMP_C_FOUND)\\n"
-            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\\n"
-            "  # endif()\\n"
-            "  if(OpenMP_CXX_FOUND)\\n"
-            "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\\n"
-            "  endif()\\n"
-            "  # if(OpenMP_Fortran_FOUND)\\n"
-            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\\n"
-            "  # endif()\\n"
-            "endif()\\n"
+            "if(OpenMP_FOUND)\n"
+            "  # if(OpenMP_C_FOUND)\n"
+            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\n"
+            "  # endif()\n"
+            "  if(OpenMP_CXX_FOUND)\n"
+            "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\n"
+            "  endif()\n"
+            "  # if(OpenMP_Fortran_FOUND)\n"
+            "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\n"
+            "  # endif()\n"
+            "endif()\n"
         )
         scalapack_block = (
-            "if(STRUMPACK_USE_MPI)\\n"
-            "  if(SCALAPACK_FOUND)\\n"
-            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
-            "  endif()\\n"
-            "endif()\\n"
+            "if(STRUMPACK_USE_MPI)\n"
+            "  if(SCALAPACK_FOUND)\n"
+            "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+            "  endif()\n"
+            "endif()\n"
         )
         blas_block = (
-            "if(BLAS_FOUND)\\n"
-            "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\\n"
-            "endif()\\n"
+            "if(BLAS_FOUND)\n"
+            "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\n"
+            "endif()\n"
         )
         (source / "CMakeLists.txt").write_text(
-            mpi_block + "\\n" + openmp_block + "\\n" +
+            mpi_block + "\n" + openmp_block + "\n" +
             scalapack_block + blas_block,
             encoding="utf-8",
         )
@@ -291,13 +291,13 @@ class GitSourceTests(unittest.TestCase):
         for name in ("libopenblas.a", "libscalapack.a", "libmetis.a"):
             (libdir / name).write_bytes(b"static archive fixture")
         (includedir / "metis.h").write_text(
-            "#define IDXTYPEWIDTH 32\\n", encoding="utf-8")
+            "#define IDXTYPEWIDTH 32\n", encoding="utf-8")
         package_dir = libdir / "cmake" / "STRUMPACK"
         package_dir.mkdir(parents=True)
         (package_dir / "strumpack-config.cmake").write_text(
-            "# package config fixture\\n", encoding="utf-8")
+            "# package config fixture\n", encoding="utf-8")
         (package_dir / "strumpack-targets.cmake").write_text(
-            "# exported targets fixture\\n", encoding="utf-8")
+            "# exported targets fixture\n", encoding="utf-8")
 
         calls = []
 
