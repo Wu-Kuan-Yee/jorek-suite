@@ -207,8 +207,11 @@ def scp_arguments(profile: Dict[str, Any], remote_path: str, local_path: str) ->
     errors = validate_connection_profile(profile)
     if errors:
         raise RemoteProfileError("; ".join(errors))
+    # scp receives a single argv element; in its default SFTP mode the
+    # path is data, not a remote-shell fragment, so quoting would become
+    # literal filename characters on the server.
     remote_spec = "%s:%s" % (
-        str(profile["destination"]).strip(), shlex.quote(remote_path))
+        str(profile["destination"]).strip(), remote_path)
     return _ssh_common(profile, scp=True) + [remote_spec, local_path]
 
 

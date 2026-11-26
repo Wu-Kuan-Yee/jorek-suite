@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import tempfile
 import textwrap
@@ -89,7 +90,7 @@ class RemoteCommandTests(unittest.TestCase):
             PROFILE, "/scratch/jorek work/dist/jorek-suite",
             "/tmp/JOREK artifacts/suite")
         self.assertIn("-P", args)
-        self.assertTrue(any("'/scratch/jorek work/dist/jorek-suite'" in item for item in args))
+        self.assertTrue(any("/scratch/jorek work/dist/jorek-suite" in item for item in args))
         self.assertEqual(args[-1], "/tmp/JOREK artifacts/suite")
 
     def test_connection_test_reports_native_host_information(self):
@@ -235,6 +236,9 @@ class RemoteCommandTests(unittest.TestCase):
                 ["--work", profile["remote_work"], "dist"],
                 ["--work", profile["remote_work"], "verify", "--json"],
             )
+            # Make the disposable remote fixture removable by the local test user.
+            remote_command += "; chmod -R a+rwX " + shlex.quote(profile["remote_root"])
+            remote_command += " " + shlex.quote(profile["remote_work"])
             ssh = subprocess.run(
                 ["ssh"] + ssh_arguments(profile, remote_command),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
