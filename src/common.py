@@ -233,14 +233,29 @@ def run(
     return result
 
 def output(argv: Sequence[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> str:
+    command = [str(x) for x in argv]
+    full_env = {**os.environ, **(env or {})}
+    studio_mode = full_env.get("JOREK_BUILD_STUDIO_EVENTS") == "1"
     proc = subprocess.run(
-        [str(x) for x in argv],
+        command,
         cwd=str(cwd) if cwd else None,
-        env={**os.environ, **(env or {})},
+        env=full_env,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE if studio_mode else subprocess.DEVNULL,
         check=False,
     )
+    if studio_mode:
+        print("  + " + _display_argv(command), flush=True)
+        binary_stdout = getattr(sys.stdout, "buffer", None)
+        for payload in (proc.stdout, proc.stderr):
+            if not payload:
+                continue
+            if binary_stdout is not None:
+                binary_stdout.write(payload)
+                binary_stdout.flush()
+            else:
+                sys.stdout.write(payload.decode("utf-8", "replace"))
+                sys.stdout.flush()
     return proc.stdout.decode("utf-8", "replace").strip()
 
 
