@@ -1728,6 +1728,7 @@ class MainWindow(QMainWindow):
                 self.stage_log_handles[stage_id] = handle
             self.stage_stack.append(stage_id)
             self._refresh_stage_table_row(stage_id)
+            self.stage_table.scrollToBottom()
             if not self.stage_elapsed_timer.isActive():
                 self.stage_elapsed_timer.start()
             self._append_overview_output(
