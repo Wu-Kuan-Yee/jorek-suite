@@ -522,6 +522,14 @@ class BuiltVariant:
 
 def _prepare_builder(args, spec: jorek.VariantSpec, platform: PlatformInfo, cc, cxx, fc, mpifc):
     prefixes = _toolchain_prefix(args)
+    if spec.features.solver == "pastix5":
+        # PaStiX 5 and 6 both export libpastix.a, so the legacy 5.x build is
+        # installed under a private nested prefix and searched first.
+        private_pastix5 = [
+            prefix / "pastix5" for prefix in prefixes
+            if (prefix / "pastix5").is_dir()
+        ]
+        prefixes = private_pastix5 + prefixes
     mpi_prefix = Path(args.mpi_prefix) if args.mpi_prefix else None
     layout = jorek.DepLayout(prefixes, platform, mpi_prefix=mpi_prefix,
                              imas_root=Path(args.imas_root) if args.imas_root else None,
