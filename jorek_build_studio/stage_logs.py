@@ -38,7 +38,7 @@ class StageLogDialog(QDialog):
         self.editor = QPlainTextEdit()
         self.editor.setReadOnly(True)
         self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.editor.setMaximumBlockCount(100000)
+        self.editor.setMaximumBlockCount(0)
         outer.addWidget(self.editor, 1)
 
         close = QPushButton("Close")
@@ -78,25 +78,32 @@ class StageLogDialog(QDialog):
         try:
             with self.path.open("rb") as handle:
                 handle.seek(self.offset)
-                data = handle.read(262144)
+                while True:
+                    data = handle.read(262144)
+                    if not data:
+                        break
+                    self.offset += len(data)
+                    text = self.decoder.decode(data, final=False)
+                    if text:
+                        cursor = self.editor.textCursor()
+                        cursor.movePosition(QTextCursor.MoveOperation.End)
+                        self.editor.setTextCursor(cursor)
+                        self.editor.insertPlainText(text)
+                    # A live log is polled incrementally; a completed log is
+                    # drained fully so large historical logs are not truncated.
+                    if self.running:
+                        break
         except OSError as exc:
             self.status_label.setText("Cannot read log: %s" % exc)
             return
-        if data:
-            self.offset += len(data)
-            text = self.decoder.decode(data, final=False)
-            if text:
-                cursor = self.editor.textCursor()
-                cursor.movePosition(QTextCursor.MoveOperation.End)
-                self.editor.setTextCursor(cursor)
-                self.editor.insertPlainText(text)
-                self.editor.ensureCursorVisible()
+
         if not self.running:
             tail = self.decoder.decode(b"", final=True)
             if tail:
                 self.editor.moveCursor(QTextCursor.MoveOperation.End)
                 self.editor.insertPlainText(tail)
             self.timer.stop()
+        self.editor.ensureCursorVisible()
 
     def closeEvent(self, event) -> None:
         self.timer.stop()
