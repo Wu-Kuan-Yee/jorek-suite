@@ -402,7 +402,7 @@ register(
         deps=("mpich", "openblas", "scalapack", "metis"),
         static_libs=("libstrumpack.a",), includes=("StrumpackConfig.h", "StrumpackSparseSolverMPIDist.hpp"),
         builder="strumpack", platforms=("linux", "bsd", "macos"),
-        required_paths=("CMakeLists.txt", "src"), recipe_revision="2"),
+        required_paths=("CMakeLists.txt", "src"), recipe_revision="3"),
     dep("boost", "1.87.0", "https://archives.boost.io/release/1.87.0/source/boost_1_87_0.tar.bz2",
         license="BSL-1.0", homepage="https://www.boost.org/",
         static_libs=("libboost_math_tr1.a",), includes=("boost/math/special_functions/bessel.hpp",),
@@ -1462,13 +1462,13 @@ def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
 
 
 def patch_strumpack_static_link_order(src: Path) -> bool:
-    """Put ScaLAPACK before MPI in STRUMPACK's exported static link interface.
+    """Preserve static archive dependency order in STRUMPACK's public target.
 
-    STRUMPACK 7.1.0 appends MPI libraries to the target before ScaLAPACK.
-    With static archives, ScaLAPACK's unresolved MPI references then occur
-    after the MPI archives have already been scanned by GNU ld.  Move the
-    upstream MPI block after the ScaLAPACK block without changing the actual
-    dependency set.  Fail closed if upstream changes the expected layout.
+    STRUMPACK 7.1.0 originally links MPI and OpenMP before the numerical
+    archives.  GNU ld scans static archives from left to right, so this leaves
+    ScaLAPACK's MPI references and OpenBLAS's OpenMP references unresolved.
+    Keep ScaLAPACK before MPI, and BLAS before the OpenMP runtime.  Fail closed
+    if upstream changes the expected CMake layout.
     """
     cmake_lists = Path(src) / "CMakeLists.txt"
     if not cmake_lists.is_file():
@@ -1478,7 +1478,8 @@ def patch_strumpack_static_link_order(src: Path) -> bool:
 
     content = read_text(cmake_lists)
     marker = (
-        "# JOREK Build Studio static-link fix: ScaLAPACK may reference MPI symbols."
+        "# JOREK Build Studio static-link fix: preserve ScaLAPACK/MPI "
+        "and OpenBLAS/OpenMP order."
     )
     if marker in content:
         marker_at = content.index(marker)
@@ -1486,55 +1487,99 @@ def patch_strumpack_static_link_order(src: Path) -> bool:
             "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
             marker_at)
         mpi_at = content.find("MPI::MPI_CXX", marker_at)
-        if scalapack_at < 0 or mpi_at < 0 or scalapack_at > mpi_at:
+        blas_at = content.find(
+            "target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})",
+            marker_at)
+        openmp_at = content.find("OpenMP::OpenMP_CXX", marker_at)
+        if (scalapack_at < 0 or mpi_at < 0 or blas_at < 0 or openmp_at < 0
+                or scalapack_at > mpi_at or blas_at > openmp_at):
             raise BuildError(
                 "STRUMPACK static-link patch marker exists, but the "
-                "ScaLAPACK-before-MPI order is not intact")
+                "ScaLAPACK-before-MPI or BLAS-before-OpenMP order is not intact")
         return False
 
     original_mpi = (
-        "if(STRUMPACK_USE_MPI)\n"
-        "  target_link_libraries(strumpack PUBLIC\n"
-        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
-        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
-        "endif()\n"
+        "if(STRUMPACK_USE_MPI)\\n"
+        "  target_link_libraries(strumpack PUBLIC\\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
+        "endif()\\n"
+    )
+    original_openmp = (
+        "if(OpenMP_FOUND)\\n"
+        "  # if(OpenMP_C_FOUND)\\n"
+        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\\n"
+        "  # endif()\\n"
+        "  if(OpenMP_CXX_FOUND)\\n"
+        "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\\n"
+        "  endif()\\n"
+        "  # if(OpenMP_Fortran_FOUND)\\n"
+        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\\n"
+        "  # endif()\\n"
+        "endif()\\n"
     )
     original_scalapack = (
-        "if(STRUMPACK_USE_MPI)\n"
-        "  if(SCALAPACK_FOUND)\n"
-        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
-        "  endif()\n"
-        "endif()\n"
+        "if(STRUMPACK_USE_MPI)\\n"
+        "  if(SCALAPACK_FOUND)\\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
+        "  endif()\\n"
+        "endif()\\n"
     )
-    if content.count(original_mpi) != 1 or content.count(original_scalapack) != 1:
+    original_blas = (
+        "if(BLAS_FOUND)\\n"
+        "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\\n"
+        "endif()\\n"
+    )
+    expected_blocks = (
+        ("MPI", original_mpi),
+        ("OpenMP", original_openmp),
+        ("ScaLAPACK", original_scalapack),
+        ("BLAS", original_blas),
+    )
+    mismatches = [
+        name for name, block in expected_blocks if content.count(block) != 1
+    ]
+    if mismatches:
         raise BuildError(
             "cannot safely patch STRUMPACK %s static link order: expected "
-            "MPI and ScaLAPACK target_link_libraries blocks were not found "
-            "exactly once" % DEPENDENCIES["strumpack"].version)
+            "MPI, OpenMP, ScaLAPACK and BLAS target_link_libraries blocks "
+            "were not found exactly once (mismatched: %s)" %
+            (DEPENDENCIES["strumpack"].version, ", ".join(mismatches)))
 
     content = content.replace(original_mpi, "", 1)
+    content = content.replace(original_openmp, "", 1)
     replacement = (
-        marker + "\n"
-        "if(STRUMPACK_USE_MPI)\n"
-        "  if(SCALAPACK_FOUND)\n"
-        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
-        "  endif()\n"
-        "  target_link_libraries(strumpack PUBLIC\n"
-        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
-        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
-        "endif()\n"
+        marker + "\\n"
+        "if(STRUMPACK_USE_MPI)\\n"
+        "  if(SCALAPACK_FOUND)\\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\\n"
+        "  endif()\\n"
+        "  target_link_libraries(strumpack PUBLIC\\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\\n"
+        "endif()\\n"
     )
     content = content.replace(original_scalapack, replacement, 1)
+    content = content.replace(
+        original_blas, original_blas + "\\n" + original_openmp, 1)
+
     marker_at = content.index(marker)
     scalapack_at = content.find(
         "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
         marker_at)
     mpi_at = content.find("MPI::MPI_CXX", marker_at)
-    if scalapack_at < 0 or mpi_at < 0 or scalapack_at > mpi_at:
-        raise BuildError("failed to establish ScaLAPACK-before-MPI link order")
+    blas_at = content.find(
+        "target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})",
+        marker_at)
+    openmp_at = content.find("OpenMP::OpenMP_CXX", marker_at)
+    if (scalapack_at < 0 or mpi_at < 0 or blas_at < 0 or openmp_at < 0
+            or scalapack_at > mpi_at or blas_at > openmp_at):
+        raise BuildError(
+            "failed to establish ScaLAPACK-before-MPI and "
+            "BLAS-before-OpenMP link order")
+
     write_text(cmake_lists, content)
     return True
-
 
 def verify_strumpack_install_link(
     ctx: BuildContext, dep: Dependency, cmake: str, build_dir: Path,
@@ -1580,7 +1625,7 @@ def verify_strumpack_install_link(
         "int main() { return force_scalapack_reference == nullptr ? 1 : 0; }\n",
     )
 
-    print("  verifying installed STRUMPACK CMake target and static MPI/ScaLAPACK link")
+    print("  verifying installed STRUMPACK CMake target and static MPI/ScaLAPACK/OpenBLAS/OpenMP link")
     env = ctx.build_env(dep)
     mpi_args = [
         "-DMPI_C_COMPILER=%s" % (ctx.prefix / "bin" / "mpicc"),
@@ -1594,7 +1639,7 @@ def verify_strumpack_install_link(
     ] + mpi_args, cwd=source_dir, env=env, log=ctx.log_path(dep.name))
     run([
         cmake, "--build", str(consumer_build),
-        "--target", "strumpack_link_probe", "--parallel", "1",
+        "--target", "strumpack_link_probe", "--parallel", "1", "--verbose",
     ], cwd=source_dir, env=env, log=ctx.log_path(dep.name))
 
 
