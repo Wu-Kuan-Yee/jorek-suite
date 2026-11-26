@@ -122,7 +122,6 @@ class SolverBuild:
         cmake_path = shutil.which("cmake", path=str(self.core / "bin") + os.pathsep + os.environ.get("PATH", ""))
         self.cmake = cmake_path or "cmake"
         self.ar = shutil.which("ar") or "ar"
-        self.libtool = shutil.which("libtool")
 
     def log(self, name: str) -> Path:
         return self.log_dir / ("solver-" + name + ".log")
