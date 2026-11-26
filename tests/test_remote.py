@@ -264,6 +264,15 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("@@JOREK_REMOTE_STARTED@@", command)
         self.assertIn("attach", remote_task_attach_command(PROFILE, task_id, 123))
         self.assertIn("cancel", remote_task_cancel_command(PROFILE, task_id))
+        extended = build_remote_task_command(
+            PROFILE, ["dist"], ["verify"], task_id, heartbeat_timeout=240)
+        self.assertIn("240", extended)
+        with self.assertRaises(ValueError):
+            build_remote_task_command(
+                PROFILE, ["dist"], ["verify"], task_id, heartbeat_timeout=5)
+        invalid_profile = dict(PROFILE, heartbeat_timeout=5)
+        self.assertTrue(any(
+            "heartbeat_timeout" in item for item in validate_profile(invalid_profile)))
         with self.assertRaises(ValueError):
             validate_remote_task_id("../other-task")
 
