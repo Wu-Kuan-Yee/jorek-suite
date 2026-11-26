@@ -2086,6 +2086,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+            self._cancel_requested = True
             self._terminate_process_tree(force=False)
             self.process.waitForFinished(2500)
             if self.process.state() != QProcess.ProcessState.NotRunning:
@@ -2096,6 +2097,10 @@ class MainWindow(QMainWindow):
             save_config(self.config, self.config_path)
         except Exception:
             pass
+        if self.stage_stack:
+            self._finalize_open_stages("cancelled")
+        else:
+            self._close_stage_log_handles()
         if self.task_log:
             self.task_log.close()
             self.task_log = None
