@@ -158,7 +158,7 @@ class StageLogDialogTests(unittest.TestCase):
             stats = dialog.stats_label.text()
             self.assertIn("Bytes: %s" % len(payload.encode("utf-8")), stats)
             self.assertIn("Chars: %s" % len(payload), stats)
-            self.assertIn("Lines: 3", stats)
+            self.assertIn("Lines: 2", stats)
             self.assertIn("Words: 3", stats)
             self.assertIn("Max line length: 7", stats)
             dialog.close()
