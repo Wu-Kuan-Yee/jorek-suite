@@ -12,7 +12,7 @@ import re
 import hashlib
 import shlex
 from pathlib import PurePosixPath
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .remote_supervisor import (
     DEFAULT_HEARTBEAT_TIMEOUT,
@@ -455,12 +455,15 @@ def build_remote_task_command(
     build_args: List[str],
     verify_args: List[str],
     task_id: str,
-    heartbeat_timeout: int = DEFAULT_HEARTBEAT_TIMEOUT,
+    heartbeat_timeout: Optional[int] = None,
 ) -> str:
     """Return the short SSH command that starts a detached supervised build."""
     workload = build_remote_command(profile, build_args, verify_args)
+    timeout = (
+        profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT)
+        if heartbeat_timeout is None else heartbeat_timeout)
     return remote_task_start_command(
-        profile, task_id, workload, heartbeat_timeout=heartbeat_timeout)
+        profile, task_id, workload, heartbeat_timeout=timeout)
 
 
 def scp_arguments(profile: Dict[str, Any], remote_path: str, local_path: str) -> List[str]:
