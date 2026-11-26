@@ -1855,6 +1855,21 @@ def cmd_preflight(args) -> int:
             (", ".join(missing_stages) if missing_stages else "none; all stages are already complete"),
         ]
 
+    def check_solver_integer_abi():
+        features = jorek.FeatureSet()
+        _apply_feature_args(features, args)
+        selected_solver = "all" if build_kind == "full" else getattr(args, "solver", "mumps")
+        if selected_solver in ("pastix5", "pastix6", "all") and features.enabled("int64"):
+            raise BuildError(
+                "the bundled PaStiX 5/6 adapters are currently built with 32-bit "
+                "integer interfaces to match JOREK's default USE_INTSIZE64=0. "
+                "Disable the int64 feature or supply a separately built, ABI-matched "
+                "solver prefix; refusing to mix 64-bit JOREK integers with 32-bit PaStiX.")
+        if selected_solver in ("pastix5", "pastix6", "all"):
+            return ["PaStiX 5/6 and JOREK use compatible 32-bit solver integer interfaces."]
+        return CheckResult("skipped", [
+            "The selected solver backend does not use the bundled PaStiX adapters."])
+
     def check_jorek_source():
         if root:
             required = [root / "jorek2_main.f90", root / "Makefile", root / "models"]
@@ -1886,16 +1901,6 @@ def cmd_preflight(args) -> int:
         if not root:
             return CheckResult("skipped", [
                 "Variant expansion will be checked after the requested JOREK source checkout is fetched."])
-        requested_features = jorek.FeatureSet()
-        _apply_feature_args(requested_features, args)
-        if requested_features.enabled("int64") and (
-                build_kind == "full" or
-                getattr(args, "solver", "mumps") in ("pastix5", "pastix6", "all")):
-            raise BuildError(
-                "the bundled PaStiX 5/6 adapters are currently built with 32-bit "
-                "integer interfaces to match JOREK's default USE_INTSIZE64=0. "
-                "Disable the int64 feature or supply a separately built, ABI-matched "
-                "solver prefix; refusing to mix 64-bit JOREK integers with 32-bit PaStiX.")
         plan_args = copy.copy(args)
         plan_args.root = str(root)
         plan_args.dry_run = True
@@ -2071,6 +2076,8 @@ def cmd_preflight(args) -> int:
                           check_dependency_plan),
         VerificationCheck("solver-plan", "Validate solver build plan", "Solvers",
                           check_solver_plan),
+        VerificationCheck("solver-integer-abi", "Verify solver integer ABI compatibility", "Solvers",
+                          check_solver_integer_abi),
         VerificationCheck("jorek-source", "Validate JOREK source checkout", "JOREK source",
                           check_jorek_source),
         VerificationCheck("feature-roots", "Validate optional feature and external prefixes", "Features",
