@@ -87,7 +87,7 @@ class StageLogDialog(QDialog):
             text = self.decoder.decode(data, final=False)
             if text:
                 cursor = self.editor.textCursor()
-                cursor.movePosition(cursor.MoveOperation.End)
+                cursor.movePosition(QTextCursor.MoveOperation.End)
                 self.editor.setTextCursor(cursor)
                 self.editor.insertPlainText(text)
                 self.editor.ensureCursorVisible()
