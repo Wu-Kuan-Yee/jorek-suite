@@ -417,7 +417,7 @@ class MainWindow(QMainWindow):
             "Optional path to an existing JOREK checkout on the remote host")
         self.remote_python_edit = QLineEdit("python3")
         self.remote_heartbeat_timeout_spin = QSpinBox()
-        self.remote_heartbeat_timeout_spin.setRange(10, 3600)
+        self.remote_heartbeat_timeout_spin.setRange(30, 3600)
         self.remote_heartbeat_timeout_spin.setSingleStep(10)
         self.remote_heartbeat_timeout_spin.setValue(DEFAULT_HEARTBEAT_TIMEOUT)
         self.remote_heartbeat_timeout_spin.setSuffix(" s")
