@@ -97,7 +97,8 @@ class SolverBuild:
                  platform: PlatformInfo, downloader: Downloader,
                  cc: str, cxx: str, fc: str, mpicc: str, mpicxx: str, mpifc: str,
                  log_dir: Path, source_dirs: Optional[dict] = None,
-                 url_overrides: Optional[dict] = None):
+                 url_overrides: Optional[dict] = None,
+                 source_dir: Optional[Path] = None):
         self.prefix = Path(prefix)
         self.core = Path(core_prefix)
         self.work = Path(work)
@@ -113,6 +114,7 @@ class SolverBuild:
         self.log_dir = ensure_dir(log_dir)
         self.source_dirs = source_dirs or {}
         self.url_overrides = url_overrides or {}
+        self.source_dir = Path(source_dir).expanduser() if source_dir else None
         cmake_path = shutil.which("cmake", path=str(self.core / "bin") + os.pathsep + os.environ.get("PATH", ""))
         self.cmake = cmake_path or "cmake"
         self.ar = shutil.which("ar") or "ar"
@@ -134,6 +136,14 @@ class SolverBuild:
             recipe, "filename",
             "%s-%s-%s" % (recipe.name, recipe.version, basename))
         supplied = self.source_dirs.get(directory)
+        if supplied is None and self.source_dir:
+            for candidate in (
+                self.source_dir / ("%s-%s" % (recipe_name, recipe.version)),
+                self.source_dir / recipe_name,
+            ):
+                if candidate.is_dir():
+                    supplied = candidate
+                    break
         if supplied is not None:
             supplied = Path(supplied).expanduser().resolve()
             if not supplied.is_dir():
