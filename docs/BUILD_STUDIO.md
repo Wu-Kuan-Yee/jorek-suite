@@ -128,6 +128,14 @@ full core dependency profile. It requires a working host C and C++ compiler;
 without a host Fortran compiler, the bootstrap attempts to build GCC with
 Fortran support.
 
+PaStiX 6.3.2 is fetched as the pinned `v6.3.2` Git tag with recursive,
+shallow submodules. Its `spm` and `morse_cmake` submodules are required by
+CMake and are checked before configuration. A normal source archive is not
+sufficient for this release. The remote host therefore needs Git in addition
+to the compiler and CMake toolchain. SCOTCH's hand-written Makefile install
+target receives the private toolchain prefix explicitly; it must not attempt
+to write into system directories such as `/usr/local`.
+
 ### Build
 
 Preview the matrix, start a build, verify a generated suite, run a suite, or
