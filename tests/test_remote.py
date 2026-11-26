@@ -284,7 +284,7 @@ class RemoteCommandTests(unittest.TestCase):
         self.assertIn("@@JOREK_BUILD_EVENT@@", command)
         self.assertIn("remote:repository", command)
         self.assertIn("remote:preflight", command)
-        self.assertIn("preflight --for-command dist", command)
+        self.assertIn("preflight --model 502 --for-command dist", command)
         self.assertIn("--expected-commit", command)
         self.assertNotIn("source-audit", command)
         self.assertNotIn("PaStiX 6.3.2 recipe", command)
@@ -304,8 +304,8 @@ class RemoteCommandTests(unittest.TestCase):
              "--solver-prefix", "/scratch/solvers", "--no-build-solvers"],
             ["--work", "/scratch/build", "verify", "--json"],
         )
-        self.assertIn("preflight --for-command full", command)
-        self.assertIn("--solver-prefix /scratch/solvers", command)
+        self.assertIn("preflight --solver-prefix /scratch/solvers", command)
+        self.assertIn("--for-command full", command)
         self.assertIn("--no-build-solvers", command)
 
     @unittest.skipIf(os.name == "nt", "remote command uses a POSIX shell")
