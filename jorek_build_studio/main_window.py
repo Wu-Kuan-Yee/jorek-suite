@@ -1607,6 +1607,8 @@ class MainWindow(QMainWindow):
             except OSError as exc:
                 self._append_overview_output(
                     "\n[Could not write detailed stage log %s: %s]\n" % (stage_id, exc))
+        else:
+            self._append_overview_output(text)
 
     def _consume_process_line(self, line: str) -> None:
         if self.task_log:
@@ -1683,21 +1685,28 @@ class MainWindow(QMainWindow):
             safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", stage_id).strip("-")[:72] or "stage"
             token = hashlib.sha1(stage_id.encode("utf-8")).hexdigest()[:10]
             log_path = self.task_stage_log_dir / (safe + "-" + token + ".log")
-            log_path.parent.mkdir(parents=True, exist_ok=True)
             old_handle = self.stage_log_handles.pop(stage_id, None)
             if old_handle:
                 old_handle.close()
-            handle = log_path.open("w", encoding="utf-8", errors="replace")
-            handle.write("JOREK Build Studio — %s\nCategory: %s\nStage ID: %s\n\n" % (
-                label, category, stage_id))
-            handle.flush()
+            handle = None
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                handle = log_path.open("w", encoding="utf-8", errors="replace")
+                handle.write("JOREK Build Studio — %s\nCategory: %s\nStage ID: %s\n\n" % (
+                    label, category, stage_id))
+                handle.flush()
+            except OSError as exc:
+                log_path = None
+                self._append_overview_output(
+                    "[Warning] Detailed log could not be created for %s: %s\n" % (
+                        label, exc))
             started = datetime.now(timezone.utc)
             record = {
                 "id": stage_id,
                 "label": label,
                 "category": category,
                 "status": "running",
-                "log": str(log_path),
+                "log": str(log_path) if log_path else "",
                 "remote_log_path": str(event.get("log_path") or ""),
                 "started_at": started,
                 "started_monotonic": time.monotonic(),
@@ -1705,7 +1714,8 @@ class MainWindow(QMainWindow):
                 "error": "",
             }
             self.stage_records[stage_id] = record
-            self.stage_log_handles[stage_id] = handle
+            if handle:
+                self.stage_log_handles[stage_id] = handle
             self.stage_stack.append(stage_id)
             self._refresh_stage_table_row(stage_id)
             if not self.stage_elapsed_timer.isActive():
@@ -1776,7 +1786,7 @@ class MainWindow(QMainWindow):
             record.get("category", ""),
             status,
             "%.1f s" % elapsed,
-            Path(record.get("log", "")).name,
+            Path(record["log"]).name if record.get("log") else "(unavailable)",
         ]
         for column, value in enumerate(values):
             item = self.stage_table.item(row, column)
