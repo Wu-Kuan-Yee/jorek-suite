@@ -1594,6 +1594,14 @@ def cmd_full(args) -> int:
     _ensure_jorek_source(args)
     platform = _platform()
     _resolve_static_libc(args, platform)
+    common.emit_build_event(
+        "stage_plan", phase="preparation",
+        stages=[{
+            "id": "dependencies:policy",
+            "label": "Resolve dependency policy",
+            "category": "Dependencies",
+            "log_path": str(Path(args.work) / "logs" / "dependency-policy.log"),
+        }])
     _tracked_stage(
         "dependencies:policy", "Resolve dependency policy", "Dependencies",
         lambda: _wait_for_deps_policy(args),
@@ -1625,6 +1633,14 @@ def cmd_full(args) -> int:
         _ensure_source_deps(core_args)
 
     if not args.no_build_solvers and not args.dep_prefix:
+        common.emit_build_event(
+            "stage_plan", phase="preparation",
+            stages=[{
+                "id": "toolchain:solver-detection",
+                "label": "Detect compiler toolchain for solvers",
+                "category": "Toolchain",
+                "log_path": str(work / "logs" / "solver-toolchain-detection.log"),
+            }])
         cc, cxx, fc, mpifc = _tracked_stage(
             "toolchain:solver-detection", "Detect compiler toolchain for solvers",
             "Toolchain", lambda: _find_compilers(args, platform),
