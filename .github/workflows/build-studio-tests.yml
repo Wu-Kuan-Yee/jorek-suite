@@ -92,12 +92,13 @@ jobs:
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
           sudo mkdir -p /run/sshd
-          sudo /usr/sbin/sshd -D -p 2222 -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitRootLogin=no -o PubkeyAuthentication=yes -o AllowUsers=sshbuild > "$RUNNER_TEMP/sshd.log" 2>&1 &
+          sudo /usr/sbin/sshd -D -e -p 2222 -o ListenAddress=127.0.0.1 -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o PermitRootLogin=no -o PubkeyAuthentication=yes -o AllowUsers=sshbuild > "$RUNNER_TEMP/sshd.log" 2>&1 &
           for attempt in $(seq 1 20); do
-            if ssh-keyscan -p 2222 127.0.0.1 >> "$HOME/.ssh/known_hosts" 2>/dev/null; then break; fi
+            if timeout 1s bash -c 'echo > /dev/tcp/127.0.0.1/2222' 2>/dev/null; then break; fi
             sleep 1
           done
-          ssh -p 2222 -i "$RUNNER_TEMP/jorek-ssh-test" -o IdentitiesOnly=yes -o BatchMode=yes sshbuild@127.0.0.1 true || { cat "$RUNNER_TEMP/sshd.log"; exit 1; }
+          timeout 10s ssh-keyscan -T 2 -p 2222 127.0.0.1 >> "$HOME/.ssh/known_hosts"
+          timeout 10s ssh -p 2222 -i "$RUNNER_TEMP/jorek-ssh-test" -o ConnectTimeout=3 -o IdentitiesOnly=yes -o BatchMode=yes sshbuild@127.0.0.1 true || { cat "$RUNNER_TEMP/sshd.log"; exit 1; }
           echo "JOREK_SSH_TEST_HOST=sshbuild@127.0.0.1" >> "$GITHUB_ENV"
           echo "JOREK_SSH_TEST_PORT=2222" >> "$GITHUB_ENV"
           echo "JOREK_SSH_TEST_KEY=$RUNNER_TEMP/jorek-ssh-test" >> "$GITHUB_ENV"
