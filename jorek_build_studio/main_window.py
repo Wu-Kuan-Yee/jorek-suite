@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
+    QSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -148,9 +148,17 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(page, "Overview")
 
     def _build_configuration_tab(self) -> None:
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        splitter = QSplitter(Qt.Orientation.Vertical, page)
+        # The configuration page contains many controls.  Keeping the whole
+        # page in a scroll area prevents QSplitter from shrinking QFormLayout
+        # rows below their usable height on smaller windows / high-DPI screens.
+        page = QScrollArea(self)
+        page.setWidgetResizable(True)
+        page.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        content = QWidget()
+        outer = QVBoxLayout(content)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
 
         general = QGroupBox("Build configuration")
         form = QFormLayout(general)
@@ -208,15 +216,13 @@ class MainWindow(QMainWindow):
         feature_group = QGroupBox("Compile-time features")
         feature_layout = QGridLayout(feature_group)
         self.feature_container = feature_layout
-        feature_scroll = QScrollArea()
-        feature_scroll.setWidgetResizable(True)
-        feature_scroll.setWidget(feature_group)
-        feature_scroll.setMinimumHeight(150)
         self.model_combo.currentIndexChanged.connect(self._update_model_toggle_controls)
 
         self.family_group = QGroupBox("Model extensions")
         self.family_layout = QGridLayout(self.family_group)
-        self.family_hint = QLabel("Select a single model to configure its model-family extensions.")
+        self.family_hint = QLabel(
+            "Select a single model to configure its model-family extensions."
+        )
         self.family_layout.addWidget(self.family_hint, 0, 0, 1, 3)
 
         parameters = QGroupBox("Hard-coded integer parameters")
@@ -227,8 +233,8 @@ class MainWindow(QMainWindow):
         for editor in (self.param_grid_edit, self.param_max_edit, self.set_params_edit):
             editor.setMaximumHeight(64)
             editor.setPlaceholderText("One NAME=VALUE expression per line")
-        self.param_grid_edit.setPlaceholderText("n_tor=1,3,5\nn_plane=8,16,32")
-        self.param_max_edit.setPlaceholderText("n_tor=17\nn_plane=64")
+        self.param_grid_edit.setPlaceholderText("n_tor=1,3,5\\nn_plane=8,16,32")
+        self.param_max_edit.setPlaceholderText("n_tor=17\\nn_plane=64")
         self.set_params_edit.setPlaceholderText("n_order=5")
         parameter_form.addRow("Cartesian parameter grid", self.param_grid_edit)
         parameter_form.addRow("Maximum-value expansion", self.param_max_edit)
@@ -253,22 +259,12 @@ class MainWindow(QMainWindow):
             self.option_checks[key] = check
             switch_layout.addWidget(check, index // 2, index % 2)
 
-        top = QWidget()
-        top_layout = QVBoxLayout(top)
-        top_layout.setContentsMargins(0, 0, 0, 0)
-        top_layout.addWidget(general)
-        top_layout.addWidget(feature_scroll)
-        top_layout.addWidget(self.family_group)
-        bottom = QWidget()
-        bottom_layout = QVBoxLayout(bottom)
-        bottom_layout.setContentsMargins(0, 0, 0, 0)
-        bottom_layout.addWidget(parameters)
-        bottom_layout.addWidget(switches)
-        splitter.addWidget(top)
-        splitter.addWidget(bottom)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        outer.addWidget(splitter)
+        # Use one page-level scrollbar instead of squeezing two splitter panes.
+        # Each group therefore retains its natural size and remains fully usable.
+        for widget in (general, feature_group, self.family_group, parameters, switches):
+            outer.addWidget(widget)
+        outer.addStretch(1)
+        page.setWidget(content)
         self.tabs.addTab(page, "Configure")
 
     def _build_advanced_tab(self) -> None:
