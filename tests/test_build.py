@@ -104,5 +104,64 @@ class VariantTest(unittest.TestCase):
         self.assertIn("n_plane", spec.overrides)
 
 
+class SourceCompatibilityTests(unittest.TestCase):
+    def test_pastix6_source_explicitly_includes_mpi_header(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "solvers"
+            source.mkdir()
+            ptx = source / "ptx.cpp"
+            ptx.write_text(
+                "#ifdef USE_PASTIX6\\n"
+                "#include <unistd.h>\\n"
+                "#include <iostream>\\n"
+                "#include <string>\\n"
+                "#include <pastix.h>\\n"
+                "#include <spm.h>\\n"
+                "#include <cmath>\\n"
+                "#include <mkl_spblas.h>\\n"
+                "#include <mkl.h>\\n"
+                "void solve() { pastix_task_solve(pastix_data, nrhs, x, spm->n); }\\n"
+                "#endif\\n",
+                encoding="utf-8",
+            )
+            spec = jorek.VariantSpec(
+                name="model600-pastix6",
+                model="600",
+                features=jorek.FeatureSet(solver="pastix6"),
+                params={},
+                toggles={},
+            )
+
+            jorek._apply_source_compatibility_fixes(Path(temporary), spec)
+            patched = ptx.read_text(encoding="utf-8")
+            self.assertEqual(patched.count("#include <mpi.h>"), 1)
+            self.assertLess(
+                patched.index("#include <mpi.h>"),
+                patched.index("#include <pastix.h>"))
+            self.assertNotIn("#include <mkl_spblas.h>", patched)
+            self.assertNotIn("#include <mkl.h>", patched)
+            self.assertIn(
+                "pastix_task_solve(pastix_data, spm->n, nrhs, x, spm->n);",
+                patched)
+
+            jorek._apply_source_compatibility_fixes(Path(temporary), spec)
+            self.assertEqual(
+                ptx.read_text(encoding="utf-8").count("#include <mpi.h>"), 1)
+
+    def test_source_compatibility_revision_invalidates_variant_source_cache(self) -> None:
+        spec = jorek.VariantSpec(
+            name="model600-all",
+            model="600",
+            features=jorek.FeatureSet(solver="all"),
+            params={},
+            toggles={},
+        )
+        original_key = spec.build_key()
+        with patch.object(
+                jorek, "SOURCE_COMPATIBILITY_REVISION",
+                jorek.SOURCE_COMPATIBILITY_REVISION + 1):
+            self.assertNotEqual(original_key, spec.build_key())
+
+
 if __name__ == "__main__":
     unittest.main()
