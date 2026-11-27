@@ -111,17 +111,17 @@ class SourceCompatibilityTests(unittest.TestCase):
             source.mkdir()
             ptx = source / "ptx.cpp"
             ptx.write_text(
-                "#ifdef USE_PASTIX6\\n"
-                "#include <unistd.h>\\n"
-                "#include <iostream>\\n"
-                "#include <string>\\n"
-                "#include <pastix.h>\\n"
-                "#include <spm.h>\\n"
-                "#include <cmath>\\n"
-                "#include <mkl_spblas.h>\\n"
-                "#include <mkl.h>\\n"
-                "void solve() { pastix_task_solve(pastix_data, nrhs, x, spm->n); }\\n"
-                "#endif\\n",
+                "#ifdef USE_PASTIX6\n"
+                "#include <unistd.h>\n"
+                "#include <iostream>\n"
+                "#include <string>\n"
+                "#include <pastix.h>\n"
+                "#include <spm.h>\n"
+                "#include <cmath>\n"
+                "#include <mkl_spblas.h>\n"
+                "#include <mkl.h>\n"
+                "void solve() { pastix_task_solve(pastix_data, nrhs, x, spm->n); }\n"
+                "#endif\n",
                 encoding="utf-8",
             )
             spec = jorek.VariantSpec(
