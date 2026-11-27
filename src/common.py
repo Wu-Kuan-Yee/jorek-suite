@@ -150,7 +150,12 @@ def run(
     if env:
         full_env.update({str(k): str(v) for k, v in env.items()})
     quiet = bool(env.get("JOREK_QUIET"))
-    if echo and not quiet:
+    # Build Studio's per-stage transcript must contain the complete merged
+    # stdout/stderr stream even when a CLI caller requested quiet output or
+    # passed echo=False.  Keep ordinary command-line quiet semantics unchanged.
+    studio_mode = full_env.get("JOREK_BUILD_STUDIO_EVENTS") == "1"
+    stream_output = studio_mode or (echo and not quiet)
+    if stream_output:
         print("  + " + _display_argv(argv), flush=True)
 
     log_handle = None
@@ -191,7 +196,7 @@ def run(
             if log_handle:
                 log_handle.write(chunk)
                 log_handle.flush()
-            if echo and not quiet:
+            if stream_output:
                 if binary_stdout is not None:
                     binary_stdout.write(chunk)
                     binary_stdout.flush()
@@ -202,7 +207,7 @@ def run(
                         sys.stdout.flush()
 
         tail = decoder.decode(b"", final=True) if binary_stdout is None else ""
-        if echo and not quiet and tail:
+        if stream_output and tail:
             sys.stdout.write(tail)
             sys.stdout.flush()
         returncode = proc.wait()
@@ -228,14 +233,29 @@ def run(
     return result
 
 def output(argv: Sequence[str], cwd: Optional[Path] = None, env: Optional[Dict[str, str]] = None) -> str:
+    command = [str(x) for x in argv]
+    full_env = {**os.environ, **(env or {})}
+    studio_mode = full_env.get("JOREK_BUILD_STUDIO_EVENTS") == "1"
     proc = subprocess.run(
-        [str(x) for x in argv],
+        command,
         cwd=str(cwd) if cwd else None,
-        env={**os.environ, **(env or {})},
+        env=full_env,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE if studio_mode else subprocess.DEVNULL,
         check=False,
     )
+    if studio_mode:
+        print("  + " + _display_argv(command), flush=True)
+        binary_stdout = getattr(sys.stdout, "buffer", None)
+        for payload in (proc.stdout, proc.stderr):
+            if not payload:
+                continue
+            if binary_stdout is not None:
+                binary_stdout.write(payload)
+                binary_stdout.flush()
+            else:
+                sys.stdout.write(payload.decode("utf-8", "replace"))
+                sys.stdout.flush()
     return proc.stdout.decode("utf-8", "replace").strip()
 
 

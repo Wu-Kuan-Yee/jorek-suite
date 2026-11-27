@@ -14,7 +14,9 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from common import BUILD_EVENT_PREFIX, emit_build_event, run
+from common import BUILD_EVENT_PREFIX, emit_build_event, output as command_output, run
+from suite import _run as suite_run
+from jorek import _captured_run
 
 
 class BuildEventTests(unittest.TestCase):
@@ -38,6 +40,65 @@ class BuildEventTests(unittest.TestCase):
             with contextlib.redirect_stdout(output):
                 emit_build_event("stage_start", id="hidden")
         self.assertEqual(output.getvalue(), "")
+
+    def test_build_studio_streams_complete_output_even_in_quiet_mode(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('quiet-stdout', flush=True); "
+            "print('quiet-stderr', file=sys.stderr, flush=True)",
+        ]
+        with patch.dict(os.environ, {
+            "JOREK_BUILD_STUDIO_EVENTS": "1",
+            "JOREK_QUIET": "1",
+        }):
+            with contextlib.redirect_stdout(output):
+                result = run(command, echo=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("quiet-stdout", output.getvalue())
+        self.assertIn("quiet-stderr", output.getvalue())
+
+    def test_jorek_verification_probes_stream_captured_output(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('probe-stdout'); "
+            "print('probe-stderr', file=sys.stderr)",
+        ]
+        with patch.dict(os.environ, {"JOREK_BUILD_STUDIO_EVENTS": "1"}):
+            with contextlib.redirect_stdout(output):
+                result = _captured_run(command)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.replace(b"\r\n", b"\n"), b"probe-stdout\n")
+        self.assertIn("probe-stdout", output.getvalue())
+        self.assertIn("probe-stderr", output.getvalue())
+
+    def test_captured_tool_output_is_logged_without_changing_return_value(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('captured-stdout'); "
+            "print('captured-stderr', file=sys.stderr)",
+        ]
+        with patch.dict(os.environ, {"JOREK_BUILD_STUDIO_EVENTS": "1"}):
+            with contextlib.redirect_stdout(output):
+                returned = command_output(command)
+        self.assertEqual(returned, "captured-stdout")
+        self.assertIn("captured-stdout", output.getvalue())
+        self.assertIn("captured-stderr", output.getvalue())
+
+    def test_suite_packaging_commands_stream_output_in_build_studio(self):
+        output = io.StringIO()
+        command = [
+            sys.executable, "-c",
+            "import sys; print('packaging-stdout', flush=True); "
+            "print('packaging-stderr', file=sys.stderr, flush=True)",
+        ]
+        with patch.dict(os.environ, {"JOREK_BUILD_STUDIO_EVENTS": "1"}):
+            with contextlib.redirect_stdout(output):
+                suite_run(command)
+        self.assertIn("packaging-stdout", output.getvalue())
+        self.assertIn("packaging-stderr", output.getvalue())
 
     def test_run_streams_merged_output_and_writes_complete_log(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -67,6 +67,21 @@ PaStiX 5 and PaStiX 6 cannot be combined.  MUMPS, PaStiX 6, and STRUMPACK can
 coexist in one executable; JOREK selects the backend from the input namelist
 (`use_mumps`, `use_pastix`, `use_strumpack`).
 
+## Source compatibility fixes
+
+The builder stages a private copy of the JOREK source tree and applies narrowly
+scoped compatibility fixes before compiling it. These fixes are versioned as
+part of each variant's source-cache key, so changing a fix automatically
+invalidates an older staged source tree.
+
+For PaStiX 6 builds, the staged `solvers/ptx.cpp` explicitly includes
+`<mpi.h>`. That translation unit uses `MPI_Fint`, `MPI_Comm`,
+`MPI_Comm_rank`, and `MPI_Allreduce` directly; it must not rely on
+PaStiX/SPM headers to expose MPI declarations transitively. The MPI include
+directory is supplied by the generated `Makefile.inc`. The same compatibility
+step removes MKL-only headers when using the OpenBLAS dependency stack and
+adapts the PaStiX 6.3 `pastix_task_solve` signature.
+
 ## Hard-coded parameters
 
 The following parameters are rewritten in `models/mod_settings.f90`:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import codecs
 import hashlib
 import json
 import os
@@ -12,12 +14,13 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QTextCursor
+from PySide6.QtGui import QColor, QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
@@ -37,9 +40,14 @@ from .config import (
 from .legacy import import_legacy_text
 from .stage_logs import StageLogDialog
 from .remote import (
-    RemoteProfileError, build_remote_command, connection_test_command,
+    RemoteProfileError, build_remote_command, build_remote_task_command, connection_test_command,
     parse_remote_overrides, remote_artifact_path, remote_repo_path,
     scp_arguments, ssh_arguments, validate_connection_profile, validate_profile,
+)
+from .remote_supervisor import (
+    DEFAULT_HEARTBEAT_TIMEOUT, HEARTBEAT_INTERVAL,
+    REMOTE_DATA_PREFIX, REMOTE_STARTED_PREFIX, REMOTE_TASK_PREFIX,
+    remote_task_attach_command, remote_task_cancel_command,
 )
 
 
@@ -105,6 +113,23 @@ class MainWindow(QMainWindow):
         self.current_phase = ""
         self._cancel_requested = False
         self._stage_view_auto_selected = False
+        self.remote_task_id = ""
+        self.remote_task_profile: Optional[Dict[str, Any]] = None
+        self.remote_task_terminal = False
+        self.remote_task_result: Dict[str, Any] = {}
+        self.remote_task_started_at: Optional[datetime] = None
+        self.remote_task_metadata_file: Optional[Path] = None
+        self.remote_task_log_path: Optional[Path] = None
+        self.remote_log_offset = 0
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.remote_stream_buffer = ""
+        self.remote_reconnect_delay = 5
+        self.remote_reconnect_timer = QTimer(self)
+        self.remote_reconnect_timer.setSingleShot(True)
+        self.remote_reconnect_timer.timeout.connect(self._reconnect_remote_task)
+        self.remote_heartbeat_timer = QTimer(self)
+        self.remote_heartbeat_timer.setInterval(HEARTBEAT_INTERVAL * 1000)
+        self.remote_heartbeat_timer.timeout.connect(self._send_remote_heartbeat)
         self.stage_elapsed_timer = QTimer(self)
         self.stage_elapsed_timer.setInterval(1000)
         self.stage_elapsed_timer.timeout.connect(self._refresh_running_stage_rows)
@@ -124,6 +149,7 @@ class MainWindow(QMainWindow):
         self.refresh_catalog(show_message=False)
         self.refresh_history()
         self._load_remote_profiles()
+        QTimer.singleShot(0, self._offer_remote_task_recovery)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -390,6 +416,11 @@ class MainWindow(QMainWindow):
         self.remote_jorek_root_edit.setPlaceholderText(
             "Optional path to an existing JOREK checkout on the remote host")
         self.remote_python_edit = QLineEdit("python3")
+        self.remote_heartbeat_timeout_spin = QSpinBox()
+        self.remote_heartbeat_timeout_spin.setRange(30, 3600)
+        self.remote_heartbeat_timeout_spin.setSingleStep(10)
+        self.remote_heartbeat_timeout_spin.setValue(DEFAULT_HEARTBEAT_TIMEOUT)
+        self.remote_heartbeat_timeout_spin.setSuffix(" s")
         self.remote_repo_url_edit = QLineEdit(
             "https://github.com/Wu-Kuan-Yee/jorek-suite.git")
         self.remote_branch_edit = QLineEdit(
@@ -417,9 +448,16 @@ class MainWindow(QMainWindow):
         form.addRow("Remote build work directory", self.remote_work_edit)
         form.addRow("Remote JOREK source (optional)", self.remote_jorek_root_edit)
         form.addRow("Remote Python executable", self.remote_python_edit)
+        form.addRow("Disconnect grace period", self.remote_heartbeat_timeout_spin)
         form.addRow("jorek-suite repository URL", self.remote_repo_url_edit)
         form.addRow("Repository branch", self.remote_branch_edit)
-        form.addRow("Pinned repository commit", self.remote_commit_edit)
+        commit_row = QWidget(group)
+        commit_layout = QHBoxLayout(commit_row)
+        commit_layout.setContentsMargins(0, 0, 0, 0)
+        commit_layout.addWidget(self.remote_commit_edit, 1)
+        commit_layout.addWidget(_button(
+            "Use local HEAD", self._set_remote_commit_to_local_head, commit_row))
+        form.addRow("Pinned repository commit", commit_row)
         form.addRow("Local artifact directory", _path_row(
             self.remote_artifact_dir_edit, lambda: self._browse_directory_for(
                 self.remote_artifact_dir_edit, "Select artifact directory"), group))
@@ -436,7 +474,15 @@ class MainWindow(QMainWindow):
             "reused remotely; enter remote-specific compiler and prefix paths in "
             "the JSON override field. Supported keys include cc, cxx, fc, "
             "toolchain_prefix, mpi_prefix, solver_prefix, source_dir, imas_root, "
-            "catalyst_root and dep_prefixes.")
+            "catalyst_root and dep_prefixes. The GUI sends a heartbeat every 15 seconds; "
+            "the configurable disconnect grace period defaults to 120 seconds. If the "
+            "connection is not restored before it expires, the remote supervisor stops "
+            "the build process group. Remote builds use the exact pinned commit and do "
+            "not automatically follow later branch updates. After updating this local "
+            "checkout, use 'Use local HEAD' and save the profile. A generic preflight "
+            "then validates the complete build plan: repository revision, configuration, "
+            "dependency graph and recipes, solver sources, JOREK models, variant matrix, "
+            "toolchain and writable build locations before compilation starts.")
         note.setWordWrap(True)
         outer.addWidget(note)
 
@@ -477,6 +523,18 @@ class MainWindow(QMainWindow):
         except (OSError, subprocess.TimeoutExpired):
             return ""
 
+    def _set_remote_commit_to_local_head(self) -> None:
+        commit = self._local_git_commit()
+        if not commit:
+            QMessageBox.warning(
+                self, APP_TITLE,
+                "Cannot determine the local jorek-suite Git commit. "
+                "Open Build Studio from a Git checkout or enter a full commit SHA manually.")
+            return
+        self.remote_commit_edit.setText(commit)
+        self.statusBar().showMessage(
+            "Remote build pinned to local HEAD %s" % commit[:12], 7000)
+
     def _remote_profile_from_widgets(self) -> Dict[str, Any]:
         return {
             "name": self.remote_name_edit.text().strip(),
@@ -487,6 +545,7 @@ class MainWindow(QMainWindow):
             "remote_work": self.remote_work_edit.text().strip(),
             "remote_jorek_root": self.remote_jorek_root_edit.text().strip(),
             "python": self.remote_python_edit.text().strip() or "python3",
+            "heartbeat_timeout": self.remote_heartbeat_timeout_spin.value(),
             "repo_url": self.remote_repo_url_edit.text().strip(),
             "branch": self.remote_branch_edit.text().strip(),
             "commit": self.remote_commit_edit.text().strip(),
@@ -508,6 +567,8 @@ class MainWindow(QMainWindow):
         self.remote_work_edit.setText(str(profile.get("remote_work", "/tmp/jorek-build-work")))
         self.remote_jorek_root_edit.setText(str(profile.get("remote_jorek_root", "")))
         self.remote_python_edit.setText(str(profile.get("python", "python3")))
+        self.remote_heartbeat_timeout_spin.setValue(
+            int(profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT)))
         self.remote_repo_url_edit.setText(str(profile.get("repo_url", "")))
         self.remote_branch_edit.setText(str(profile.get("branch", "")))
         self.remote_commit_edit.setText(str(profile.get("commit", "")))
@@ -647,7 +708,12 @@ class MainWindow(QMainWindow):
         try:
             build_args = build_arguments(remote_cfg, action)
             verify_args = build_arguments(remote_cfg, "verify")
-            remote_command = build_remote_command(profile, build_args, verify_args)
+            task_id = uuid.uuid4().hex
+            heartbeat_timeout = int(
+                profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT))
+            remote_command = build_remote_task_command(
+                profile, build_args, verify_args, task_id,
+                heartbeat_timeout=heartbeat_timeout)
             remote_artifact = remote_artifact_path(profile)
             local_dir = Path(profile["artifact_dir"]).expanduser()
             safe_name = re.sub(
@@ -669,6 +735,8 @@ class MainWindow(QMainWindow):
             "build_args": build_args,
             "verify_args": verify_args,
             "remote_command": remote_command,
+            "task_id": task_id,
+            "heartbeat_timeout": heartbeat_timeout,
             "remote_artifact": remote_artifact,
             "local_artifact": local_artifact,
             "local_dir": local_dir,
@@ -698,6 +766,16 @@ class MainWindow(QMainWindow):
             "remote_jorek_source": profile.get("remote_jorek_root", "") or
                 "(fetch JOREK source automatically)",
             "remote_python": profile.get("python", "python3"),
+            "remote_task_id": plan["task_id"],
+            "remote_supervisor_directory": str(
+                PurePosixPath(profile["remote_root"]) / ".jorek-build-studio" / "tasks"),
+            "heartbeat_interval_seconds": HEARTBEAT_INTERVAL,
+            "disconnect_grace_period_seconds": plan["heartbeat_timeout"],
+            "disconnect_policy": (
+                "The detached remote supervisor terminates the complete build process "
+                "group if no GUI heartbeat is received within %d seconds." %
+                plan["heartbeat_timeout"]
+            ),
             "remote_artifact_staging_path": plan["remote_artifact"],
             "local_artifact_path": str(plan["local_artifact"]),
             "ssh_command": shlex.join([plan["ssh"]] + plan["ssh_args"]),
@@ -775,6 +853,21 @@ class MainWindow(QMainWindow):
         plan = self._prepare_remote_build_plan()
         if plan is None:
             return
+        pinned_commit = str(plan["profile"].get("commit") or "").lower()
+        local_head = self._local_git_commit().lower()
+        if local_head and pinned_commit and local_head != pinned_commit:
+            answer = QMessageBox.question(
+                self, APP_TITLE,
+                "The remote profile is pinned to %s, but this local checkout is at %s.\n\n"
+                "The remote host will build the pinned commit, not the local HEAD. "
+                "Use 'Use local HEAD' in the Remote tab and save the profile if you "
+                "want the updated builder. Continue with the older/different pin?" %
+                (pinned_commit, local_head),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         self.remote_preview.setPlainText(plan["remote_command"])
         if not self._show_remote_build_preview(plan, confirm_build=True):
             return
@@ -783,14 +876,254 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, APP_TITLE, "Cannot create artifact directory:\n%s" % exc)
             return
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            QMessageBox.warning(self, APP_TITLE, "A task is already running.")
+            return
         self.remote_artifact_path = plan["remote_artifact"]
         self.remote_ssh_executable = plan["ssh"]
+        self.remote_scp_executable = plan["scp"]
         self.remote_cleanup_args = plan["cleanup_args"]
         self.remote_download_args = plan["download_args"]
         self.remote_local_artifact = plan["local_artifact"]
+        self.remote_task_id = plan["task_id"]
+        self.remote_task_profile = dict(plan["profile"])
+        self.remote_task_terminal = False
+        self.remote_task_result = {}
+        self.remote_task_started_at = datetime.now(timezone.utc)
+        self.remote_log_offset = 0
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.remote_stream_buffer = ""
+        self.remote_task_log_path = None
+        self.remote_reconnect_delay = 5
+        metadata_dir = self.config_path.parent / "logs"
+        self.remote_task_metadata_file = (
+            metadata_dir / ("remote-task-%s.json" % self.remote_task_id))
+        # The GUI runs one task at a time. Retire stale recovery records from
+        # previously completed tasks before registering this new task.
+        try:
+            metadata_dir.mkdir(parents=True, exist_ok=True)
+            for stale in metadata_dir.glob("remote-task-*.json"):
+                if stale != self.remote_task_metadata_file:
+                    stale.unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.task_kind = ""
         self._start_external_process(
-            plan["ssh"], plan["ssh_args"], "remote-build")
+            plan["ssh"], plan["ssh_args"], "remote-start")
+        if self.task_kind == "remote-start" and self.task_stage_log_dir is not None:
+            self._save_remote_task_metadata()
+        else:
+            self.remote_task_id = ""
+            self.remote_task_profile = None
+            self.remote_task_metadata_file = None
 
+
+    def _save_remote_task_metadata(self) -> None:
+        path = self.remote_task_metadata_file
+        if path is None or not self.remote_task_id or not self.remote_task_profile:
+            return
+        payload = {
+            "task_id": self.remote_task_id,
+            "profile": self.remote_task_profile,
+            "started_at": (
+                self.remote_task_started_at.isoformat()
+                if self.remote_task_started_at else datetime.now(timezone.utc).isoformat()),
+            "remote_artifact": str(getattr(self, "remote_artifact_path", "")),
+            "local_artifact": str(getattr(self, "remote_local_artifact", "")),
+            "heartbeat_timeout": int(
+                self.remote_task_profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT)),
+        }
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            if os.name != "nt":
+                os.chmod(temporary, 0o600)
+            os.replace(temporary, path)
+        except OSError as exc:
+            self._append_overview_output(
+                "[Warning] Remote task recovery metadata could not be saved: %s\n" % exc)
+
+    def _clear_remote_task_metadata(self) -> None:
+        path = self.remote_task_metadata_file
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self.remote_task_metadata_file = None
+
+    def _send_remote_cancel_out_of_band(self) -> bool:
+        if not self.remote_task_id or not self.remote_task_profile:
+            return False
+        ssh = getattr(self, "remote_ssh_executable", None) or shutil.which("ssh")
+        if not ssh:
+            return False
+        try:
+            command = remote_task_cancel_command(
+                self.remote_task_profile, self.remote_task_id)
+            args = ssh_arguments(self.remote_task_profile, command)
+            options = {
+                "stdin": subprocess.DEVNULL,
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "close_fds": True,
+            }
+            if os.name != "nt":
+                options["start_new_session"] = True
+            subprocess.Popen([ssh] + args, **options)
+            return True
+        except (OSError, ValueError, RemoteProfileError):
+            return False
+
+    def _start_remote_attach(self) -> None:
+        if (not self.remote_task_id or not self.remote_task_profile or
+                self.remote_task_terminal):
+            return
+        if self.process.state() != QProcess.ProcessState.NotRunning:
+            return
+        ssh = getattr(self, "remote_ssh_executable", None) or shutil.which("ssh")
+        if not ssh:
+            self._schedule_remote_reconnect()
+            return
+        try:
+            command = remote_task_attach_command(
+                self.remote_task_profile, self.remote_task_id, self.remote_log_offset)
+            args = ssh_arguments(self.remote_task_profile, command)
+        except (ValueError, RemoteProfileError) as exc:
+            self._append_overview_output(
+                "[Remote reconnect] Could not prepare SSH attach: %s\n" % exc)
+            self._schedule_remote_reconnect()
+            return
+        self.remote_ssh_executable = ssh
+        self._start_external_process(ssh, args, "remote-attach")
+        if self.process.state() == QProcess.ProcessState.Running:
+            self.remote_heartbeat_timer.start()
+            if self._cancel_requested:
+                QTimer.singleShot(500, self._send_remote_cancel_on_attach)
+
+    def _send_remote_cancel_on_attach(self) -> None:
+        if (self.task_kind == "remote-attach" and
+                self.process.state() == QProcess.ProcessState.Running):
+            self.process.write(b"CANCEL\n")
+
+    def _send_remote_heartbeat(self) -> None:
+        if (self.task_kind == "remote-attach" and
+                self.process.state() == QProcess.ProcessState.Running):
+            self.process.write(b"\n")
+
+    def _schedule_remote_reconnect(self) -> None:
+        if self.remote_task_terminal or not self.remote_task_id:
+            return
+        if not self.remote_reconnect_timer.isActive():
+            delay = max(1, int(self.remote_reconnect_delay))
+            self.task_label.setText("Remote disconnected — reconnecting")
+            self.statusBar().showMessage(
+                "SSH connection lost; retrying in %d seconds. The remote supervisor "
+                "will terminate the build if heartbeats are absent for %d seconds." %
+                (delay, int(self.remote_task_profile.get(
+                    "heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT))))
+            self.remote_reconnect_timer.start(delay * 1000)
+            # Keep retry intervals short enough to reconnect before the
+            # supervisor's 120-second lease expires.
+            self.remote_reconnect_delay = min(15, delay * 2)
+
+    def _reconnect_remote_task(self) -> None:
+        if self.remote_task_terminal or not self.remote_task_id:
+            return
+        if self.process.state() == QProcess.ProcessState.NotRunning:
+            self._start_remote_attach()
+
+    def _offer_remote_task_recovery(self) -> None:
+        log_dir = self.config_path.parent / "logs"
+        try:
+            pending = sorted(
+                log_dir.glob("remote-task-*.json"),
+                key=lambda item: item.stat().st_mtime if item.exists() else 0,
+                reverse=True,
+            )
+        except OSError:
+            return
+        if not pending:
+            return
+        path = pending[-1]
+        try:
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(metadata, dict):
+            return
+        task_id = str(metadata.get("task_id", ""))
+        profile = metadata.get("profile")
+        if not task_id or not isinstance(profile, dict):
+            return
+        answer = QMessageBox.question(
+            self, APP_TITLE,
+            "A remote build task was active when JOREK Build Studio last closed.\n\n"
+            "Task ID: %s\nRemote host: %s\n\n"
+            "Resume monitoring and recover its logs? If you choose No, Build Studio "
+            "will request cancellation; if that cannot reach the host, the remote "
+            "%d-second heartbeat timeout will still stop the task." %
+            (task_id, profile.get("destination", "unknown"),
+             int(profile.get("heartbeat_timeout", DEFAULT_HEARTBEAT_TIMEOUT))),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        self.remote_task_metadata_file = path
+        self.remote_task_id = task_id
+        self.remote_task_profile = dict(profile)
+        self.remote_task_terminal = False
+        self.remote_task_result = {}
+        try:
+            self.remote_task_started_at = datetime.fromisoformat(
+                str(metadata.get("started_at", "")))
+        except ValueError:
+            self.remote_task_started_at = datetime.now(timezone.utc)
+        self.remote_artifact_path = str(metadata.get("remote_artifact", ""))
+        self.remote_local_artifact = Path(
+            str(metadata.get("local_artifact", "")))
+        self.remote_ssh_executable = shutil.which("ssh")
+        self.remote_scp_executable = shutil.which("scp")
+        if self.remote_scp_executable and self.remote_artifact_path:
+            self.remote_download_args = scp_arguments(
+                self.remote_task_profile, self.remote_artifact_path,
+                str(self.remote_local_artifact))
+        else:
+            self.remote_download_args = None
+        if self.remote_artifact_path:
+            self.remote_cleanup_args = ssh_arguments(
+                self.remote_task_profile,
+                "rm -f " + shlex.quote(self.remote_artifact_path))
+        self.remote_log_offset = 0
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.remote_stream_buffer = ""
+        self.remote_task_log_path = None
+        self.remote_reconnect_delay = 5
+        self._cancel_requested = False
+        self._close_stage_log_handles()
+        self.stage_records = {}
+        self.stage_stack = []
+        self.stage_table.setRowCount(0)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        self.task_stage_log_dir = log_dir / (stamp + "-remote-recovered-stages")
+        self.task_stage_log_dir.mkdir(parents=True, exist_ok=True)
+        self.tabs.setCurrentWidget(self.build_page)
+        if answer == QMessageBox.StandardButton.Yes:
+            if not self.remote_ssh_executable:
+                QMessageBox.warning(self, APP_TITLE, "OpenSSH ssh was not found in PATH.")
+                self._schedule_remote_reconnect()
+                return
+            self._save_remote_task_metadata()
+            self._start_remote_attach()
+        else:
+            self._send_remote_cancel_out_of_band()
+            self._clear_remote_task_metadata()
+            self.remote_task_id = ""
+            self.remote_task_profile = None
 
     def _build_dependencies_tab(self) -> None:
         page = QWidget()
@@ -888,8 +1221,9 @@ class MainWindow(QMainWindow):
         details_layout = QVBoxLayout(details_page)
         detail_actions = QHBoxLayout()
         detail_actions.addWidget(QLabel(
-            "Each dependency, JOREK variant and packaging stage has its own log. "
-            "Double-click a row to follow or reopen it."))
+            "Double-click a completed or running row to open its full log. "
+            "Status: ✓ completed  ● running  ○ waiting  ✕ failed. "
+            "Waiting stages are shown in grey and cannot be opened yet."))
         detail_actions.addStretch(1)
         detail_actions.addWidget(_button(
             "Open selected log", self._open_selected_stage_log, details_page))
@@ -1539,12 +1873,23 @@ class MainWindow(QMainWindow):
             return
 
         log_dir = self.config_path.parent / "logs"
-        preserve_stages = kind in ("remote-download", "remote-cleanup")
+        preserve_stages = kind in (
+            "remote-download", "remote-cleanup", "remote-attach")
+        reuse_remote_log = (
+            kind == "remote-attach" and self.remote_task_log_path is not None)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            self.task_log_path = log_dir / ("%s-%s.log" % (stamp, kind))
-            self.task_log = self.task_log_path.open("w", encoding="utf-8", errors="replace")
+            if reuse_remote_log:
+                self.task_log_path = self.remote_task_log_path
+                self.task_log = self.task_log_path.open(
+                    "a", encoding="utf-8", errors="replace")
+            else:
+                self.task_log_path = log_dir / ("%s-%s.log" % (stamp, kind))
+                self.task_log = self.task_log_path.open(
+                    "w", encoding="utf-8", errors="replace")
+                if kind == "remote-attach":
+                    self.remote_task_log_path = self.task_log_path
             if not preserve_stages:
                 self._close_stage_log_handles()
                 self.stage_records = {}
@@ -1552,23 +1897,33 @@ class MainWindow(QMainWindow):
                 self.stage_table.setRowCount(0)
                 self.task_stage_log_dir = log_dir / ("%s-%s-stages" % (stamp, kind))
                 self.task_stage_log_dir.mkdir(parents=True, exist_ok=True)
+            elif self.task_stage_log_dir is None:
+                self.task_stage_log_dir = log_dir / ("%s-%s-stages" % (stamp, kind))
+                self.task_stage_log_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             QMessageBox.critical(self, APP_TITLE, "Cannot create task log:\n%s" % exc)
             return
 
-        self.task_output = ""
+        if kind != "remote-attach":
+            self.task_output = ""
         self.task_kind = kind
-        self.task_started_at = datetime.now(timezone.utc)
+        self.task_started_at = (
+            self.remote_task_started_at or datetime.now(timezone.utc)
+            if kind == "remote-attach" else datetime.now(timezone.utc))
         self.current_command = [str(program)] + list(args)
         self.process_output_buffer = ""
-        self._cancel_requested = False
+        if kind != "remote-attach":
+            self._cancel_requested = False
         if not preserve_stages:
             self._stage_view_auto_selected = False
         self.log_view.clear()
         self.log_view.appendPlainText("$ " + " ".join(
             shlex.quote(part) for part in self.current_command))
-        self.task_label.setText("Running: " + kind)
-        if kind in ("build", "dependencies", "bootstrap", "remote-build"):
+        self.task_label.setText(
+            "Reconnecting to remote task" if kind == "remote-attach" and self.remote_log_offset
+            else "Connecting to remote task" if kind == "remote-attach"
+            else "Running: " + kind)
+        if kind in ("build", "dependencies", "bootstrap", "remote-start", "remote-attach"):
             self.tabs.setCurrentWidget(self.build_page)
         self.log_path_label.setText(str(self.task_log_path))
         self.statusBar().showMessage("Running %s…" % kind)
@@ -1590,6 +1945,9 @@ class MainWindow(QMainWindow):
             self.process.setProgram(sys.executable)
             self.process.setArguments(["-c", runner, str(program)] + list(args))
         self.process.start()
+        if kind == "remote-attach":
+            self.remote_reconnect_timer.stop()
+            self.remote_heartbeat_timer.start()
 
     def _append_overview_output(self, text: str) -> None:
         if not text:
@@ -1620,6 +1978,14 @@ class MainWindow(QMainWindow):
             self.task_log.flush()
 
         stripped = line.rstrip("\r\n")
+        if stripped.startswith(REMOTE_STARTED_PREFIX):
+            try:
+                started = json.loads(stripped[len(REMOTE_STARTED_PREFIX):])
+                self.remote_task_id = str(started.get("task_id") or self.remote_task_id)
+                self._save_remote_task_metadata()
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                self._append_overview_output(line)
+            return
         prefix = "@@JOREK_BUILD_EVENT@@"
         if stripped.startswith(prefix):
             try:
@@ -1640,14 +2006,66 @@ class MainWindow(QMainWindow):
         else:
             self._append_overview_output(line)
 
+    def _consume_remote_task_bytes(self, data: bytes) -> None:
+        decoded = self.remote_log_decoder.decode(data, final=False)
+        self.remote_stream_buffer += decoded
+        while "\n" in self.remote_stream_buffer:
+            line, self.remote_stream_buffer = self.remote_stream_buffer.split("\n", 1)
+            self._consume_process_line(line + "\n")
+
+    def _flush_remote_task_stream(self) -> None:
+        tail = self.remote_log_decoder.decode(b"", final=True)
+        self.remote_stream_buffer += tail
+        self.remote_log_decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        if self.remote_stream_buffer:
+            self._consume_process_line(self.remote_stream_buffer)
+            self.remote_stream_buffer = ""
+
     def _read_process_output(self) -> None:
         data = bytes(self.process.readAllStandardOutput())
         if not data:
             return
-        self.process_output_buffer += data.decode("utf-8", "replace")
+        if self.task_kind != "remote-attach":
+            self.process_output_buffer += data.decode("utf-8", "replace")
+            while "\n" in self.process_output_buffer:
+                line, self.process_output_buffer = self.process_output_buffer.split("\n", 1)
+                self._consume_process_line(line + "\n")
+            return
+
+        # The remote attach protocol frames binary log chunks as base64 lines.
+        # A complete frame advances the durable byte offset; an interrupted
+        # frame is replayed after reconnect rather than being lost or duplicated.
+        self.process_output_buffer += data.decode("ascii", "replace")
         while "\n" in self.process_output_buffer:
             line, self.process_output_buffer = self.process_output_buffer.split("\n", 1)
-            self._consume_process_line(line + "\n")
+            if line.startswith(REMOTE_DATA_PREFIX):
+                try:
+                    offset_text, encoded = line[len(REMOTE_DATA_PREFIX):].split(":", 1)
+                    offset = int(offset_text)
+                    payload = base64.b64decode(encoded.encode("ascii"), validate=True)
+                except (ValueError, UnicodeEncodeError):
+                    self._append_overview_output(
+                        "[Warning] Invalid remote log frame; it will be retried.\n")
+                    continue
+                if offset < self.remote_log_offset:
+                    continue
+                if offset > self.remote_log_offset:
+                    self._append_overview_output(
+                        "[Warning] Remote log stream has a gap (%d to %d bytes).\n" %
+                        (self.remote_log_offset, offset))
+                self.remote_log_offset = offset + len(payload)
+                self._consume_remote_task_bytes(payload)
+            elif line.startswith(REMOTE_TASK_PREFIX):
+                try:
+                    result = json.loads(line[len(REMOTE_TASK_PREFIX):])
+                except json.JSONDecodeError:
+                    self._append_overview_output(line + "\n")
+                else:
+                    if isinstance(result, dict):
+                        self.remote_task_result = result
+                        self.remote_task_terminal = True
+            else:
+                self._consume_process_line(line + "\n")
 
     def _flush_process_output_buffer(self) -> None:
         if self.process_output_buffer:
@@ -1680,6 +2098,33 @@ class MainWindow(QMainWindow):
                     phase.replace("_", " ").title(), min(completed, total), total))
             return
 
+        if event_type == "stage_plan":
+            planned_stages = event.get("stages", [])
+            if not isinstance(planned_stages, list):
+                return
+            for planned in planned_stages:
+                if not isinstance(planned, dict):
+                    continue
+                stage_id = str(planned.get("id") or "").strip()
+                if not stage_id:
+                    continue
+                record = self.stage_records.get(stage_id, {})
+                if record.get("status") not in (None, "queued"):
+                    continue
+                record.update({
+                    "id": stage_id,
+                    "label": str(planned.get("label") or stage_id),
+                    "category": str(planned.get("category") or "Build"),
+                    "status": "queued",
+                    "log": record.get("log", ""),
+                    "remote_log_path": str(planned.get("log_path") or ""),
+                    "elapsed_seconds": 0.0,
+                    "error": "",
+                })
+                self.stage_records[stage_id] = record
+                self._refresh_stage_table_row(stage_id)
+            return
+
         if event_type == "stage_start":
             stage_id = str(event.get("id") or "stage-%d" % (len(self.stage_records) + 1))
             label = str(event.get("label") or stage_id)
@@ -1696,8 +2141,12 @@ class MainWindow(QMainWindow):
             try:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 handle = log_path.open("w", encoding="utf-8", errors="replace")
-                handle.write("JOREK Build Studio — %s\nCategory: %s\nStage ID: %s\n\n" % (
-                    label, category, stage_id))
+                remote_log_path = str(event.get("log_path") or "")
+                header = "JOREK Build Studio — %s\nCategory: %s\nStage ID: %s\n" % (
+                    label, category, stage_id)
+                if remote_log_path:
+                    header += "Remote log: %s\n" % remote_log_path
+                handle.write(header + "\n")
                 handle.flush()
             except OSError as exc:
                 if handle:
@@ -1711,7 +2160,8 @@ class MainWindow(QMainWindow):
                     "[Warning] Detailed log could not be created for %s: %s\n" % (
                         label, exc))
             started = datetime.now(timezone.utc)
-            record = {
+            record = self.stage_records.get(stage_id, {})
+            record.update({
                 "id": stage_id,
                 "label": label,
                 "category": category,
@@ -1722,13 +2172,12 @@ class MainWindow(QMainWindow):
                 "started_monotonic": time.monotonic(),
                 "elapsed_seconds": 0.0,
                 "error": "",
-            }
+            })
             self.stage_records[stage_id] = record
             if handle:
                 self.stage_log_handles[stage_id] = handle
             self.stage_stack.append(stage_id)
             self._refresh_stage_table_row(stage_id)
-            self.stage_table.scrollToBottom()
             if not self.stage_elapsed_timer.isActive():
                 self.stage_elapsed_timer.start()
             self._append_overview_output(
@@ -1786,6 +2235,16 @@ class MainWindow(QMainWindow):
             self.stage_table.insertRow(row)
             record["_row"] = row
         status = str(record.get("status", ""))
+        status_display, status_color = {
+            "queued": ("○ Waiting", "#888888"),
+            "running": ("● Running", "#1565c0"),
+            "completed": ("✓ Completed", "#2e7d32"),
+            "warning": ("⚠ Warning", "#ed6c02"),
+            "failed": ("✕ Failed", "#c62828"),
+            "cancelled": ("■ Cancelled", "#777777"),
+            "skipped": ("– Skipped", "#777777"),
+            "not_run": ("— Not run", "#888888"),
+        }.get(status, (status or "Unknown", "#555555"))
         if status == "running":
             elapsed = max(
                 0.0, time.monotonic() -
@@ -1795,20 +2254,31 @@ class MainWindow(QMainWindow):
         values = [
             record.get("label", ""),
             record.get("category", ""),
-            status,
+            status_display,
             "%.1f s" % elapsed,
-            Path(record["log"]).name if record.get("log") else "(unavailable)",
+            Path(record["log"]).name if record.get("log") else "(not created yet)",
         ]
+        queued = status in ("queued", "not_run")
         for column, value in enumerate(values):
             item = self.stage_table.item(row, column)
             if item is None:
                 item = QTableWidgetItem()
                 self.stage_table.setItem(row, column, item)
             item.setText(str(value))
+            item.setForeground(QColor(status_color))
+            item.setFlags(
+                Qt.ItemFlag.NoItemFlags if queued else
+                Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
             if column == 0:
                 item.setData(Qt.ItemDataRole.UserRole, stage_id)
+            elif column == 2:
+                item.setToolTip("Stage state: %s" % status)
             elif column == 4:
                 item.setData(Qt.ItemDataRole.UserRole, record.get("log", ""))
+                tooltip = "Local log: %s" % record.get("log", "")
+                if record.get("remote_log_path"):
+                    tooltip += "\nRemote log: %s" % record["remote_log_path"]
+                item.setToolTip(tooltip)
 
     def _refresh_running_stage_rows(self) -> None:
         for stage_id, record in self.stage_records.items():
@@ -1819,7 +2289,7 @@ class MainWindow(QMainWindow):
         item = self.stage_table.item(row, 0)
         stage_id = item.data(Qt.ItemDataRole.UserRole) if item else ""
         record = self.stage_records.get(str(stage_id))
-        if record:
+        if record and record.get("status") not in ("queued", "not_run") and record.get("log"):
             self._show_stage_log_dialog(
                 record.get("label", "Build stage"),
                 record.get("log", ""),
@@ -1876,18 +2346,31 @@ class MainWindow(QMainWindow):
                 dialog.set_running(False)
             self._refresh_stage_table_row(stage_id)
         self.stage_stack = []
+        for stage_id, record in self.stage_records.items():
+            if record.get("status") == "queued":
+                record["status"] = "not_run"
+                self._refresh_stage_table_row(stage_id)
         self.stage_elapsed_timer.stop()
         self._close_stage_log_handles()
 
     def _process_error(self, error) -> None:
         self._read_process_output()
-        self._flush_process_output_buffer()
+        if self.task_kind != "remote-attach":
+            self._flush_process_output_buffer()
         message = "Process error: %s" % self.process.errorString()
         self._append_overview_output(message + "\n")
         if self.task_log:
             self.task_log.write("\n" + message + "\n")
             self.task_log.flush()
         if error == QProcess.ProcessError.FailedToStart:
+            if self.task_kind in ("remote-attach", "remote-start"):
+                self.remote_heartbeat_timer.stop()
+                if self.task_log:
+                    self.task_log.flush()
+                    self.task_log.close()
+                    self.task_log = None
+                self._schedule_remote_reconnect()
+                return
             self._finalize_open_stages("failed")
             if self.task_log:
                 self.task_log.flush()
@@ -1903,9 +2386,40 @@ class MainWindow(QMainWindow):
 
     def _process_finished(self, exit_code: int, exit_status) -> None:
         self._read_process_output()
-        self._flush_process_output_buffer()
         completed_kind = self.task_kind
         succeeded = exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit
+
+        if completed_kind == "remote-start":
+            self._flush_process_output_buffer()
+            if self.task_log:
+                self.task_log.flush()
+                self.task_log.close()
+                self.task_log = None
+            if not succeeded:
+                self._append_overview_output(
+                    "[Remote supervisor] SSH start command ended unexpectedly; "
+                    "checking whether the remote task was created.\n")
+            self._start_remote_attach()
+            return
+
+        if completed_kind == "remote-attach":
+            self.remote_heartbeat_timer.stop()
+            # Discard an incomplete base64 frame. Its byte offset was not
+            # committed, so the next attach will replay it in full.
+            self.process_output_buffer = ""
+            if self.remote_task_terminal:
+                self._flush_remote_task_stream()
+                self._finish_remote_task()
+            else:
+                if self.task_log:
+                    self.task_log.flush()
+                    self.task_log.close()
+                    self.task_log = None
+                self.task_label.setText("Remote disconnected — reconnecting")
+                self._schedule_remote_reconnect()
+            return
+
+        self._flush_process_output_buffer()
         terminal_stage_status = (
             "completed" if succeeded else
             "cancelled" if self._cancel_requested else "failed")
@@ -1923,17 +2437,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Task failed; inspect the complete log", 10000)
         self._record_task(exit_code, exit_status == QProcess.ExitStatus.NormalExit)
 
-        if completed_kind == "remote-build":
-            if succeeded:
-                scp = shutil.which("scp")
-                if scp and getattr(self, "remote_download_args", None):
-                    self._start_external_process(
-                        scp, self.remote_download_args, "remote-download",
-                        working_directory=os.getcwd())
-                else:
-                    self.statusBar().showMessage(
-                        "Remote build verified, but scp is unavailable for download", 12000)
-            return
         if completed_kind == "remote-download":
             self.remote_download_succeeded = succeeded
             self.remote_download_log_path = self.task_log_path
@@ -1969,6 +2472,49 @@ class MainWindow(QMainWindow):
         if self.task_kind == "dependencies" and exit_code == 0:
             self.refresh_catalog(show_message=False)
 
+    def _finish_remote_task(self) -> None:
+        result = dict(self.remote_task_result or {})
+        status = str(result.get("status") or "failed")
+        try:
+            exit_code = int(result.get("exit_code") if result.get("exit_code") is not None else 1)
+        except (TypeError, ValueError):
+            exit_code = 1
+        succeeded = status == "completed" and exit_code == 0
+        stage_status = (
+            "completed" if succeeded else
+            "cancelled" if status == "cancelled" else "failed")
+        self._finalize_open_stages(stage_status)
+        if self.task_log:
+            self.task_log.flush()
+            self.task_log.close()
+            self.task_log = None
+        self.remote_heartbeat_timer.stop()
+        self.remote_reconnect_timer.stop()
+        self.remote_task_terminal = True
+        if succeeded:
+            self.task_label.setText("Remote build completed")
+            self.statusBar().showMessage(
+                "Remote build and verification completed; downloading artifact…", 10000)
+        else:
+            self.task_label.setText(
+                "Remote build cancelled" if status == "cancelled" else "Remote build failed")
+            reason = str(result.get("reason") or "")
+            self.statusBar().showMessage(
+                "Remote task %s%s" % (
+                    status, (": " + reason) if reason else ""), 12000)
+        self._record_task(exit_code, succeeded)
+        if succeeded:
+            scp = getattr(self, "remote_scp_executable", None) or shutil.which("scp")
+            if scp and getattr(self, "remote_download_args", None):
+                self._start_external_process(
+                    scp, self.remote_download_args, "remote-download",
+                    working_directory=os.getcwd())
+            else:
+                self.statusBar().showMessage(
+                    "Remote build succeeded, but scp is unavailable for download", 12000)
+        else:
+            self._clear_remote_task_metadata()
+
     def _finish_remote_download(
         self, downloaded: bool, cleanup_succeeded: Optional[bool],
     ) -> None:
@@ -1988,6 +2534,8 @@ class MainWindow(QMainWindow):
                 "\n\nWarning: the temporary remote staging file could not be removed. "
                 "It is located at:\n%s" % getattr(self, "remote_artifact_path", ""))
         self.overview_text.setPlainText(message)
+        if downloaded:
+            self._clear_remote_task_metadata()
 
     def _show_matrix_result(self) -> None:
         try:
@@ -2051,6 +2599,26 @@ class MainWindow(QMainWindow):
         self.overview_text.setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
 
     def cancel_process(self) -> None:
+        if self.remote_task_id and not self.remote_task_terminal:
+            self._cancel_requested = True
+            self.remote_reconnect_timer.stop()
+            self.task_label.setText("Stopping remote build…")
+            if (self.task_kind == "remote-attach" and
+                    self.process.state() == QProcess.ProcessState.Running):
+                self.process.write(b"CANCEL\n")
+                self.statusBar().showMessage(
+                    "Remote cancellation requested; waiting for the supervisor to stop the process group.")
+            else:
+                delivered = self._send_remote_cancel_out_of_band()
+                self.statusBar().showMessage(
+                    "Remote cancellation sent." if delivered else
+                    "Cancellation could not reach the host. The supervisor will stop "
+                    "the task after 120 seconds without a heartbeat.")
+                if self.process.state() == QProcess.ProcessState.NotRunning:
+                    self._start_remote_attach()
+                else:
+                    QTimer.singleShot(1500, self._send_remote_cancel_out_of_band)
+            return
         if self.process.state() == QProcess.ProcessState.NotRunning:
             return
         self._cancel_requested = True
@@ -2104,27 +2672,40 @@ class MainWindow(QMainWindow):
         self.help_text.setPlainText(text)
 
     def closeEvent(self, event) -> None:
-        if self.process.state() != QProcess.ProcessState.NotRunning:
+        remote_active = bool(self.remote_task_id and not self.remote_task_terminal)
+        local_active = self.process.state() != QProcess.ProcessState.NotRunning
+        if remote_active or local_active:
             answer = QMessageBox.question(
                 self, APP_TITLE,
-                "A build task is still running. Terminate it and close the application?",
+                "A build task is still running. Request termination and close the application?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
             self._cancel_requested = True
-            self._terminate_process_tree(force=False)
-            self.process.waitForFinished(2500)
+            self.remote_reconnect_timer.stop()
+            self.remote_heartbeat_timer.stop()
+            if remote_active:
+                if (self.task_kind == "remote-attach" and
+                        self.process.state() == QProcess.ProcessState.Running):
+                    self.process.write(b"CANCEL\n")
+                    self.process.waitForBytesWritten(1000)
+                else:
+                    self._send_remote_cancel_out_of_band()
             if self.process.state() != QProcess.ProcessState.NotRunning:
-                self._terminate_process_tree(force=True)
-                self.process.waitForFinished(1500)
+                self._terminate_process_tree(force=False)
+                self.process.waitForFinished(2500)
+                if self.process.state() != QProcess.ProcessState.NotRunning:
+                    self._terminate_process_tree(force=True)
+                    self.process.waitForFinished(1500)
         try:
             self.config = self._collect_config()
             save_config(self.config, self.config_path)
         except Exception:
             pass
-        if self.stage_stack:
+        if self.stage_stack and not (
+                self.remote_task_id and not self.remote_task_terminal):
             self._finalize_open_stages("cancelled")
         else:
             self._close_stage_log_handles()

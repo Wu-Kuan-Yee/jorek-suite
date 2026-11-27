@@ -128,16 +128,45 @@ full core dependency profile. It requires a working host C and C++ compiler;
 without a host Fortran compiler, the bootstrap attempts to build GCC with
 Fortran support.
 
+PaStiX 5.2.3 and PaStiX 6.3.2 are separate JOREK backends. PaStiX 5 uses
+the legacy `USE_PASTIX` / optional `USE_PASTIX_MURGE` adapter and is installed
+under a private `pastix5` prefix to avoid colliding with PaStiX 6's
+`libpastix.a`. PaStiX 6 uses `USE_PASTIX6` and is fetched as the pinned
+`v6.3.2` Git tag with recursive, shallow submodules. Its `spm` and
+`morse_cmake` submodules are required by CMake and are checked before
+configuration. Both bundled PaStiX backends currently use 32-bit solver
+indices, matching JOREK's default `USE_INTSIZE64=0`; incompatible 64-bit
+JOREK configurations are rejected during preflight. A normal source archive
+is not sufficient for PaStiX 6. The remote host therefore needs Git in addition
+to the compiler and CMake toolchain. SCOTCH's hand-written Makefile install
+target receives the private toolchain prefix explicitly; it must not attempt
+to write into system directories such as `/usr/local`.
+
 ### Build
 
 Preview the matrix, start a build, verify a generated suite, run a suite, or
 cancel the current builder process. The Build tab keeps a concise overview
 separate from the Detailed logs view. The detailed view lists each dependency,
 solver backend, JOREK model/variant, launcher, packaging, and verification
-stage independently. Double-click a stage or choose Open selected log to open
-its own log window. A running stage is followed live; completed and failed
-stage logs remain available after the stage ends. The progress indicator reports
-the current dependency/solver/variant phase and its completed count.
+stage independently. The build driver publishes planned work before it starts,
+so not-yet-started stages appear as disabled grey rows; active, completed,
+failed, skipped, and not-run stages have distinct status symbols and colours.
+Double-click a running or completed stage, or choose Open selected log, to open
+its own full transcript. The live log window never forces the reader back to the
+end: it follows new output only while the reader is already at the tail, and
+otherwise preserves both vertical and horizontal scroll positions. Top, Bottom,
+Left, and Right controls jump to each edge of the log. Detailed log windows also
+provide visible-by-default line numbers, toggleable line-number gutters, PCRE
+regular-expression search with next/previous navigation and match highlighting,
+and live statistics for bytes, characters, lines, words, and maximum line length.
+The PCRE2 search supports case sensitivity, multiline anchors, dot-matches-newline,
+and reports invalid expressions with the engine's error position. Diagnostic
+highlighting distinguishes fatal errors, warnings, expected failed feature
+probes, ignored/non-fatal errors, and successful checks. Logs can be copied or
+saved independently. Build Studio mode streams complete merged command
+output to stage transcripts even when the underlying build command requests quiet
+output. The progress indicator reports the current dependency/solver/variant
+phase and its completed count.
 
 Compiler and dependency commands stream their merged stdout/stderr while they
 run. The full task transcript and each stage log are also persisted under the
@@ -165,14 +194,65 @@ with the pinned repository revision, final build arguments, remote command, and
 artifact paths. The Build, verify and download action opens this preview for
 confirmation before connecting.
 
-A build checks out a pinned full commit SHA, runs the selected packaged (dist)
-or full-solver build, runs the remote portability verifier, and downloads the
-artifact only after verification succeeds. Remote stage events and compiler
-output are streamed over SSH into the same per-stage log interface used by
-local builds. Build-only mode is not offered here because it does not produce
-the single-file suite that this workflow transfers. Enter machine-specific
-paths as JSON overrides. The local machine needs OpenSSH ssh and scp; the
-remote machine needs Git, Python 3, and a working native compiler/MPI/dependency
+A build checks out a pinned full commit SHA, runs a generic preflight for
+the complete selected build plan, performs the packaged (dist) or full-solver
+build, runs the remote portability verifier, and downloads the artifact only
+after verification succeeds. The preflight validates the repository revision,
+dependency and solver recipe registries, dependency graph, supplied sources,
+cached sources in offline mode, solver artifact plans, JOREK source and variant
+matrix, compiler toolchain, and writable storage. It is not tied to a particular
+dependency such as PaStiX. Updating the local checkout does not silently change
+a saved pin: use **Use local HEAD** and save the profile when you want the remote
+host to build the updated checkout.
+
+The preflight is a reusable verification framework, not a PaStiX-specific
+condition. It checks the exact repository revision and clean working tree,
+build-option consistency, the complete dependency registry and prerequisite
+graph, solver source recipes, supplied source directories and mirrors, selected
+dependency artifacts, JOREK source/model discovery, the requested variant
+matrix, compiler/tool versions, and writable work/output locations. The same
+preflight runs before local build, dist, and full commands; the remote workflow
+runs it once immediately after checking out the pinned builder and again inside
+the build command after any requested JOREK source checkout.
+
+Every check has its own result, log, severity, and machine-readable entry in
+WORK/logs/preflight/preflight-report.json. Errors stop compilation; warnings
+are reported without silently turning a warning into a failure. Dependency
+and solver builders also verify their declared installed libraries and headers
+after building. Source-recipe metadata is shared between build paths wherever
+possible; the full-solver PaStiX 6 builder uses the same recursive Git source
+recipe as the ordinary dependency builder. The build runs under a detached
+remote supervisor, not as a foreground child of the SSH connection. The
+supervisor stores a task ID, state, heartbeat, complete output transcript, and
+process-group ID below:
+
+```
+<remote_root>/.jorek-build-studio/tasks/<task-id>/
+```
+
+The GUI sends a heartbeat every 15 seconds. The Remote tab's Disconnect
+grace period setting defaults to 120 seconds and can be configured per SSH
+profile from 30 seconds to one hour. If no heartbeat is received for the
+configured period, the supervisor treats the GUI as disconnected, sends SIGTERM to
+the complete build process group, waits up to five seconds, and then sends
+SIGKILL to any remaining members. The same process-group termination is used
+for an explicit Cancel request. The SSH log stream can disconnect and reconnect
+without restarting the build; the GUI resumes from the last completely
+received log frame. If the GUI itself exits or the computer loses power, the
+remote lease still expires and stops the build. When Build Studio is opened
+again, it offers to resume monitoring a task recorded in its local recovery
+metadata. A completed task's remote transcript and state are retained so that
+a later reconnect can recover the final output and status.
+
+Remote stage events and compiler output are streamed into the same per-stage
+log interface used by local builds. The remote supervisor also retains the
+complete raw transcript independently of the GUI. Remote task directories are
+not automatically deleted; remove old task directories from the path above
+when their logs are no longer needed. Build-only mode is not offered here
+because it does not produce the single-file suite that this workflow transfers.
+Enter machine-specific paths as JSON overrides. The local machine needs
+OpenSSH ssh and scp; the remote machine needs Git, Python 3, and a POSIX
+process model, in addition to a working native compiler/MPI/dependency
 environment. Configure public-key or agent authentication in OpenSSH; the
 builder uses batch mode and does not prompt for passwords. Strict host-key
 checking is enabled by default; pre-populate known_hosts or deliberately
@@ -210,13 +290,18 @@ Configuration writes use a temporary file followed by an atomic replace.
 - The GUI does not delete build directories automatically.
 - A full solver build can be very large; inspect the matrix and available disk
   space first.
-- Cancelling sends a terminate signal to the build driver and escalates to a
-  kill if it does not stop. Depending on the operating system and the active
-  compiler/MPI child process, verify that no orphaned compiler processes remain.
+- Local cancellation sends a terminate signal to the build driver and
+  escalates to a kill if it does not stop.
+- Remote cancellation is delivered to the detached supervisor, which
+  terminates the build process group rather than merely killing the local SSH
+  client. If the network is unavailable, the 120-second heartbeat lease is the
+  fallback cleanup mechanism.
+- The supervisor controls the build's process group. A build script that
+  deliberately daemonizes descendants into a different session can escape
+  process-group cleanup; ordinary compiler, linker, make, and dependency
+  subprocesses remain in the managed group.
 - A dry run is useful for checking arguments and variant plans, but it does
   not validate the resulting executable.
-- Remote cancellation terminates the local SSH client. If the connection
-  drops during a remote build, inspect the remote process list before retrying.
 - Signed release installers, artifact SBOM generation, and exhaustive
   target-side portability certification remain future work.
 

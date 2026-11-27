@@ -35,6 +35,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import shlex
 import struct
 import subprocess
 import sys
@@ -429,11 +430,41 @@ class SuiteBuilder:
 
 
 def _run(argv: Sequence[str]) -> None:
-    result = subprocess.run(list(map(str, argv)), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    command = list(map(str, argv))
+    if os.environ.get("JOREK_BUILD_STUDIO_EVENTS") == "1":
+        print("  + " + shlex.join(command), flush=True)
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        chunks = []
+        stream = process.stdout
+        binary_stdout = getattr(sys.stdout, "buffer", None)
+        while stream is not None:
+            reader = getattr(stream, "read1", stream.read)
+            chunk = reader(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            if binary_stdout is not None:
+                binary_stdout.write(chunk)
+                binary_stdout.flush()
+            else:
+                sys.stdout.write(chunk.decode("utf-8", "replace"))
+                sys.stdout.flush()
+        returncode = process.wait()
+        output = b"".join(chunks)
+        if returncode != 0:
+            raise SuiteError(
+                "command failed (%d): %s\n%s"
+                % (returncode, " ".join(command), output.decode("utf-8", "replace"))
+            )
+        return
+
+    result = subprocess.run(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if result.returncode != 0:
         raise SuiteError(
             "command failed (%d): %s\n%s"
-            % (result.returncode, " ".join(map(str, argv)), result.stderr.decode("utf-8", "replace"))
+            % (result.returncode, " ".join(command), result.stderr.decode("utf-8", "replace"))
         )
 
 
@@ -447,6 +478,9 @@ def _ad_hoc_sign(path: Path) -> None:
 
     codesign = shutil.which("codesign") or "/usr/bin/codesign"
     if not os.path.exists(codesign):
+        return
+    if os.environ.get("JOREK_BUILD_STUDIO_EVENTS") == "1":
+        _run([codesign, "--force", "--sign", "-", "--timestamp=none", str(path)])
         return
     result = subprocess.run(
         [codesign, "--force", "--sign", "-", "--timestamp=none", str(path)],

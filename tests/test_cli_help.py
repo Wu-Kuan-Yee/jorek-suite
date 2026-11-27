@@ -47,8 +47,18 @@ class CliHelpTest(unittest.TestCase):
                        "2*(n_tor-1)", "--everything"):
             self.assertIn(needle, text)
 
+    def test_preflight_command_accepts_a_build_plan(self) -> None:
+        args = self.parser.parse_args([
+            "--work", "/tmp/jorek-preflight-test",
+            "preflight", "--for-command", "dist", "--model", "600", "--json",
+        ])
+        self.assertEqual(args.command, "preflight")
+        self.assertEqual(args.for_command, "dist")
+        self.assertEqual(args.model, "600")
+        self.assertTrue(args.json)
+
     def test_build_commands_show_parameter_options(self) -> None:
-        for name in ("matrix", "build", "dist", "full"):
+        for name in ("matrix", "build", "dist", "full", "preflight"):
             sub = self.parser._subparsers._group_actions[0].choices[name]
             text = sub.format_help()
             for needle in ("--param-max", "--param-grid", "--set"):

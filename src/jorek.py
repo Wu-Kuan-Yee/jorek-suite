@@ -6,6 +6,7 @@ from __future__ import annotations
 import itertools
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,41 @@ from common import (
     write_text,
 )
 
+
+def _captured_run(argv: Sequence[str], merge_stderr: bool = False):
+    """Capture a probe command and surface its complete output in Build Studio."""
+    command = [str(item) for item in argv]
+    studio_mode = os.environ.get("JOREK_BUILD_STUDIO_EVENTS") == "1"
+    if not studio_mode:
+        return subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
+            check=False,
+        )
+
+    result = subprocess.run(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    print("  + " + shlex.join(command), flush=True)
+    binary_stdout = getattr(sys.stdout, "buffer", None)
+    for payload in (result.stdout, result.stderr):
+        if not payload:
+            continue
+        if binary_stdout is not None:
+            binary_stdout.write(payload)
+            binary_stdout.flush()
+        else:
+            sys.stdout.write(payload.decode("utf-8", "replace"))
+            sys.stdout.flush()
+    combined = (
+        (result.stdout or b"") + (result.stderr or b"")
+        if merge_stderr else result.stdout
+    )
+    return subprocess.CompletedProcess(
+        command, result.returncode, combined, result.stderr)
+
+
+SOURCE_COMPATIBILITY_REVISION = 2
 
 MODEL_RE = re.compile(r"model(\d{3})")
 PROGRAM_RE = re.compile(r"(?im)^\s*program\s+([a-z_][a-z0-9_]*)\s*$")
@@ -300,6 +336,7 @@ class VariantSpec:
             "params=" + ",".join("%s=%s" % (k, self.params[k]) for k in sorted(self.params)),
             "toggles=" + ",".join("%s=%d" % (k, 1 if self.toggles[k] else 0) for k in sorted(self.toggles)),
             "programs=" + ",".join(self.programs),
+            "source_compatibility_revision=%d" % SOURCE_COMPATIBILITY_REVISION,
         ])
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -453,6 +490,16 @@ def _apply_source_compatibility_fixes(source: Path, spec: VariantSpec) -> None:
         text = read_text(path)
         if "#include <mkl_spblas.h>" in text:
             text = text.replace("#include <mkl_spblas.h>\n#include <mkl.h>\n", "")
+        if spec.features.solver in ("pastix6", "all") and "#include <mpi.h>" not in text:
+            # ptx.cpp calls MPI_Fint/MPI_Comm and MPI routines directly.
+            # Do not rely on PaStiX/SPM headers to re-export mpi.h.
+            include_anchor = "#include <string>\n"
+            if include_anchor not in text:
+                raise BuildError(
+                    "cannot apply PaStiX 6 MPI-header fix: solvers/ptx.cpp "
+                    "has no stable standard-header insertion point")
+            text = text.replace(
+                include_anchor, include_anchor + "#include <mpi.h>\n", 1)
         # PaStiX 6.3 added the leading dimension to task_solve.
         text = text.replace(
             "pastix_task_solve(pastix_data, nrhs, x, spm->n);",
@@ -728,8 +775,7 @@ class MakeBuilder:
     @staticmethod
     def _compiler_family(compiler: str) -> str:
         try:
-            proc = subprocess.run([compiler, "--version"], stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, check=False)
+            proc = _captured_run([compiler, "--version"], merge_stderr=True)
             text = proc.stdout.decode("utf-8", "replace").lower()
         except OSError:
             return "unknown"
@@ -916,10 +962,10 @@ class MakeBuilder:
                 pass
         if layout.platform.is_macos:
             lines.append("LIBS += -lxml2 -llzma -framework IOKit -framework CoreFoundation -framework OpenCL")
-        # PaStiX 6 bundles a private SCOTCH copy whose graph.c exports the same
-        # symbols as the standalone SCOTCH used by MUMPS.  Both definitions are
-        # equivalent; permit the duplicate when several direct solvers are
-        # linked into one executable.
+        # Several solver backends can pull overlapping graph-ordering
+        # support objects (METIS/GKlib) into one static executable.  Permit
+        # equivalent duplicate definitions when multiple direct solvers are
+        # deliberately linked together.
         if solver == "all":
             lines.append("LIBS += -Wl,--allow-multiple-definition")
         if self.full_static and not layout.platform.is_macos:
@@ -981,8 +1027,8 @@ class MakeBuilder:
     def _pastix5_block(self) -> List[str]:
         layout = self.layout
         libs = []
-        for name in ("libpastix.a", "libmetis.a", "libopenblas.a",
-                     "libomp.a", "libhwloc.a"):
+        for name in ("libpastix.a", "libmetis.a", "libGKlib.a",
+                     "libopenblas.a", "libomp.a", "libhwloc.a"):
             try:
                 libs.append(str(layout.lib(name)))
             except BuildError:
@@ -1084,7 +1130,7 @@ def _verify_linux(path: Path) -> Tuple[bool, List[str]]:
     readelf = which("readelf")
     if not readelf:
         return False, ["readelf unavailable; could not verify"]
-    proc = subprocess.run([readelf, "-d", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([readelf, "-d", str(path)])
     if proc.returncode != 0:
         return False, ["readelf failed; could not verify"]
     text = proc.stdout.decode("utf-8", "replace")
@@ -1107,7 +1153,7 @@ def _verify_macos(path: Path) -> Tuple[bool, List[str]]:
     otool = which("otool")
     if not otool:
         return False, ["otool unavailable; could not verify"]
-    proc = subprocess.run([otool, "-L", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([otool, "-L", str(path)])
     if proc.returncode != 0:
         return False, ["otool failed; could not verify"]
     lines = proc.stdout.decode("utf-8", "replace").splitlines()[1:]
@@ -1127,7 +1173,7 @@ def _verify_windows(path: Path) -> Tuple[bool, List[str]]:
     objdump = which("objdump") or which("x86_64-w64-mingw32-objdump")
     if not objdump:
         return False, ["objdump unavailable; could not verify"]
-    proc = subprocess.run([objdump, "-p", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([objdump, "-p", str(path)])
     if proc.returncode != 0:
         return False, ["objdump failed; could not verify"]
     text = proc.stdout.decode("utf-8", "replace")
@@ -1140,7 +1186,7 @@ def _verify_bsd(path: Path) -> Tuple[bool, List[str]]:
     ldd = which("ldd")
     if not ldd:
         return False, ["ldd unavailable; could not verify"]
-    proc = subprocess.run([ldd, str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    proc = _captured_run([ldd, str(path)])
     text = proc.stdout.decode("utf-8", "replace")
     if "not a dynamic executable" in text or "statically linked" in text:
         return True, []

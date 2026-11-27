@@ -67,6 +67,13 @@ class Dependency:
     note: str = ""
     manual: bool = False
     archive: str = "auto"
+    source_kind: str = "archive"
+    git_ref: str = ""
+    git_submodules: bool = False
+    required_paths: Tuple[str, ...] = ()
+    required_any_paths: Tuple[Tuple[str, ...], ...] = ()
+    filename: str = ""
+    recipe_revision: str = ""
 
     def supports(self, platform: PlatformInfo) -> bool:
         return not self.platforms or platform.system in self.platforms
@@ -284,8 +291,14 @@ register(
     dep("hwloc", "2.11.2", "https://github.com/open-mpi/hwloc/releases/download/hwloc-2.11.2/hwloc-2.11.2.tar.gz",
         license="BSD-3-Clause", homepage="https://www.open-mpi.org/projects/hwloc/",
         static_libs=("libhwloc.a",), includes=("hwloc.h",), builder="autotools",
+        # Keep the static hwloc archive self-contained: the optional libxml2
+        # backend introduces external XML symbols that are not consistently
+        # propagated by downstream static-library discovery.  hwloc's built-in
+        # XML backend is sufficient for same-release topology files.
         configure_args=("--disable-shared", "--enable-static", "--disable-io", "--disable-libudev",
-                        "--disable-cairo", "--disable-opencl", "--disable-pci")),
+                        "--disable-cairo", "--disable-opencl", "--disable-pci",
+                        "--disable-libxml2"),
+        required_paths=("configure",), recipe_revision="1"),
     dep("libpciaccess", "0.18.1", "https://xorg.freedesktop.org/releases/individual/lib/libpciaccess-0.18.1.tar.xz",
         license="MIT", homepage="https://gitlab.freedesktop.org/xorg/lib/libpciaccess",
         static_libs=("libpciaccess.a",), includes=("pciaccess.h",), builder="autotools",
@@ -322,36 +335,74 @@ register(
     dep("gklib", "master", "https://github.com/KarypisLab/GKlib/archive/refs/heads/master.tar.gz",
         license="Apache-2.0", homepage="https://github.com/KarypisLab/GKlib",
         static_libs=("libGKlib.a",), includes=("GKlib.h",), builder="cmake",
-        cmake_args=("-DSHARED=0",)),
+        cmake_args=("-DSHARED=0",), required_paths=("CMakeLists.txt",)),
     dep("metis", "5.2.1", "https://github.com/KarypisLab/METIS/archive/refs/tags/v5.2.1.tar.gz",
         license="Apache-2.0", homepage="https://github.com/KarypisLab/METIS",
         deps=("gklib",), static_libs=("libmetis.a", "libGKlib.a"), includes=("metis.h",),
-        builder="metis"),
-    dep("parmetis", "4.0.3", "https://github.com/KarypisLab/ParMETIS/archive/refs/tags/v4.0.3.tar.gz",
+        builder="metis",
+        required_paths=("CMakeLists.txt", "include/metis.h", "include/CMakeLists.txt"),
+        recipe_revision="1"),
+    dep("parmetis", "4.0.3", "https://github.com/KarypisLab/ParMETIS.git",
         license="ParMETIS-license (non-commercial)", homepage="https://github.com/KarypisLab/ParMETIS",
         deps=("metis", "mpich"), static_libs=("libparmetis.a",), includes=("parmetis.h",),
-        builder="parmetis", note="The ParMETIS licence is not OSI-approved; review it before redistribution."),
+        builder="parmetis", source_kind="git",
+        git_ref="fc99804e3f043dd951e37775e30db697444816b8",
+        required_paths=("Makefile", "CMakeLists.txt", "include/parmetis.h",
+                        "libparmetis/CMakeLists.txt", "programs/CMakeLists.txt"),
+        recipe_revision="1",
+        note="Pinned to the official 4.0.3 source commit. The ParMETIS licence is not OSI-approved; review it before redistribution."),
     dep("scotch", "6.1.2", "https://gitlab.inria.fr/scotch/scotch/-/archive/v6.1.2/scotch-v6.1.2.tar.gz",
         license="CeCILL-C", homepage="https://www.labri.fr/perso/pelegrin/scotch/",
         deps=("mpich",), static_libs=("libscotch.a", "libscotcherr.a", "libesmumps.a",
                                          "libptscotch.a", "libptscotcherr.a", "libptesmumps.a"),
-        includes=("scotch.h", "ptscotch.h"), builder="scotch"),
+        includes=("scotch.h", "ptscotch.h"), builder="scotch",
+        recipe_revision="2"),
     dep("mumps", "5.7.3", "https://mumps-solver.org/MUMPS_5.7.3.tar.gz",
         license="CeCILL-C", homepage="http://mumps-solver.org/",
         deps=("scalapack",), static_libs=("libdmumps.a", "libzmumps.a",
                                                              "libmumps_common.a", "libpord.a"),
         includes=("dmumps_struc.h", "mumps_compat.h"), builder="mumps"),
-    dep("pastix6", "6.3.2", "https://gitlab.inria.fr/solverstack/pastix/-/archive/v6.3.2/pastix-v6.3.2.tar.gz",
+    dep("pastix5", "5.2.3", "http://sources.easybuild.io/p/PaStiX/pastix_5.2.3.tar.bz2",
+        license="CeCILL-C", homepage="https://solverstack.gitlabpages.inria.fr/pastix/",
+        deps=("mpich", "openblas", "metis", "hwloc"),
+        static_libs=("pastix5/lib/libpastix.a",),
+        includes=("pastix5/include/pastix_fortran.h",),
+        builder="pastix5", platforms=("linux", "bsd", "macos"),
+        install=False, filename="pastix-5.2.3.tar.bz2",
+        required_any_paths=(
+            ("CMakeLists.txt", "src/CMakeLists.txt"),
+            ("common/src/pastix_fortran.h", "src/common/src/pastix_fortran.h"),
+        ),
+        recipe_revision="1",
+        note="Legacy JOREK USE_PASTIX adapter; installed in an isolated pastix5 prefix "
+             "so it cannot collide with PaStiX 6."),
+    dep("pastix6", "6.3.2", "https://gitlab.inria.fr/solverstack/pastix.git",
         license="CeCILL-C", homepage="https://solverstack.gitlabpages.inria.fr/pastix/",
         deps=("mpich", "openblas", "scalapack", "metis", "hwloc"),
         static_libs=("libpastix.a", "libspm.a", "libpastix_kernels.a"),
         includes=("pastix.h", "spm.h"),
-        builder="pastix", platforms=("linux", "bsd", "macos")),
+        builder="pastix", platforms=("linux", "bsd", "macos"),
+        source_kind="git", git_ref="v6.3.2", git_submodules=True,
+        required_paths=("spm/CMakeLists.txt",
+                        "cmake_modules/morse_cmake/modules/MorseInit.cmake"),
+        # JOREK's current USE_INTSIZE64 default is 0.  Keep PaStiX's public
+        # integer ABI at 32 bits and use METIS, matching the full-solver path.
+        # This also prevents CMake from discovering a Scotch build with a
+        # different SCOTCH_Num width.
+        # JOREK needs the PaStiX libraries, not its example or test
+        # executables.  Keep those optional targets out of this static build.
+        cmake_args=("-DGIT_SUBMODULE=OFF", "-DPASTIX_INT64=OFF",
+                    "-DPASTIX_ORDERING_METIS=ON",
+                    "-DPASTIX_ORDERING_SCOTCH=OFF",
+                    "-DPASTIX_BUILD_EXAMPLES=OFF",
+                    "-DPASTIX_BUILD_TESTS=OFF"),
+        recipe_revision="4"),
     dep("strumpack", "7.1.0", "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
         license="BSD-3-Clause", homepage="https://portal.nersc.gov/project/sparse/strumpack/",
         deps=("mpich", "openblas", "scalapack", "metis"),
         static_libs=("libstrumpack.a",), includes=("StrumpackConfig.h", "StrumpackSparseSolverMPIDist.hpp"),
-        builder="strumpack", platforms=("linux", "bsd", "macos")),
+        builder="strumpack", platforms=("linux", "bsd", "macos"),
+        required_paths=("CMakeLists.txt", "src"), recipe_revision="3"),
     dep("boost", "1.87.0", "https://archives.boost.io/release/1.87.0/source/boost_1_87_0.tar.bz2",
         license="BSL-1.0", homepage="https://www.boost.org/",
         static_libs=("libboost_math_tr1.a",), includes=("boost/math/special_functions/bessel.hpp",),
@@ -506,13 +557,35 @@ class BuildContext:
             return False
         if data.get("version") != dep.version or data.get("url") != dep.url:
             return False
+        # Source identity is part of the build recipe.  Preserve compatibility
+        # with older archive stamps while invalidating stale Git checkouts.
+        if data.get("source_kind", "archive") != dep.source_kind:
+            return False
+        if dep.source_kind == "git" and (
+                data.get("git_ref", "") != dep.git_ref or
+                bool(data.get("git_submodules", False)) != dep.git_submodules):
+            return False
+        if (dep.recipe_revision and
+                data.get("recipe_revision") != dep.recipe_revision):
+            return False
         for lib in dep.static_libs:
             if lib and lib != "libgmake.a" and not _find_in_prefix(self.prefix, lib):
+                return False
+        for header in dep.includes:
+            if header and not _find_header_in_prefix(self.prefix, header):
                 return False
         return True
 
     def mark_built(self, dep: Dependency) -> None:
-        value = {"name": dep.name, "version": dep.version, "url": dep.url, "time": _now()}
+        value = {
+            "name": dep.name, "version": dep.version, "url": dep.url,
+            "source_kind": dep.source_kind, "time": _now(),
+        }
+        if dep.source_kind == "git":
+            value["git_ref"] = dep.git_ref
+            value["git_submodules"] = dep.git_submodules
+        if dep.recipe_revision:
+            value["recipe_revision"] = dep.recipe_revision
         self.stamps[dep.name] = value
         from common import write_json
         write_json(self.stamp_path(dep), value)
@@ -524,10 +597,36 @@ def _now() -> str:
 
 
 def _find_in_prefix(prefix: Path, name: str) -> Optional[Path]:
+    # Allow explicitly namespaced artefacts such as pastix5/lib/libpastix.a.
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    direct = prefix / relative
+    if direct.is_file():
+        return direct
     for candidate in (prefix / "lib" / name, prefix / "lib64" / name, prefix / "bin" / name):
         if candidate.exists():
             return candidate
     hits = list((prefix / "lib").rglob(name)) if (prefix / "lib").exists() else []
+    if hits:
+        return hits[0]
+    # Solver-specific private prefixes are intentionally nested below deps.
+    hits = list(prefix.rglob(name)) if prefix.exists() else []
+    return hits[0] if hits else None
+
+
+def _find_header_in_prefix(prefix: Path, name: str) -> Optional[Path]:
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    direct = prefix / relative
+    if direct.is_file():
+        return direct
+    candidate = prefix / "include" / relative
+    if candidate.is_file():
+        return candidate
+    include = prefix / "include"
+    hits = list(include.rglob(relative.name)) if include.is_dir() else []
     return hits[0] if hits else None
 
 
@@ -548,6 +647,124 @@ def _provided_source(ctx: BuildContext, dep: Dependency) -> Optional[Path]:
             raise BuildError("source directory for %s is not a directory: %s" % (dep.name, supplied))
         print("  %-18s using source tree %s" % (dep.name, supplied))
     return supplied
+
+
+def _clone_git_source(
+    ctx: BuildContext, dep: Dependency, urls: Sequence[str],
+) -> Path:
+    """Clone a Git source tree, optionally including all recursive submodules."""
+    git = which("git", ctx.path) or shutil.which("git")
+    if not git:
+        raise BuildError("git is required to fetch the %s source tree" % dep.name)
+
+    destination = ctx.work / "src" / ("%s-%s" % (dep.name, dep.version))
+    ensure_dir(destination.parent)
+    if getattr(ctx, "offline", False):
+        if not (destination / ".git").is_dir():
+            raise BuildError(
+                "offline mode has no cached Git checkout for %s at %s" %
+                (dep.name, destination))
+        head = run(
+            [git, "-C", str(destination), "rev-parse", "HEAD"],
+            env=ctx.build_env(dep), log=ctx.log_path(dep.name), check=False)
+        actual = head.stdout.decode("utf-8", "replace").strip()
+        if head.returncode != 0:
+            raise BuildError("could not inspect cached Git checkout for %s" % dep.name)
+        if dep.git_ref:
+            expected = run(
+                [git, "-C", str(destination), "rev-parse", dep.git_ref + "^{commit}"],
+                env=ctx.build_env(dep), log=ctx.log_path(dep.name), check=False)
+            if expected.returncode != 0 or expected.stdout.decode("utf-8", "replace").strip() != actual:
+                raise BuildError(
+                    "cached Git checkout for %s does not match pinned ref %s" %
+                    (dep.name, dep.git_ref))
+        if dep.git_submodules:
+            status = run(
+                [git, "-C", str(destination), "submodule", "status", "--recursive"],
+                env=ctx.build_env(dep), log=ctx.log_path(dep.name), check=False)
+            lines = status.stdout.decode("utf-8", "replace").splitlines()
+            incomplete = [line for line in lines if line[:1] in ("-", "+", "U")]
+            if status.returncode != 0 or incomplete:
+                raise BuildError(
+                    "cached recursive submodules for %s are incomplete or mismatched" %
+                    dep.name)
+        missing = [
+            relative for relative in dep.required_paths
+            if not (destination / relative).exists()
+        ]
+        if missing:
+            raise BuildError(
+                "cached Git source for %s is incomplete: %s" %
+                (dep.name, ", ".join(missing)))
+        print("  %-18s reusing offline Git checkout at %s" % (dep.name, actual))
+        return destination
+
+    # A full object ID is not a branch or tag, so --branch/--depth cannot be
+    # used for it.  Clone the repository history, then detach at the exact
+    # commit.  Named branches and tags retain the faster shallow-clone path.
+    pinned_commit = bool(re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", dep.git_ref))
+    failures: List[str] = []
+    for url in urls:
+        if destination.exists():
+            shutil.rmtree(destination)
+        args = [git, "clone"]
+        if pinned_commit:
+            args.append("--no-checkout")
+        else:
+            args.extend(["--depth", "1"])
+            if dep.git_ref:
+                args.extend(["--branch", dep.git_ref])
+            if dep.git_submodules:
+                args.extend(["--recurse-submodules", "--shallow-submodules"])
+        args.extend([url, str(destination)])
+        env = ctx.build_env(dep)
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        result = run(
+            args, cwd=ctx.work, env=env, log=ctx.log_path(dep.name), check=False)
+        if result.returncode != 0:
+            failures.append("%s: git clone exited with status %d" % (
+                url, result.returncode))
+            continue
+
+        if pinned_commit:
+            checkout = run(
+                [git, "-C", str(destination), "checkout", "--detach", dep.git_ref],
+                cwd=ctx.work, env=env, log=ctx.log_path(dep.name), check=False)
+            if checkout.returncode != 0:
+                failures.append(
+                    "%s: could not check out pinned commit %s" % (url, dep.git_ref))
+                shutil.rmtree(destination, ignore_errors=True)
+                continue
+            if dep.git_submodules:
+                submodules = run(
+                    [git, "-C", str(destination), "submodule", "update",
+                     "--init", "--recursive"],
+                    cwd=ctx.work, env=env, log=ctx.log_path(dep.name), check=False)
+                if submodules.returncode != 0:
+                    failures.append(
+                        "%s: recursive submodule checkout failed at %s" %
+                        (url, dep.git_ref))
+                    shutil.rmtree(destination, ignore_errors=True)
+                    continue
+
+        missing = [
+            relative for relative in dep.required_paths
+            if not (destination / relative).exists()
+        ]
+        if missing:
+            failures.append(
+                "%s: checkout is missing required source paths: %s" %
+                (url, ", ".join(missing)))
+            shutil.rmtree(destination, ignore_errors=True)
+            continue
+        print("  %-18s cloned %s at %s" % (
+            dep.name, url, dep.git_ref or "default revision"))
+        return destination
+
+    raise BuildError(
+        "could not obtain complete Git source for %s:\n  %s" %
+        (dep.name, "\n  ".join(failures))
+    )
 
 
 def _extract_root(ctx: BuildContext, dep: Dependency, archive: Path) -> Path:
@@ -886,6 +1103,69 @@ LPORD = -L$(LPORDDIR) -lpord$(PLAT)
                 shutil.copy2(header, ctx.prefix / "include" / header.name)
 
 
+def merge_static_archives(
+    ar: str,
+    work_dir: Path,
+    archives: Sequence[Tuple[str, Path]],
+    output_archive: Path,
+    log: Optional[Path] = None,
+    libtool: Optional[str] = None,
+) -> Path:
+    """Merge static archives while namespacing members to avoid collisions.
+
+    Some upstream CMake find-modules probe only the primary library and do not
+    include its static transitive dependencies.  Combining the archives makes
+    the primary archive independently linkable without deleting the original
+    dependency archives from the installation prefix.
+    """
+    if len(archives) < 2:
+        raise BuildError("at least two static archives are required for merging")
+
+    normalized = []
+    for label, archive in archives:
+        archive = Path(archive)
+        if not archive.is_file():
+            raise BuildError("static archive required for merge is missing: %s" % archive)
+        normalized.append((label, archive))
+
+    output_archive = Path(output_archive)
+    ensure_dir(output_archive.parent)
+    if output_archive.exists():
+        output_archive.unlink()
+
+    # Apple's libtool is the native, reliable way to combine Mach-O archives.
+    if libtool:
+        run([libtool, "-static", "-o", str(output_archive)] +
+            [str(archive) for _label, archive in normalized], log=log)
+        if not output_archive.is_file():
+            raise BuildError("archive merge did not create %s" % output_archive)
+        return output_archive
+
+    work_dir = Path(work_dir)
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    ensure_dir(work_dir)
+
+    members: List[str] = []
+    for label, archive in normalized:
+        extract_dir = ensure_dir(work_dir / label)
+        run([ar, "x", str(archive)], cwd=extract_dir, log=log)
+        objects = sorted(
+            path for path in extract_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in (".o", ".obj"))
+        if not objects:
+            raise BuildError(
+                "static archive contains no object members: %s" % archive)
+        for obj in objects:
+            member = work_dir / (label + "_" + obj.name)
+            shutil.copy2(obj, member)
+            members.append(str(member))
+
+    run([ar, "rcs", str(output_archive)] + members, log=log)
+    if not output_archive.is_file():
+        raise BuildError("archive merge did not create %s" % output_archive)
+    return output_archive
+
 def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     cmake = ctx.cmake or which("cmake", ctx.path)
     if not cmake:
@@ -907,12 +1187,40 @@ def build_metis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         env=ctx.build_env(dep), log=ctx.log_path(dep.name))
     run([cmake, "--install", str(build_dir)], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
 
+    # PaStiX's FindMETIS.cmake tests METIS_NodeND using libmetis.a alone.
+    # METIS 5.2.1 keeps its GKlib symbols in a separate archive, so the probe
+    # fails with undefined GKlib references unless the static members are
+    # merged into the METIS archive.  Keep libGKlib.a as a separate artefact
+    # too, for consumers that explicitly request it.
+    libdir = ctx.prefix / "lib"
+    metis_archive = libdir / "libmetis.a"
+    gklib_archive = libdir / "libGKlib.a"
+    merged_archive = merge_static_archives(
+        ctx.ar,
+        ctx.work / "build" / "metis-archive-merge",
+        (("metis", metis_archive), ("gklib", gklib_archive)),
+        ctx.work / "build" / "libmetis-merged.a",
+        log=ctx.log_path("metis-merge"),
+        libtool=(which("libtool", ctx.path) if ctx.platform.is_macos else None),
+    )
+    shutil.copy2(merged_archive, metis_archive)
+
 
 def build_parmetis(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     env = ctx.build_env(dep)
-    run([ctx.make, "config", "shared=0", "prefix=%s" % ctx.prefix], cwd=src, env=env,
+    compiler = which("mpicc", ctx.path) or "mpicc"
+    # ParMETIS's Makefile enables SHARED whenever the variable is set at all;
+    # passing shared=0 therefore enables shared-library mode.  Omit it to use
+    # the upstream static default, and point both prerequisites at our prefix.
+    run([
+        ctx.make, "config",
+        "cc=%s" % compiler,
+        "prefix=%s" % ctx.prefix,
+        "gklib_path=%s" % ctx.prefix,
+        "metis_path=%s" % ctx.prefix,
+    ], cwd=src, env=env, log=ctx.log_path(dep.name))
+    run([ctx.make, "-j%d" % max(1, ctx.jobs)], cwd=src, env=env,
         log=ctx.log_path(dep.name))
-    run([ctx.make, "-j%d" % max(1, ctx.jobs)], cwd=src, env=env, log=ctx.log_path(dep.name))
     run([ctx.make, "install"], cwd=src, env=env, log=ctx.log_path(dep.name))
 
 
@@ -932,19 +1240,29 @@ def build_scotch(ctx: BuildContext, dep: Dependency, src: Path) -> None:
             break
     chosen = chosen or candidates[0]
     text = read_text(chosen)
-    text = re.sub(r"(?m)^prefix\s*=.*$", "prefix = %s" % ctx.prefix, text)
-    text = re.sub(r"(?m)^CCS\s*=.*$", "CCS = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CCP\s*=.*$", "CCP = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CC\s*=.*$", "CC = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CCD\s*=.*$", "CCD = %s" % (which("mpicc", ctx.path) or ctx.cc), text)
-    text = re.sub(r"(?m)^CFLAGS\s*=.*$", "CFLAGS = -O2 -fPIC -std=gnu17 -I%s/include" % ctx.prefix, text)
+    compiler = which("mpicc", ctx.path) or ctx.cc
+
+    def set_assignment(source: str, name: str, value: str) -> str:
+        pattern = r"(?m)^\s*%s\s*=.*$" % re.escape(name)
+        return re.sub(
+            pattern, lambda _match: "%s = %s" % (name, value), source)
+
+    # Use callable replacements so Windows paths containing backslashes are
+    # not interpreted as regular-expression replacement escapes.
+    for variable in ("CCS", "CCP", "CC", "CCD"):
+        text = set_assignment(text, variable, compiler)
+    text = set_assignment(
+        text, "CFLAGS", "-O2 -fPIC -std=gnu17 -I%s/include" % ctx.prefix)
     write_text(src / "src" / "Makefile.inc", text)
     env = ctx.build_env(dep)
     run([ctx.make, "-C", "src", "-j1", "esmumps"], cwd=src, env=env,
         log=ctx.log_path(dep.name))
     run([ctx.make, "-C", "src", "-j1", "ptesmumps"], cwd=src, env=env,
         log=ctx.log_path(dep.name))
-    run([ctx.make, "-C", "src", "install"], cwd=src, env=env, log=ctx.log_path(dep.name), check=False)
+    # SCOTCH's Makefile defaults to /usr/local.  Pass prefix on the
+    # make command line; editing Makefile.inc does not reliably override it.
+    run([ctx.make, "-C", "src", "prefix=%s" % ctx.prefix, "install"],
+        cwd=src, env=env, log=ctx.log_path(dep.name))
     _install_fallback(ctx, dep, src)
 
 
@@ -976,7 +1294,165 @@ def build_dierckx(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     run([ctx.ar, "rcs", str(archive)] + objects, env=env, log=ctx.log_path(dep.name))
 
 
+def build_pastix5(ctx: BuildContext, dep: Dependency, src: Path) -> None:
+    """Build legacy PaStiX 5 in a private prefix, separate from PaStiX 6."""
+    root = src / "src" if (src / "src" / "CMakeLists.txt").exists() else src
+    required_any = getattr(dep, "required_any_paths", ())
+    missing = [
+        " or ".join(alternatives)
+        for alternatives in required_any
+        if not any((src / relative).exists() for relative in alternatives)
+    ]
+    if missing:
+        raise BuildError(
+            "PaStiX 5 source tree is incomplete; missing: %s" %
+            ", ".join(missing))
+    # Some 5.2.3 source distributions omit the optional MURGE Fortran bridge
+    # stub even though the CMake target expects the source file to exist.
+    murge_stub = root / "sopalin" / "src" / "murge_fortran.c"
+    if not murge_stub.exists():
+        ensure_dir(murge_stub.parent)
+        write_text(murge_stub, "int pastix_murge_dummy;\n")
+    cmake = ctx.cmake or which("cmake", ctx.path)
+    if not cmake:
+        raise BuildError("CMake is required to build PaStiX 5")
+    prefix = ctx.prefix / "pastix5"
+    build_dir = ctx.work / "build" / "pastix5-5.2.3"
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    mpicc = which("mpicc", ctx.path) or ctx.cc
+    mpifc = which("mpifort", ctx.path) or ctx.fc
+    args = [
+        cmake, "-S", str(root), "-B", str(build_dir),
+        "-DCMAKE_INSTALL_PREFIX=%s" % prefix,
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
+        "-DBUILD_SHARED_LIBS=OFF",
+        "-DPASTIX_WITH_MPI=ON",
+        "-DPASTIX_WITH_MULTITHREAD=ON",
+        "-DPASTIX_INT64=OFF",
+        "-DPASTIX_ORDERING_METIS=ON",
+        "-DPASTIX_ORDERING_SCOTCH=OFF",
+        "-DPASTIX_ORDERING_PTSCOTCH=OFF",
+        "-DPASTIX_DISTRIBUTED=OFF",
+        "-DPASTIX_BUILD_EXAMPLES=OFF",
+        "-DCMAKE_C_FLAGS=-Wno-implicit-function-declaration",
+        "-DCMAKE_C_COMPILER=%s" % mpicc,
+        "-DCMAKE_Fortran_COMPILER=%s" % mpifc,
+        "-DBLAS_LIBRARIES=%s" % (ctx.prefix / "lib" / "libopenblas.a"),
+        "-DLAPACK_LIBRARIES=%s" % (ctx.prefix / "lib" / "libopenblas.a"),
+        "-DBLA_VENDOR=OpenBLAS",
+        "-DMETIS_LIBRARIES=%s;%s;-lm" % (
+            ctx.prefix / "lib" / "libmetis.a",
+            ctx.prefix / "lib" / "libGKlib.a"),
+        "-DMETIS_INCLUDE_DIRS=%s" % (ctx.prefix / "include"),
+        "-DHWLOC_DIR=%s" % ctx.prefix,
+        "-DHWLOC_LIBRARIES=%s;-lm" % (ctx.prefix / "lib" / "libhwloc.a"),
+        "-DCMAKE_PREFIX_PATH=%s" % ctx.prefix,
+    ]
+    env = ctx.build_env(dep)
+    run(args, cwd=root, env=env, log=ctx.log_path(dep.name))
+    run([cmake, "--build", str(build_dir), "--parallel",
+         str(max(1, ctx.jobs)), "--target", "pastix"],
+        env=env, log=ctx.log_path(dep.name))
+    libdir = ensure_dir(prefix / "lib")
+    incdir = ensure_dir(prefix / "include")
+    library = build_dir / "libpastix.a"
+    if not library.is_file():
+        raise BuildError("PaStiX 5 did not produce %s" % library)
+    shutil.copy2(library, libdir / "libpastix.a")
+    murge = build_dir / "libpastix_murge.a"
+    if murge.is_file():
+        shutil.copy2(murge, libdir / "libpastix_murge.a")
+    header_top = build_dir / "sopalin" / "src" / "pastix_fortran.h.top"
+    header_inc = root / "common" / "src" / "pastix_fortran.inc"
+    if header_top.is_file() and header_inc.is_file():
+        header = (
+            header_top.read_text(encoding="utf-8", errors="replace")
+            + "#define MURGE_COEF_KIND 8\n"
+            + "#define MURGE_REAL_KIND 8\n"
+            + "#define MURGE_INTS_KIND 4\n"
+            + "#define MURGE_INTL_KIND 8\n"
+            + header_inc.read_text(encoding="utf-8", errors="replace")
+        )
+        write_text(incdir / "pastix_fortran.h", header)
+    else:
+        candidates = (
+            root / "common" / "src" / "pastix_fortran.h",
+            root / "src" / "common" / "src" / "pastix_fortran.h",
+        )
+        header_source = next((item for item in candidates if item.is_file()), None)
+        if header_source is None:
+            raise BuildError("PaStiX 5 did not provide pastix_fortran.h")
+        shutil.copy2(header_source, incdir / "pastix_fortran.h")
+
+
+def patch_pastix_metis_find_module(source: Path) -> bool:
+    """Repair the pinned MORSE FindMETIS/FindM variable mismatch.
+
+    The pinned FindMETIS.cmake appends M_LIBRARIES, while its paired
+    FindM.cmake exports M_LIBRARY and MORSE::M.  Consequently a successful
+    find_package(M) can still leave the METIS link probe without libm.
+    Return True when the module was patched and False when already patched.
+    """
+    module = (Path(source) / "cmake_modules" / "morse_cmake" /
+              "modules" / "find" / "FindMETIS.cmake")
+    if not module.is_file():
+        raise BuildError("PaStiX MORSE FindMETIS.cmake is missing: %s" % module)
+
+    content = read_text(module)
+    old = '''  find_package(M QUIET)
+  if ( M_FOUND )
+    set( METIS_LIBRARIES "${METIS_LIBRARIES};${M_LIBRARIES}" )
+  endif()
+'''
+    new = '''  find_package(M QUIET)
+  if (M_FOUND)
+    # The pinned FindM.cmake exports M_LIBRARY and MORSE::M, not
+    # M_LIBRARIES.  Fall back to the variables/target it actually exports.
+    if (M_LIBRARIES)
+      list(APPEND METIS_LIBRARIES ${M_LIBRARIES})
+    elseif (M_LIBRARY)
+      list(APPEND METIS_LIBRARIES ${M_LIBRARY})
+    elseif (TARGET MORSE::M)
+      list(APPEND METIS_LIBRARIES MORSE::M)
+    endif()
+  endif()
+'''
+    if old in content:
+        write_text(module, content.replace(old, new, 1))
+        return True
+    if ("list(APPEND METIS_LIBRARIES ${M_LIBRARY})" in content and
+            "list(APPEND METIS_LIBRARIES MORSE::M)" in content):
+        return False
+    raise BuildError(
+        "unrecognized math-library handling in PaStiX FindMETIS.cmake; "
+        "refusing to configure with an unverified METIS link probe")
+
+
 def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
+    missing = [
+        relative for relative in dep.required_paths
+        if not (src / relative).exists()
+    ]
+    if missing:
+        raise BuildError(
+            "PaStiX source checkout is incomplete; missing submodule content: %s. "
+            "Fetch the v%s Git tag with recursive submodules." %
+            (", ".join(missing), dep.version)
+        )
+    # Patch the actual MORSE module used by this dependency-graph build
+    # before CMake configures PaStiX.  The standalone solver builder uses the
+    # same shared helper; keeping the fix here is essential because remote
+    # dependency builds enter through DepManager -> build_pastix.
+    patched = patch_pastix_metis_find_module(src)
+    print("  PaStiX MORSE FindMETIS math-library patch: %s" %
+          ("applied" if patched else "already present"))
+    # A recursive Git checkout may have a different root from an older
+    # source layout, so discard any CMake cache before configuring it.
+    build_dir = ctx.work / "build" / ("%s-%s" % (dep.name, dep.version))
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
     build_cmake(ctx, dep, src)
     # PaStiX installs a CMake package; pastix-conf is not produced by 6.x.
     conf = ctx.prefix / "bin" / "pastix-conf"
@@ -985,26 +1461,248 @@ def build_pastix(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         os.chmod(conf, 0o755)
 
 
+def patch_strumpack_static_link_order(src: Path) -> bool:
+    """Preserve static archive dependency order in STRUMPACK's public target.
+
+    STRUMPACK 7.1.0 originally links MPI and OpenMP before the numerical
+    archives.  GNU ld scans static archives from left to right, so this leaves
+    ScaLAPACK's MPI references and OpenBLAS's OpenMP references unresolved.
+    Keep ScaLAPACK before MPI, and BLAS before the OpenMP runtime.  Fail closed
+    if upstream changes the expected CMake layout.
+    """
+    cmake_lists = Path(src) / "CMakeLists.txt"
+    if not cmake_lists.is_file():
+        raise BuildError(
+            "STRUMPACK source is missing its top-level CMakeLists.txt: %s" %
+            cmake_lists)
+
+    content = read_text(cmake_lists)
+    marker = (
+        "# JOREK Build Studio static-link fix: preserve ScaLAPACK/MPI "
+        "and OpenBLAS/OpenMP order."
+    )
+    if marker in content:
+        marker_at = content.index(marker)
+        scalapack_at = content.find(
+            "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
+            marker_at)
+        mpi_at = content.find("MPI::MPI_CXX", marker_at)
+        blas_at = content.find(
+            "target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})",
+            marker_at)
+        openmp_at = content.find("OpenMP::OpenMP_CXX", marker_at)
+        if (scalapack_at < 0 or mpi_at < 0 or blas_at < 0 or openmp_at < 0
+                or scalapack_at > mpi_at or blas_at > openmp_at):
+            raise BuildError(
+                "STRUMPACK static-link patch marker exists, but the "
+                "ScaLAPACK-before-MPI or BLAS-before-OpenMP order is not intact")
+        return False
+
+    original_mpi = (
+        "if(STRUMPACK_USE_MPI)\n"
+        "  target_link_libraries(strumpack PUBLIC\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+        "endif()\n"
+    )
+    original_openmp = (
+        "if(OpenMP_FOUND)\n"
+        "  # if(OpenMP_C_FOUND)\n"
+        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_C)\n"
+        "  # endif()\n"
+        "  if(OpenMP_CXX_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC OpenMP::OpenMP_CXX)\n"
+        "  endif()\n"
+        "  # if(OpenMP_Fortran_FOUND)\n"
+        "  #   target_link_libraries(strumpack PRIVATE OpenMP::OpenMP_Fortran)\n"
+        "  # endif()\n"
+        "endif()\n"
+    )
+    original_scalapack = (
+        "if(STRUMPACK_USE_MPI)\n"
+        "  if(SCALAPACK_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+        "  endif()\n"
+        "endif()\n"
+    )
+    original_blas = (
+        "if(BLAS_FOUND)\n"
+        "  target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})\n"
+        "endif()\n"
+    )
+    expected_blocks = (
+        ("MPI", original_mpi),
+        ("OpenMP", original_openmp),
+        ("ScaLAPACK", original_scalapack),
+        ("BLAS", original_blas),
+    )
+    mismatches = [
+        name for name, block in expected_blocks if content.count(block) != 1
+    ]
+    if mismatches:
+        raise BuildError(
+            "cannot safely patch STRUMPACK %s static link order: expected "
+            "MPI, OpenMP, ScaLAPACK and BLAS target_link_libraries blocks "
+            "were not found exactly once (mismatched: %s)" %
+            (DEPENDENCIES["strumpack"].version, ", ".join(mismatches)))
+
+    content = content.replace(original_mpi, "", 1)
+    content = content.replace(original_openmp, "", 1)
+    replacement = (
+        marker + "\n"
+        "if(STRUMPACK_USE_MPI)\n"
+        "  if(SCALAPACK_FOUND)\n"
+        "    target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})\n"
+        "  endif()\n"
+        "  target_link_libraries(strumpack PUBLIC\n"
+        "    MPI::MPI_CXX MPI::MPI_C ${MPI_Fortran_LIBRARIES})\n"
+        "  ## adding the MPI::MPI_Fortran target risks adding unwanted compile flags\n"
+        "endif()\n"
+    )
+    content = content.replace(original_scalapack, replacement, 1)
+    content = content.replace(
+        original_blas, original_blas + "\n" + original_openmp, 1)
+
+    marker_at = content.index(marker)
+    scalapack_at = content.find(
+        "target_link_libraries(strumpack PUBLIC ${SCALAPACK_LIBRARIES})",
+        marker_at)
+    mpi_at = content.find("MPI::MPI_CXX", marker_at)
+    blas_at = content.find(
+        "target_link_libraries(strumpack PUBLIC ${BLAS_LIBRARIES})",
+        marker_at)
+    openmp_at = content.find("OpenMP::OpenMP_CXX", marker_at)
+    if (scalapack_at < 0 or mpi_at < 0 or blas_at < 0 or openmp_at < 0
+            or scalapack_at > mpi_at or blas_at > openmp_at):
+        raise BuildError(
+            "failed to establish ScaLAPACK-before-MPI and "
+            "BLAS-before-OpenMP link order")
+
+    write_text(cmake_lists, content)
+    return True
+
+def verify_strumpack_install_link(
+    ctx: BuildContext, dep: Dependency, cmake: str, build_dir: Path,
+) -> None:
+    """Link a tiny external consumer against the installed STRUMPACK package.
+
+    The probe deliberately references the Fortran ScaLAPACK PDGEMM entry point.
+    That pulls a ScaLAPACK archive member into the final link and verifies that
+    its MPI references are resolved by the later MPI libraries exported by
+    STRUMPACK::strumpack.
+    """
+    package_dir = ctx.prefix / "lib" / "cmake" / "STRUMPACK"
+    required_package_files = (
+        package_dir / "strumpack-config.cmake",
+        package_dir / "strumpack-targets.cmake",
+    )
+    missing = [str(path) for path in required_package_files if not path.is_file()]
+    if missing:
+        raise BuildError(
+            "STRUMPACK install is missing its CMake package files: %s" %
+            ", ".join(missing))
+
+    probe_root = build_dir / "consumer-link-check"
+    if probe_root.exists():
+        shutil.rmtree(probe_root)
+    source_dir = ensure_dir(probe_root / "src")
+    consumer_build = probe_root / "build"
+    write_text(
+        source_dir / "CMakeLists.txt",
+        "cmake_minimum_required(VERSION 3.17)\n"
+        "project(strumpack_consumer_link_check LANGUAGES CXX)\n"
+        "find_package(STRUMPACK CONFIG REQUIRED)\n"
+        "add_executable(strumpack_link_probe strumpack_link_probe.cpp)\n"
+        "target_link_libraries(strumpack_link_probe PRIVATE STRUMPACK::strumpack)\n",
+    )
+    write_text(
+        source_dir / "strumpack_link_probe.cpp",
+        "#include <StrumpackFortranCInterface.h>\n"
+        "#include <StrumpackSparseSolverMPIDist.hpp>\n"
+        "extern \"C\" void STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM)();\n"
+        "void (* volatile force_scalapack_reference)() =\n"
+        "    &STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM);\n"
+        "int main() { return force_scalapack_reference == nullptr ? 1 : 0; }\n",
+    )
+
+    print("  verifying installed STRUMPACK CMake target and static MPI/ScaLAPACK/OpenBLAS/OpenMP link")
+    env = ctx.build_env(dep)
+    mpi_args = [
+        "-DMPI_C_COMPILER=%s" % (ctx.prefix / "bin" / "mpicc"),
+        "-DMPI_CXX_COMPILER=%s" % (ctx.prefix / "bin" / "mpicxx"),
+        "-DMPI_Fortran_COMPILER=%s" % (ctx.prefix / "bin" / "mpifort"),
+    ]
+    run([
+        cmake, "-S", str(source_dir), "-B", str(consumer_build),
+        "-DCMAKE_PREFIX_PATH=%s" % ctx.prefix,
+        "-DCMAKE_BUILD_TYPE=Release",
+    ] + mpi_args, cwd=source_dir, env=env, log=ctx.log_path(dep.name))
+    run([
+        cmake, "--build", str(consumer_build),
+        "--target", "strumpack_link_probe", "--parallel", "1", "--verbose",
+    ], cwd=source_dir, env=env, log=ctx.log_path(dep.name))
+
+
 def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     cmake = ctx.cmake or which("cmake", ctx.path)
     if not cmake:
         raise BuildError("cmake is required to build STRUMPACK")
-    build_dir = ensure_dir(ctx.work / "build" / ("%s-%s" % (dep.name, dep.version)))
+
+    patched = patch_strumpack_static_link_order(src)
+    print("  STRUMPACK static link order patch: %s" %
+          ("applied" if patched else "already present"))
+
+    # Use the private numerical libraries from this dependency stack rather
+    # than accidentally mixing them with host BLAS/LAPACK installations.
+    blas = _lib_path(ctx, "libopenblas.a")
+    scalapack = _lib_path(ctx, "libscalapack.a")
+    metis = _lib_path(ctx, "libmetis.a")
+    metis_header = _find_header_in_prefix(ctx.prefix, "metis.h")
+    if not metis_header:
+        raise BuildError("METIS header metis.h was not found in %s" % ctx.prefix)
+
+    build_dir = ctx.work / "build" / ("%s-%s" % (dep.name, dep.version))
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    ensure_dir(build_dir)
     args = [
         cmake, "-S", str(src), "-B", str(build_dir),
         "-DCMAKE_INSTALL_PREFIX=%s" % ctx.prefix,
+        "-DCMAKE_PREFIX_PATH=%s" % ctx.prefix,
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_SHARED_LIBS=OFF",
+        "-DBUILD_TESTING=OFF",
         "-DSTRUMPACK_USE_MPI=ON",
         "-DSTRUMPACK_USE_OPENMP=ON",
         "-DSTRUMPACK_USE_CUDA=OFF",
         "-DSTRUMPACK_USE_HIP=OFF",
-        "-DSTRUMPACK_BUILD_TESTS=OFF",
+        "-DTPL_BLAS_LIBRARIES=%s" % blas,
+        "-DTPL_LAPACK_LIBRARIES=%s" % blas,
+        "-DTPL_SCALAPACK_LIBRARIES=%s" % scalapack,
+        "-DTPL_METIS_PREFIX=%s" % ctx.prefix,
+        "-DTPL_METIS_INCLUDE_DIRS=%s" % metis_header.parent,
+        "-DTPL_METIS_LIBRARY_DIR=%s" % Path(metis).parent,
+        "-DTPL_METIS_LIBRARIES=%s" % metis,
+        # Keep optional backends deterministic and consistent with the
+        # dependencies selected for this JOREK build.
+        "-DTPL_ENABLE_SLATE=OFF",
+        "-DTPL_ENABLE_PARMETIS=OFF",
+        "-DTPL_ENABLE_SCOTCH=OFF",
+        "-DTPL_ENABLE_PTSCOTCH=OFF",
+        "-DTPL_ENABLE_BPACK=OFF",
+        "-DTPL_ENABLE_ZFP=OFF",
     ]
     run(args, cwd=src, env=ctx.build_env(dep), log=ctx.log_path(dep.name))
-    run([cmake, "--build", str(build_dir), "--parallel", str(max(1, ctx.jobs))],
+    # Build the library target only.  STRUMPACK 7.1.0 adds examples and test
+    # executables unconditionally, and its BUILD_TESTING option does not
+    # exclude those targets from the default build.
+    run([
+        cmake, "--build", str(build_dir),
+        "--target", "strumpack", "--parallel", str(max(1, ctx.jobs)),
+    ], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    run([cmake, "--install", str(build_dir)],
         env=ctx.build_env(dep), log=ctx.log_path(dep.name))
-    run([cmake, "--install", str(build_dir)], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    verify_strumpack_install_link(ctx, dep, cmake, build_dir)
 
 
 def build_imas(ctx: BuildContext, dep: Dependency, src: Path) -> None:
@@ -1044,10 +1742,95 @@ BUILDERS = {
     "boost": build_boost,
     "dierckx": build_dierckx,
     "pastix": build_pastix,
+    "pastix5": build_pastix5,
     "strumpack": build_strumpack,
     "imas": build_imas,
     "catalyst": build_catalyst,
 }
+
+
+def validate_source_recipe(
+    name: str,
+    version: str,
+    url: str,
+    source_kind: str = "archive",
+    git_ref: str = "",
+    git_submodules: bool = False,
+    required_paths: Sequence[str] = (),
+    required_any_paths: Sequence[Sequence[str]] = (),
+) -> List[str]:
+    """Validate source-acquisition metadata without knowing a package's name."""
+    errors: List[str] = []
+    prefix = "source recipe %s" % name
+    if not str(name).strip():
+        errors.append("%s has an empty name" % prefix)
+    if not str(version).strip():
+        errors.append("%s has an empty version" % prefix)
+    if not str(url).strip():
+        errors.append("%s has no source URL" % prefix)
+    if source_kind not in ("archive", "git"):
+        errors.append("%s has unsupported source_kind %r" % (prefix, source_kind))
+    if source_kind == "git" and not str(git_ref).strip():
+        errors.append("%s uses Git but does not pin git_ref" % prefix)
+    if source_kind != "git" and git_submodules:
+        errors.append("%s requests submodules but is not a Git source" % prefix)
+    for relative in required_paths or ():
+        path = Path(str(relative))
+        if path.is_absolute() or ".." in path.parts or not str(relative).strip():
+            errors.append("%s has unsafe required path %r" % (prefix, relative))
+    for alternatives in required_any_paths or ():
+        if not alternatives:
+            errors.append("%s has an empty required-any path group" % prefix)
+        for relative in alternatives:
+            path = Path(str(relative))
+            if path.is_absolute() or ".." in path.parts or not str(relative).strip():
+                errors.append("%s has unsafe required-any path %r" % (prefix, relative))
+    return errors
+
+
+def validate_dependency_registry() -> List[str]:
+    """Check every dependency record, builder reference and graph edge."""
+    errors: List[str] = []
+    for key, item in sorted(DEPENDENCIES.items()):
+        if key != item.name:
+            errors.append("dependency registry key %r does not match record name %r" % (
+                key, item.name))
+        errors.extend(validate_source_recipe(
+            item.name, item.version, item.url, item.source_kind,
+            item.git_ref, item.git_submodules, item.required_paths,
+            item.required_any_paths))
+        if item.builder not in BUILDERS:
+            errors.append("%s references unknown builder %r" % (item.name, item.builder))
+        if len(set(item.deps)) != len(item.deps):
+            errors.append("%s lists a prerequisite more than once" % item.name)
+        if len(set(item.static_libs)) != len(item.static_libs):
+            errors.append("%s lists a static library more than once" % item.name)
+        if len(set(item.includes)) != len(item.includes):
+            errors.append("%s lists an include file more than once" % item.name)
+        for child in item.deps:
+            if child not in DEPENDENCIES:
+                errors.append("%s depends on unknown dependency %r" % (item.name, child))
+
+    state: Dict[str, int] = {}
+
+    def visit(name: str, stack: Tuple[str, ...]) -> None:
+        mark = state.get(name, 0)
+        if mark == 2:
+            return
+        if mark == 1:
+            errors.append("cyclic dependency: %s" % " -> ".join(stack + (name,)))
+            return
+        state[name] = 1
+        item = DEPENDENCIES.get(name)
+        if item:
+            for child in item.deps:
+                if child in DEPENDENCIES:
+                    visit(child, stack + (name,))
+        state[name] = 2
+
+    for name in sorted(DEPENDENCIES):
+        visit(name, ())
+    return errors
 
 
 def _lib_path(ctx: BuildContext, name: str) -> str:
@@ -1105,6 +1888,14 @@ class DepManager:
         emit_build_event(
             "phase_start", phase="dependencies", label="Dependencies",
             total=len(order))
+        emit_build_event(
+            "stage_plan", phase="dependencies",
+            stages=[{
+                "id": "dependency:" + item.name,
+                "label": "%s %s" % (item.name, item.version),
+                "category": "Dependency",
+                "log_path": str(self.ctx.log_path(item.name)),
+            } for item in order])
         completed = 0
         for item in order:
             stage_id = "dependency:" + item.name
@@ -1168,24 +1959,59 @@ class DepManager:
         urls = list(ctx.url_overrides.get(item.name, [])) + [item.url]
         src = _provided_source(ctx, item)
         if src is None:
-            archive = ctx.downloader.fetch(urls, "%s-%s-%s" % (item.name, item.version, os.path.basename(item.url.split("?")[0])), item.sha256)
-            src = _extract_root(ctx, item, archive)
+            if item.source_kind == "git":
+                src = _clone_git_source(ctx, item, urls)
+            elif item.source_kind == "archive":
+                filename = item.filename or "%s-%s-%s" % (
+                    item.name, item.version,
+                    os.path.basename(item.url.split("?")[0]))
+                archive = ctx.downloader.fetch(urls, filename, item.sha256)
+                src = _extract_root(ctx, item, archive)
+            else:
+                raise BuildError(
+                    "unsupported source kind for %s: %s" %
+                    (item.name, item.source_kind))
+        missing_source = [
+            relative for relative in item.required_paths
+            if not (src / relative).exists()
+        ]
+        missing_any = [
+            " or ".join(alternatives)
+            for alternatives in item.required_any_paths
+            if not any((src / relative).exists() for relative in alternatives)
+        ]
+        if missing_source or missing_any:
+            raise BuildError(
+                "%s source is incomplete; missing required paths: %s" %
+                (item.name, ", ".join(missing_source + missing_any)))
         try:
             builder(ctx, item, src)
         except BuildError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise BuildError("failed to build %s: %s" % (item.name, exc)) from exc
-        ctx.mark_built(item)
         ctx.refresh_tools()
-        if not item.static_libs:
-            return
-        missing = [lib for lib in item.static_libs if not _find_in_prefix(ctx.prefix, lib)]
-        if missing:
+        if item.static_libs:
+            missing = [
+                lib for lib in item.static_libs
+                if not _find_in_prefix(ctx.prefix, lib)
+            ]
+            if missing:
+                raise BuildError(
+                    "%s built, but these static libraries were not installed: %s"
+                    % (item.name, ", ".join(missing))
+                )
+        missing_headers = [
+            header for header in item.includes
+            if not _find_header_in_prefix(ctx.prefix, header)
+        ]
+        if missing_headers:
             raise BuildError(
-                "%s built, but these static libraries were not installed: %s"
-                % (item.name, ", ".join(missing))
-            )
+                "%s built, but these declared headers were not installed: %s" %
+                (item.name, ", ".join(missing_headers)))
+        # A dependency is stamped only after all declared artefacts have been
+        # verified.  Otherwise a failed install could be skipped on retry.
+        ctx.mark_built(item)
 
 
 def core_dependencies(profile: str = "standard", solver: str = "mumps",
@@ -1197,7 +2023,9 @@ def core_dependencies(profile: str = "standard", solver: str = "mumps",
     if solver in ("mumps", "all"):
         names.extend(["scalapack", "metis", "mumps"])
     if solver in ("pastix6", "all"):
-        names.extend(["scalapack", "metis", "scotch", "hwloc", "pastix6"])
+        names.extend(["scalapack", "metis", "hwloc", "pastix6"])
+    if solver == "pastix5":
+        names.extend(["metis", "hwloc", "pastix5"])
     if solver in ("strumpack", "all"):
         names.extend(["scalapack", "metis", "parmetis", "strumpack"])
     if profile in ("full", "complete"):
