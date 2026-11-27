@@ -62,7 +62,7 @@ def _captured_run(argv: Sequence[str], merge_stderr: bool = False):
         command, result.returncode, combined, result.stderr)
 
 
-MODEL_RE = re.compile(r"model(\d{3})")
+SOURCE_COMPATIBILITY_REVISION = 2\n\nMODEL_RE = re.compile(r"model(\d{3})")
 PROGRAM_RE = re.compile(r"(?im)^\s*program\s+([a-z_][a-z0-9_]*)\s*$")
 MODULE_RE = re.compile(r"(?im)^\s*module\s+(?!procedure\b)([a-z_][a-z0-9_]*)\s*$")
 USE_RE = re.compile(r"(?im)^\s*use\s*(?:,\s*[^:]+::)?\s*([a-z_][a-z0-9_]*)")
@@ -333,7 +333,7 @@ class VariantSpec:
             "debug=%d" % (1 if self.features.debug else 0),
             "params=" + ",".join("%s=%s" % (k, self.params[k]) for k in sorted(self.params)),
             "toggles=" + ",".join("%s=%d" % (k, 1 if self.toggles[k] else 0) for k in sorted(self.toggles)),
-            "programs=" + ",".join(self.programs),
+            "programs=" + ",".join(self.programs),\n            "source_compatibility_revision=%d" % SOURCE_COMPATIBILITY_REVISION,
         ])
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -486,7 +486,17 @@ def _apply_source_compatibility_fixes(source: Path, spec: VariantSpec) -> None:
         path = source / "solvers" / "ptx.cpp"
         text = read_text(path)
         if "#include <mkl_spblas.h>" in text:
-            text = text.replace("#include <mkl_spblas.h>\n#include <mkl.h>\n", "")
+            text = text.replace("#include <mkl_spblas.h>\\n#include <mkl.h>\\n", "")
+        if spec.features.solver in ("pastix6", "all") and "#include <mpi.h>" not in text:
+            # ptx.cpp calls MPI_Fint/MPI_Comm and MPI routines directly.
+            # Do not rely on PaStiX/SPM headers to re-export mpi.h.
+            include_anchor = "#include <string>\\n"
+            if include_anchor not in text:
+                raise BuildError(
+                    "cannot apply PaStiX 6 MPI-header fix: solvers/ptx.cpp "
+                    "has no stable standard-header insertion point")
+            text = text.replace(
+                include_anchor, include_anchor + "#include <mpi.h>\\n", 1)
         # PaStiX 6.3 added the leading dimension to task_solve.
         text = text.replace(
             "pastix_task_solve(pastix_data, nrhs, x, spm->n);",
