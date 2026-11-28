@@ -1053,10 +1053,14 @@ class MakeBuilder:
         lib = layout.lib("libstrumpack.a")
         inc = layout.include("StrumpackSparseSolverMPIDist.hpp").parent
         libs = [str(lib)]
-        # STRUMPACK is built on METIS/GKlib, ScaLAPACK, BLAS and its OpenMP
-        # runtime; static archives need these on the final link line.
-        for name in ("libmetis.a", "libGKlib.a", "libscalapack.a",
-                     "libopenblas.a", "libomp.a"):
+        # Preserve STRUMPACK's static link order: ParMETIS before METIS,
+        # then Scotch/PT-Scotch and the numerical libraries.
+        for name in (
+                "libparmetis.a", "libmetis.a",
+                "libptscotch.a", "libptscotcherr.a",
+                "libscotch.a", "libscotcherr.a",
+                "libGKlib.a", "libscalapack.a",
+                "libopenblas.a", "libomp.a"):
             try:
                 libs.append(str(layout.lib(name)))
             except BuildError:

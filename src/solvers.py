@@ -9,13 +9,14 @@ deps.py.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from deps import (DEPENDENCIES, merge_static_archives, patch_pastix_metis_find_module,
-                   validate_source_recipe)
+                   validate_source_recipe, verify_strumpack_cpu_ordering_config)
 
 from common import (
     BuildError,
@@ -50,6 +51,8 @@ SOLVER_SOURCE_RECIPES = {
     "hwloc": DEPENDENCIES["hwloc"],
     "gklib": DEPENDENCIES["gklib"],
     "metis": DEPENDENCIES["metis"],
+    "parmetis": DEPENDENCIES["parmetis"],
+    "scotch": DEPENDENCIES["scotch"],
     "pastix6": DEPENDENCIES["pastix6"],
     "strumpack": DEPENDENCIES["strumpack"],
     "pastix5": DEPENDENCIES["pastix5"],
@@ -60,6 +63,12 @@ SOLVER_STAGE_ARTIFACTS = {
     "gklib-metis": (
         "lib/libGKlib.a", "lib/libmetis.a",
         "include/GKlib.h", "include/metis.h",
+    ),
+    "parmetis": ("lib/libparmetis.a", "include/parmetis.h"),
+    "scotch": (
+        "lib/libscotch.a", "lib/libscotcherr.a", "lib/libesmumps.a",
+        "lib/libptscotch.a", "lib/libptscotcherr.a", "lib/libptesmumps.a",
+        "include/scotch.h", "include/ptscotch.h",
     ),
     "pastix6": (
         "lib/libpastix.a", "lib/libpastix_kernels.a", "lib/libspm.a",
@@ -204,9 +213,14 @@ class SolverBuild:
                 for url in urls:
                     if destination.exists():
                         shutil.rmtree(destination)
-                    command = [git, "clone", "--depth", "1"]
-                    if recipe.git_ref:
-                        command.extend(["--branch", recipe.git_ref])
+                    is_commit = bool(re.fullmatch(r"[0-9a-fA-F]{40}", recipe.git_ref))
+                    command = [git, "clone"]
+                    if is_commit:
+                        command.append("--no-checkout")
+                    else:
+                        command.extend(["--depth", "1"])
+                        if recipe.git_ref:
+                            command.extend(["--branch", recipe.git_ref])
                     if recipe.git_submodules:
                         command.extend(["--recurse-submodules", "--shallow-submodules"])
                     command.extend([url, str(destination)])
@@ -215,6 +229,22 @@ class SolverBuild:
                     if result.returncode != 0:
                         failures.append("%s: git clone exited %d" % (url, result.returncode))
                         continue
+                    if is_commit:
+                        result = run(
+                            [git, "-C", str(destination), "fetch", "--depth", "1",
+                             "origin", recipe.git_ref],
+                            env=env, log=self.log(recipe_name), check=False)
+                        if result.returncode == 0:
+                            result = run(
+                                [git, "-C", str(destination), "checkout", "--detach",
+                                 "FETCH_HEAD"],
+                                env=env, log=self.log(recipe_name), check=False)
+                        if result.returncode != 0:
+                            failures.append(
+                                "%s: could not checkout pinned commit %s" %
+                                (url, recipe.git_ref))
+                            shutil.rmtree(destination, ignore_errors=True)
+                            continue
                     if recipe.git_submodules:
                         status = run(
                             [git, "-C", str(destination), "submodule", "status", "--recursive"],
@@ -433,13 +463,107 @@ class SolverBuild:
                     shutil.copy2(header, spm_inc / header.name)
 
     # -- STRUMPACK ---------------------------------------------------------
-    def strumpack(self) -> None:
-        if (self.prefix / "lib" / "libstrumpack.a").exists():
+    def scotch(self) -> None:
+        artifacts = (
+            self.prefix / "lib" / "libscotch.a",
+            self.prefix / "lib" / "libscotcherr.a",
+            self.prefix / "lib" / "libptscotch.a",
+            self.prefix / "lib" / "libptscotcherr.a",
+            self.prefix / "include" / "scotch.h",
+            self.prefix / "include" / "ptscotch.h",
+        )
+        if all(path.is_file() for path in artifacts):
             return
+        src = self.source("scotch")
+        make_inc_dir = src / "src" / "Make.inc"
+        candidates = sorted(make_inc_dir.glob("Makefile.inc.*"))
+        if not candidates:
+            raise BuildError("SCOTCH source has no Make.inc examples")
+        chosen = None
+        for candidate in candidates:
+            name = candidate.name.lower()
+            if self.platform.is_macos and ("mac" in name or "i686" in name):
+                chosen = candidate
+                break
+            if self.platform.machine == "x86_64" and "x86-64" in name:
+                chosen = candidate
+                break
+        chosen = chosen or candidates[0]
+        text = read_text(chosen)
+        compiler = self.mpicc or shutil.which("mpicc") or self.cc
+
+        def set_assignment(source: str, name: str, value: str) -> str:
+            pattern = r"(?m)^\s*%s\s*=.*$" % re.escape(name)
+            return re.sub(
+                pattern, lambda _match: "%s = %s" % (name, value), source)
+
+        for variable in ("CCS", "CCP", "CC", "CCD"):
+            text = set_assignment(text, variable, compiler)
+        text = set_assignment(
+            text, "CFLAGS", "-O2 -fPIC -std=gnu17 -I%s/include" % self.prefix)
+        write_text(src / "src" / "Makefile.inc", text)
+        run(["make", "-C", "src", "-j1", "esmumps"], cwd=src,
+            env=self.env, log=self.log("scotch"))
+        run(["make", "-C", "src", "-j1", "ptesmumps"], cwd=src,
+            env=self.env, log=self.log("scotch"))
+        run(["make", "-C", "src", "prefix=%s" % self.prefix, "install"],
+            cwd=src, env=self.env, log=self.log("scotch"))
+
+    def parmetis(self) -> None:
+        archive = self.prefix / "lib" / "libparmetis.a"
+        header = self.prefix / "include" / "parmetis.h"
+        if archive.is_file() and header.is_file():
+            return
+        src = self.source("parmetis")
+        mpicc = self.mpicc or shutil.which("mpicc") or "mpicc"
+        run([
+            "make", "config",
+            "cc=%s" % mpicc,
+            "prefix=%s" % self.prefix,
+            "gklib_path=%s" % self.prefix,
+            "metis_path=%s" % self.prefix,
+        ], cwd=src, env=self.env, log=self.log("parmetis"))
+        run(["make", "-j%d" % self.jobs], cwd=src, env=self.env,
+            log=self.log("parmetis"))
+        run(["make", "install"], cwd=src, env=self.env,
+            log=self.log("parmetis"))
+
+    def strumpack(self) -> None:
+        library = self.prefix / "lib" / "libstrumpack.a"
+        if library.is_file():
+            try:
+                verify_strumpack_cpu_ordering_config(
+                    self.prefix, ("PARMETIS", "SCOTCH", "PTSCOTCH"))
+            except BuildError:
+                print("  existing STRUMPACK lacks verified CPU ordering backends; rebuilding it")
+                library.unlink()
+                config = self.prefix / "include" / "StrumpackConfig.h"
+                if config.exists():
+                    config.unlink()
+            else:
+                return
         src = self.source("strumpack")
         build = self.work / "build" / "strumpack"
+        if build.exists():
+            shutil.rmtree(build)
         blas = self.core / "lib" / "libopenblas.a"
         scalapack = self.core / "lib" / "libscalapack.a"
+        parmetis = self.prefix / "lib" / "libparmetis.a"
+        metis = self.prefix / "lib" / "libmetis.a"
+        parmetis_header = self.prefix / "include" / "parmetis.h"
+        metis_header = self.prefix / "include" / "metis.h"
+        scotch = self.prefix / "lib" / "libscotch.a"
+        scotcherr = self.prefix / "lib" / "libscotcherr.a"
+        ptscotch = self.prefix / "lib" / "libptscotch.a"
+        ptscotcherr = self.prefix / "lib" / "libptscotcherr.a"
+        scotch_header = self.prefix / "include" / "scotch.h"
+        ptscotch_header = self.prefix / "include" / "ptscotch.h"
+        if not (parmetis.is_file() and parmetis_header.is_file()):
+            raise BuildError("ParMETIS artifacts are missing before the STRUMPACK stage")
+        if not all(path.is_file() for path in (
+                scotch, scotcherr, ptscotch, ptscotcherr,
+                scotch_header, ptscotch_header)):
+            raise BuildError("SCOTCH/PT-Scotch artifacts are missing before the STRUMPACK stage")
         self.cmake_configure(src, build, [
             "-DCMAKE_INSTALL_PREFIX=%s" % self.prefix,
             "-DCMAKE_BUILD_TYPE=Release",
@@ -447,11 +571,26 @@ class SolverBuild:
             "-DSTRUMPACK_USE_MPI=ON",
             "-DSTRUMPACK_USE_OPENMP=ON",
             "-DTPL_ENABLE_SLATE=OFF",
-            "-DTPL_ENABLE_PARMETIS=OFF",
-            "-DTPL_ENABLE_SCOTCH=OFF",
-            "-DTPL_ENABLE_PTSCOTCH=OFF",
+            "-DTPL_ENABLE_PARMETIS=ON",
+            "-DTPL_PARMETIS_PREFIX=%s" % self.prefix,
+            "-DTPL_PARMETIS_INCLUDE_DIRS=%s;%s" % (
+                parmetis_header.parent, metis_header.parent),
+            "-DTPL_PARMETIS_LIBRARY_DIR=%s" % parmetis.parent,
+            "-DTPL_PARMETIS_LIBRARIES=%s;%s" % (parmetis, metis),
+            "-DTPL_ENABLE_SCOTCH=ON",
+            "-DTPL_SCOTCH_PREFIX=%s" % self.prefix,
+            "-DTPL_SCOTCH_INCLUDE_DIRS=%s" % scotch_header.parent,
+            "-DTPL_SCOTCH_LIBRARY_DIR=%s" % scotch.parent,
+            "-DTPL_SCOTCH_LIBRARIES=%s;%s" % (scotch, scotcherr),
+            "-DTPL_ENABLE_PTSCOTCH=ON",
+            "-DTPL_PTSCOTCH_PREFIX=%s" % self.prefix,
+            "-DTPL_PTSCOTCH_INCLUDE_DIRS=%s" % ptscotch_header.parent,
+            "-DTPL_PTSCOTCH_LIBRARY_DIR=%s" % ptscotch.parent,
+            "-DTPL_PTSCOTCH_LIBRARIES=%s;%s;%s;%s" % (
+                ptscotch, ptscotcherr, scotch, scotcherr),
             "-DTPL_ENABLE_BPACK=OFF",
             "-DTPL_ENABLE_ZFP=OFF",
+            "-DTPL_ENABLE_COMBBLAS=OFF",
             "-DTPL_METIS_PREFIX=%s" % self.prefix,
             "-DTPL_BLAS_LIBRARIES=%s" % blas,
             "-DTPL_LAPACK_LIBRARIES=%s" % blas,
@@ -461,14 +600,16 @@ class SolverBuild:
             "-DCMAKE_Fortran_COMPILER=%s" % self.fc,
             "-DCMAKE_PREFIX_PATH=%s;%s" % (self.prefix, self.core),
         ], "strumpack")
+        verify_strumpack_cpu_ordering_config(
+            build, ("PARMETIS", "SCOTCH", "PTSCOTCH"))
         self.cmake_build(build, "strumpack", target="strumpack")
         ensure_dir(self.prefix / "lib")
         ensure_dir(self.prefix / "include")
-        shutil.copy2(build / "libstrumpack.a", self.prefix / "lib" / "libstrumpack.a")
-        for name in ("StrumpackConfig.h",):
-            path = build / name
-            if path.exists():
-                shutil.copy2(path, self.prefix / "include" / name)
+        shutil.copy2(build / "libstrumpack.a", library)
+        config = build / "StrumpackConfig.h"
+        if not config.is_file():
+            raise BuildError("STRUMPACK build did not produce StrumpackConfig.h")
+        shutil.copy2(config, self.prefix / "include" / config.name)
         for entry in (src / "src").iterdir():
             if entry.is_file() and entry.suffix in (".h", ".hpp"):
                 shutil.copy2(entry, self.prefix / "include" / entry.name)
@@ -478,7 +619,6 @@ class SolverBuild:
                     shutil.rmtree(target)
                 shutil.copytree(entry, target)
 
-    # -- PaStiX 5 ----------------------------------------------------------
     def pastix5(self) -> None:
         prefix = self.prefix / "pastix5"
         if (prefix / "lib" / "libpastix.a").exists():
@@ -545,6 +685,8 @@ class SolverBuild:
         stages = [
             ("hwloc", "Build hwloc", self.hwloc),
             ("gklib-metis", "Build GKlib and METIS", self.gklib_metis),
+            ("parmetis", "Build ParMETIS", self.parmetis),
+            ("scotch", "Build SCOTCH and PT-Scotch", self.scotch),
             ("pastix6", "Build PaStiX 6", self.pastix6),
             ("strumpack", "Build STRUMPACK", self.strumpack),
             ("pastix5", "Build PaStiX 5", self.pastix5),

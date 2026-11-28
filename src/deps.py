@@ -399,10 +399,10 @@ register(
         recipe_revision="4"),
     dep("strumpack", "7.1.0", "https://github.com/pghysels/STRUMPACK/archive/v7.1.0.tar.gz",
         license="BSD-3-Clause", homepage="https://portal.nersc.gov/project/sparse/strumpack/",
-        deps=("mpich", "openblas", "scalapack", "metis"),
+        deps=("mpich", "openblas", "scalapack", "metis", "parmetis", "scotch"),
         static_libs=("libstrumpack.a",), includes=("StrumpackConfig.h", "StrumpackSparseSolverMPIDist.hpp"),
         builder="strumpack", platforms=("linux", "bsd", "macos"),
-        required_paths=("CMakeLists.txt", "src"), recipe_revision="3"),
+        required_paths=("CMakeLists.txt", "src"), recipe_revision="4"),
     dep("boost", "1.87.0", "https://archives.boost.io/release/1.87.0/source/boost_1_87_0.tar.bz2",
         license="BSL-1.0", homepage="https://www.boost.org/",
         static_libs=("libboost_math_tr1.a",), includes=("boost/math/special_functions/bessel.hpp",),
@@ -1581,15 +1581,42 @@ def patch_strumpack_static_link_order(src: Path) -> bool:
     write_text(cmake_lists, content)
     return True
 
+def verify_strumpack_cpu_ordering_config(
+    location: Path, required_features: Sequence[str] = ("PARMETIS",),
+) -> Path:
+    """Require generated STRUMPACK config macros for the selected orderers."""
+    location = Path(location)
+    candidates = (
+        location / "StrumpackConfig.h",
+        location / "include" / "StrumpackConfig.h",
+    )
+    header = next((path for path in candidates if path.is_file()), None)
+    if header is None:
+        raise BuildError(
+            "STRUMPACK did not generate StrumpackConfig.h; "
+            "cannot verify enabled ordering backends")
+    content = read_text(header)
+    missing = []
+    for feature in required_features:
+        macro = "STRUMPACK_USE_%s" % feature.upper()
+        if not re.search(
+                r"(?m)^\s*#define\s+%s(?:\s+1)?\s*$" %
+                re.escape(macro), content):
+            missing.append(feature.upper())
+    if missing:
+        raise BuildError(
+            "STRUMPACK was configured without required ordering backend(s): %s" %
+            ", ".join(missing))
+    return header
+
+
 def verify_strumpack_install_link(
     ctx: BuildContext, dep: Dependency, cmake: str, build_dir: Path,
 ) -> None:
-    """Link a tiny external consumer against the installed STRUMPACK package.
+    """Link a tiny external consumer against installed STRUMPACK dependencies.
 
-    The probe deliberately references the Fortran ScaLAPACK PDGEMM entry point.
-    That pulls a ScaLAPACK archive member into the final link and verifies that
-    its MPI references are resolved by the later MPI libraries exported by
-    STRUMPACK::strumpack.
+    The probe forces references to ScaLAPACK and every configured ordering
+    library, so static-link omissions fail during the dependency build.
     """
     package_dir = ctx.prefix / "lib" / "cmake" / "STRUMPACK"
     required_package_files = (
@@ -1602,30 +1629,64 @@ def verify_strumpack_install_link(
             "STRUMPACK install is missing its CMake package files: %s" %
             ", ".join(missing))
 
+    config = verify_strumpack_cpu_ordering_config(
+        ctx.prefix, ("PARMETIS",))
     probe_root = build_dir / "consumer-link-check"
     if probe_root.exists():
         shutil.rmtree(probe_root)
     source_dir = ensure_dir(probe_root / "src")
     consumer_build = probe_root / "build"
-    write_text(
-        source_dir / "CMakeLists.txt",
-        "cmake_minimum_required(VERSION 3.17)\n"
-        "project(strumpack_consumer_link_check LANGUAGES CXX)\n"
-        "find_package(STRUMPACK CONFIG REQUIRED)\n"
-        "add_executable(strumpack_link_probe strumpack_link_probe.cpp)\n"
-        "target_link_libraries(strumpack_link_probe PRIVATE STRUMPACK::strumpack)\n",
-    )
-    write_text(
-        source_dir / "strumpack_link_probe.cpp",
-        "#include <StrumpackFortranCInterface.h>\n"
-        "#include <StrumpackSparseSolverMPIDist.hpp>\n"
-        "extern \"C\" void STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM)();\n"
-        "void (* volatile force_scalapack_reference)() =\n"
-        "    &STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM);\n"
-        "int main() { return force_scalapack_reference == nullptr ? 1 : 0; }\n",
-    )
+    cmake_text = """cmake_minimum_required(VERSION 3.17)
+project(strumpack_consumer_link_check LANGUAGES CXX)
+find_package(STRUMPACK CONFIG REQUIRED)
+add_executable(strumpack_link_probe strumpack_link_probe.cpp)
+target_include_directories(strumpack_link_probe PRIVATE "%s")
+target_link_libraries(strumpack_link_probe PRIVATE STRUMPACK::strumpack)
+""" % (ctx.prefix / "include")
+    write_text(source_dir / "CMakeLists.txt", cmake_text)
 
-    print("  verifying installed STRUMPACK CMake target and static MPI/ScaLAPACK/OpenBLAS/OpenMP link")
+    source = """#include <StrumpackConfig.h>
+#include <StrumpackFortranCInterface.h>
+#include <StrumpackSparseSolverMPIDist.hpp>
+#include <parmetis.h>
+#if defined(STRUMPACK_USE_SCOTCH)
+#include <scotch.h>
+#endif
+#if defined(STRUMPACK_USE_PTSCOTCH)
+#include <ptscotch.h>
+#endif
+#if !defined(STRUMPACK_USE_PARMETIS)
+#error STRUMPACK ParMETIS support was not enabled
+#endif
+extern "C" void STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM)();
+void (* volatile force_scalapack_reference)() =
+    &STRUMPACK_FC_GLOBAL(pdgemm, PDGEMM);
+decltype(&ParMETIS_V3_PartKway) volatile force_parmetis_reference =
+    &ParMETIS_V3_PartKway;
+#if defined(STRUMPACK_USE_SCOTCH)
+decltype(&SCOTCH_graphInit) volatile force_scotch_reference =
+    &SCOTCH_graphInit;
+#endif
+#if defined(STRUMPACK_USE_PTSCOTCH)
+decltype(&SCOTCH_dgraphInit) volatile force_ptscotch_reference =
+    &SCOTCH_dgraphInit;
+#endif
+int main() {
+  if (force_scalapack_reference == nullptr ||
+      force_parmetis_reference == nullptr) return 1;
+#if defined(STRUMPACK_USE_SCOTCH)
+  if (force_scotch_reference == nullptr) return 1;
+#endif
+#if defined(STRUMPACK_USE_PTSCOTCH)
+  if (force_ptscotch_reference == nullptr) return 1;
+#endif
+  return 0;
+}
+"""
+    write_text(source_dir / "strumpack_link_probe.cpp", source)
+
+    print("  verifying installed STRUMPACK CMake target and static "
+          "ParMETIS/Scotch/ScaLAPACK/MPI link")
     env = ctx.build_env(dep)
     mpi_args = [
         "-DMPI_C_COMPILER=%s" % (ctx.prefix / "bin" / "mpicc"),
@@ -1661,6 +1722,34 @@ def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     if not metis_header:
         raise BuildError("METIS header metis.h was not found in %s" % ctx.prefix)
 
+    parmetis = _lib_path(ctx, "libparmetis.a")
+    parmetis_header = _find_header_in_prefix(ctx.prefix, "parmetis.h")
+    if not parmetis_header:
+        raise BuildError("ParMETIS header parmetis.h was not found in %s" % ctx.prefix)
+
+    scotch = ctx.prefix / "lib" / "libscotch.a"
+    scotcherr = ctx.prefix / "lib" / "libscotcherr.a"
+    scotch_header = _find_header_in_prefix(ctx.prefix, "scotch.h")
+    ptscotch = ctx.prefix / "lib" / "libptscotch.a"
+    ptscotcherr = ctx.prefix / "lib" / "libptscotcherr.a"
+    ptscotch_header = _find_header_in_prefix(ctx.prefix, "ptscotch.h")
+    have_scotch = scotch.is_file() and scotcherr.is_file() and scotch_header is not None
+    have_ptscotch = (
+        have_scotch and ptscotch.is_file() and ptscotcherr.is_file()
+        and ptscotch_header is not None)
+    partial_scotch = any(path.exists() for path in (
+        scotch, scotcherr, ptscotch, ptscotcherr))
+    if partial_scotch and not have_scotch:
+        raise BuildError("SCOTCH artifacts are incomplete in %s" % ctx.prefix)
+    if (ptscotch.exists() or ptscotcherr.exists() or ptscotch_header) and not have_ptscotch:
+        raise BuildError("PT-Scotch artifacts are incomplete in %s" % ctx.prefix)
+
+    required_features = ["PARMETIS"]
+    if have_scotch:
+        required_features.append("SCOTCH")
+    if have_ptscotch:
+        required_features.append("PTSCOTCH")
+
     build_dir = ctx.work / "build" / ("%s-%s" % (dep.name, dep.version))
     if build_dir.exists():
         shutil.rmtree(build_dir)
@@ -1683,16 +1772,36 @@ def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
         "-DTPL_METIS_INCLUDE_DIRS=%s" % metis_header.parent,
         "-DTPL_METIS_LIBRARY_DIR=%s" % Path(metis).parent,
         "-DTPL_METIS_LIBRARIES=%s" % metis,
-        # Keep optional backends deterministic and consistent with the
-        # dependencies selected for this JOREK build.
+        "-DTPL_ENABLE_PARMETIS=ON",
+        "-DTPL_PARMETIS_PREFIX=%s" % ctx.prefix,
+        "-DTPL_PARMETIS_INCLUDE_DIRS=%s;%s" % (
+            parmetis_header.parent, metis_header.parent),
+        "-DTPL_PARMETIS_LIBRARY_DIR=%s" % Path(parmetis).parent,
+        "-DTPL_PARMETIS_LIBRARIES=%s;%s" % (parmetis, metis),
+        "-DTPL_ENABLE_SCOTCH=%s" % ("ON" if have_scotch else "OFF"),
+        "-DTPL_ENABLE_PTSCOTCH=%s" % ("ON" if have_ptscotch else "OFF"),
         "-DTPL_ENABLE_SLATE=OFF",
-        "-DTPL_ENABLE_PARMETIS=OFF",
-        "-DTPL_ENABLE_SCOTCH=OFF",
-        "-DTPL_ENABLE_PTSCOTCH=OFF",
         "-DTPL_ENABLE_BPACK=OFF",
         "-DTPL_ENABLE_ZFP=OFF",
+        "-DTPL_ENABLE_COMBBLAS=OFF",
     ]
+    if have_scotch:
+        args.extend([
+            "-DTPL_SCOTCH_PREFIX=%s" % ctx.prefix,
+            "-DTPL_SCOTCH_INCLUDE_DIRS=%s" % scotch_header.parent,
+            "-DTPL_SCOTCH_LIBRARY_DIR=%s" % scotch.parent,
+            "-DTPL_SCOTCH_LIBRARIES=%s;%s" % (scotch, scotcherr),
+        ])
+    if have_ptscotch:
+        args.extend([
+            "-DTPL_PTSCOTCH_PREFIX=%s" % ctx.prefix,
+            "-DTPL_PTSCOTCH_INCLUDE_DIRS=%s" % ptscotch_header.parent,
+            "-DTPL_PTSCOTCH_LIBRARY_DIR=%s" % ptscotch.parent,
+            "-DTPL_PTSCOTCH_LIBRARIES=%s;%s;%s;%s" % (
+                ptscotch, ptscotcherr, scotch, scotcherr),
+        ])
     run(args, cwd=src, env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    verify_strumpack_cpu_ordering_config(build_dir, required_features)
     # Build the library target only.  STRUMPACK 7.1.0 adds examples and test
     # executables unconditionally, and its BUILD_TESTING option does not
     # exclude those targets from the default build.
@@ -1702,7 +1811,9 @@ def build_strumpack(ctx: BuildContext, dep: Dependency, src: Path) -> None:
     ], env=ctx.build_env(dep), log=ctx.log_path(dep.name))
     run([cmake, "--install", str(build_dir)],
         env=ctx.build_env(dep), log=ctx.log_path(dep.name))
+    verify_strumpack_cpu_ordering_config(ctx.prefix, required_features)
     verify_strumpack_install_link(ctx, dep, cmake, build_dir)
+
 
 
 def build_imas(ctx: BuildContext, dep: Dependency, src: Path) -> None:
