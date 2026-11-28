@@ -43,14 +43,20 @@ interfaces are compile-time exclusive.  The reference suite therefore carries
 
 ## Why the reference suite uses MUMPS
 
-The reference build now has static MUMPS, PaStiX 6 and STRUMPACK libraries.
-PaStiX uses METIS/GKlib and hwloc; STRUMPACK uses METIS/GKlib, ScaLAPACK,
-OpenBLAS and its OpenMP runtime.  All three are linked into each model binary,
-and the static dependency check still reports system libraries only.
+The reference build has static MUMPS, PaStiX 6 and STRUMPACK libraries, with
+PaStiX 5 carried as a separate variant. STRUMPACK is built with METIS,
+ParMETIS, SCOTCH and PT-Scotch ordering when those dependencies are selected;
+the standard all-solver dependency set now includes all four CPU ordering
+backends. Its build verifies the generated feature macros and links a small
+consumer against the installed CMake target, so missing static transitive
+libraries surface during the build. All solver libraries are linked into the
+model variants that support them.
 
-The builder does not pretend that a proprietary backend exists.  WSMP and HIPS
+The builder does not pretend that a proprietary backend exists. WSMP and HIPS
 require a user-supplied, licensed installation; their switches are preserved
-and can be linked through a dependency prefix.
+and can be linked through a dependency prefix. ParMETIS is fetched from its
+upstream source and built locally; its upstream terms should be reviewed before
+commercial use or redistribution.
 
 ## Building alternative variants
 
