@@ -44,9 +44,14 @@ pre-populated cache.
 | MUMPS | 5.7.3 | CeCILL-C | sparse direct solver |
 | PaStiX 5 | 5.2.3 | CeCILL-C | legacy JOREK `USE_PASTIX` / optional MURGE adapter; isolated prefix |
 | PaStiX 6 | 6.3.2 | CeCILL-C | modern JOREK `USE_PASTIX6` adapter; METIS ordering, 32-bit indices |
-| STRUMPACK | 7.1.0 | BSD-3-Clause | sparse direct solver |
+| STRUMPACK | 7.1.0 | BSD-3-Clause | sparse direct solver with METIS, ParMETIS, SCOTCH and PT-Scotch orderings |
 | Boost | 1.87.0 | BSL-1.0 | Boost.Math Bessel K |
 | Fitpack/Dierckx | SciPy 1.14.1 sources | BSD-3-Clause | `eqdsk2jorek` regridding |
+
+ParMETIS is fetched from its upstream repository when the STRUMPACK solver is
+selected; it is not bundled in the simulation input archive. Its upstream
+terms are not OSI-approved, so review them before commercial use or
+redistribution.
 
 ## Optional layers
 
