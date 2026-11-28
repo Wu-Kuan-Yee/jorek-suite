@@ -17,6 +17,8 @@ MPICC=${MPICC:-mpicc}
 MPICXX=${MPICXX:-mpicxx}
 MPIFC=${MPIFC:-mpifort}
 METIS_VERSION=5.2.1
+PARMETIS_COMMIT=fc99804e3f043dd951e37775e30db697444816b8
+SCOTCH_VERSION=6.1.2
 PASTIX_VERSION=6.3.2
 STRUMPACK_VERSION=7.1.0
 PASTIX5_VERSION=5.2.3
@@ -65,6 +67,47 @@ if [ ! -f "$PREFIX/lib/libmetis-merged.a" ]; then
   cd "$WORK"
 fi
 
+# --- ParMETIS ---------------------------------------------------------------
+if [ ! -f "$PREFIX/lib/libparmetis.a" ] || [ ! -f "$PREFIX/include/parmetis.h" ]; then
+  rm -rf ParMETIS-4.0.3
+  git init ParMETIS-4.0.3
+  git -C ParMETIS-4.0.3 remote add origin https://github.com/KarypisLab/ParMETIS.git
+  git -C ParMETIS-4.0.3 fetch --depth 1 origin "$PARMETIS_COMMIT"
+  git -C ParMETIS-4.0.3 checkout --detach FETCH_HEAD
+  cd ParMETIS-4.0.3
+  make config cc="$MPICC" prefix="$PREFIX" gklib_path="$PREFIX" metis_path="$PREFIX"
+  make -j"$JOBS"
+  make install
+  cd "$WORK"
+fi
+
+# --- SCOTCH + PT-Scotch ------------------------------------------------------
+if [ ! -f "$PREFIX/lib/libptscotch.a" ] || [ ! -f "$PREFIX/include/ptscotch.h" ]; then
+  fetch "https://gitlab.inria.fr/scotch/scotch/-/archive/v${SCOTCH_VERSION}/scotch-v${SCOTCH_VERSION}.tar.gz" scotch.tar.gz
+  rm -rf "scotch-v${SCOTCH_VERSION}"; tar xzf scotch.tar.gz
+  cd "scotch-v${SCOTCH_VERSION}"
+  MAKEINC=$(find src/Make.inc -type f -name 'Makefile.inc.*' | grep 'x86-64' | head -n 1 || true)
+  if [ -z "$MAKEINC" ]; then
+    MAKEINC=$(find src/Make.inc -type f -name 'Makefile.inc.*' | head -n 1)
+  fi
+  [ -n "$MAKEINC" ] || { echo "No SCOTCH Makefile.inc template found" >&2; exit 1; }
+  cp "$MAKEINC" src/Makefile.inc
+  set_make_assignment() {
+    variable="$1"
+    value="$2"
+    escaped=$(printf '%s' "$value" | sed 's/[\/&|]/\\&/g')
+    sed -i -E "s|^[[:space:]]*${variable}[[:space:]]*=.*$|${variable} = ${escaped}|" src/Makefile.inc
+  }
+  for variable in CCS CCP CC CCD; do
+    set_make_assignment "$variable" "$MPICC"
+  done
+  set_make_assignment CFLAGS "-O2 -fPIC -std=gnu17 -I$PREFIX/include"
+  make -C src -j1 esmumps
+  make -C src -j1 ptesmumps
+  make -C src prefix="$PREFIX" install
+  cd "$WORK"
+fi
+
 # --- PaStiX 6 --------------------------------------------------------------
 if [ ! -f "$PREFIX/lib/libpastix.a" ]; then
   fetch "https://gitlab.inria.fr/solverstack/pastix/-/archive/v${PASTIX_VERSION}/pastix-v${PASTIX_VERSION}.tar.gz" pastix6.tar.gz
@@ -94,21 +137,42 @@ if [ ! -f "$PREFIX/lib/libpastix.a" ]; then
 fi
 
 # --- STRUMPACK -------------------------------------------------------------
-if [ ! -f "$PREFIX/lib/libstrumpack.a" ]; then
+if [ -f "$PREFIX/lib/libstrumpack.a" ] &&
+   [ -f "$PREFIX/include/StrumpackConfig.h" ] &&
+   grep -Eq '^#define STRUMPACK_USE_PARMETIS([[:space:]]|$)' "$PREFIX/include/StrumpackConfig.h" &&
+   grep -Eq '^#define STRUMPACK_USE_SCOTCH([[:space:]]|$)' "$PREFIX/include/StrumpackConfig.h" &&
+   grep -Eq '^#define STRUMPACK_USE_PTSCOTCH([[:space:]]|$)' "$PREFIX/include/StrumpackConfig.h"; then
+  echo "STRUMPACK already has ParMETIS, SCOTCH and PT-Scotch support"
+else
+  rm -f "$PREFIX/lib/libstrumpack.a" "$PREFIX/include/StrumpackConfig.h"
   fetch "https://github.com/pghysels/STRUMPACK/archive/v${STRUMPACK_VERSION}.tar.gz" strumpack.tar.gz
   rm -rf "STRUMPACK-${STRUMPACK_VERSION}"; tar xzf strumpack.tar.gz
   cd "STRUMPACK-${STRUMPACK_VERSION}"
   rm -rf build
   cmake -S . -B build -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=OFF -DSTRUMPACK_USE_MPI=ON -DSTRUMPACK_USE_OPENMP=ON \
-    -DTPL_ENABLE_SLATE=OFF -DTPL_ENABLE_PARMETIS=OFF -DTPL_ENABLE_SCOTCH=OFF \
-    -DTPL_ENABLE_PTSCOTCH=OFF -DTPL_ENABLE_BPACK=OFF -DTPL_ENABLE_ZFP=OFF \
+    -DTPL_ENABLE_SLATE=OFF -DTPL_ENABLE_PARMETIS=ON -DTPL_ENABLE_SCOTCH=ON \
+    -DTPL_ENABLE_PTSCOTCH=ON -DTPL_ENABLE_BPACK=OFF -DTPL_ENABLE_ZFP=OFF \
     -DTPL_METIS_PREFIX="$PREFIX" \
+    -DTPL_METIS_INCLUDE_DIRS="$PREFIX/include" -DTPL_METIS_LIBRARY_DIR="$PREFIX/lib" \
+    -DTPL_METIS_LIBRARIES="$PREFIX/lib/libmetis.a" \
+    -DTPL_PARMETIS_PREFIX="$PREFIX" -DTPL_PARMETIS_INCLUDE_DIRS="$PREFIX/include" \
+    -DTPL_PARMETIS_LIBRARY_DIR="$PREFIX/lib" \
+    -DTPL_PARMETIS_LIBRARIES="$PREFIX/lib/libparmetis.a;$PREFIX/lib/libmetis.a" \
+    -DTPL_SCOTCH_PREFIX="$PREFIX" -DTPL_SCOTCH_INCLUDE_DIRS="$PREFIX/include" \
+    -DTPL_SCOTCH_LIBRARY_DIR="$PREFIX/lib" \
+    -DTPL_SCOTCH_LIBRARIES="$PREFIX/lib/libscotch.a;$PREFIX/lib/libscotcherr.a" \
+    -DTPL_PTSCOTCH_PREFIX="$PREFIX" -DTPL_PTSCOTCH_INCLUDE_DIRS="$PREFIX/include" \
+    -DTPL_PTSCOTCH_LIBRARY_DIR="$PREFIX/lib" \
+    -DTPL_PTSCOTCH_LIBRARIES="$PREFIX/lib/libptscotch.a;$PREFIX/lib/libptscotcherr.a;$PREFIX/lib/libscotch.a;$PREFIX/lib/libscotcherr.a" \
     -DTPL_BLAS_LIBRARIES="$CORE_PREFIX/lib/libopenblas.a" \
     -DTPL_LAPACK_LIBRARIES="$CORE_PREFIX/lib/libopenblas.a" \
     -DTPL_SCALAPACK_LIBRARIES="$CORE_PREFIX/lib/libscalapack.a" \
     -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_Fortran_COMPILER="$FC" \
     -DCMAKE_PREFIX_PATH="$PREFIX;$CORE_PREFIX"
+  grep -Eq '^#define STRUMPACK_USE_PARMETIS([[:space:]]|$)' build/StrumpackConfig.h
+  grep -Eq '^#define STRUMPACK_USE_SCOTCH([[:space:]]|$)' build/StrumpackConfig.h
+  grep -Eq '^#define STRUMPACK_USE_PTSCOTCH([[:space:]]|$)' build/StrumpackConfig.h
   cmake --build build --target strumpack --parallel "$JOBS"
   mkdir -p "$PREFIX/lib" "$PREFIX/include"
   cp build/libstrumpack.a "$PREFIX/lib/"
